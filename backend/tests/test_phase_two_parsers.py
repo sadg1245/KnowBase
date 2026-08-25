@@ -86,6 +86,23 @@ class ParserStructureMetadataTests(unittest.TestCase):
         self.assertEqual(xlsx_chunks[0]["metadata"]["section_path"], ["Sheet1"])
         self.assertIn("Name | Score", xlsx_chunks[0]["content"])
 
+    def test_empty_title_placeholder_does_not_promote_slide_body_to_heading(self):
+        """Treating a content placeholder as a title would assign false hierarchy."""
+        from pptx import Presentation
+
+        with tempfile.TemporaryDirectory() as directory:
+            pptx_path = os.path.join(directory, "untitled-content-slide.pptx")
+            presentation = Presentation()
+            slide = presentation.slides.add_slide(presentation.slide_layouts[1])
+            slide.placeholders[1].text = "Slide body"
+            presentation.save(pptx_path)
+
+            chunks = PptxParser().parse(pptx_path)
+
+        self.assertEqual(chunks[0]["metadata"]["heading"], "")
+        self.assertIsNone(chunks[0]["metadata"]["heading_level"])
+        self.assertEqual(chunks[0]["metadata"]["section_path"], [])
+
 
 class ChunkStructurePersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_upsert_persists_heading_level_and_json_section_path(self):

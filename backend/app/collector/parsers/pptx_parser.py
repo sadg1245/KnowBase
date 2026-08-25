@@ -65,22 +65,22 @@ class PptxParser(BaseParser):
         # 优先尝试基于占位符的标题
         try:
             for shape in slide.shapes:
-                if shape.has_text_frame:
-                    ph = shape.placeholder_format
-                    if ph is not None and ph.type is not None:
-                        # MSO_PLACEHOLDER.TITLE == 0，SUBTITLE == 1，
-                        # CENTER_TITLE == 3
-                        if ph.type in (0, 1, 3):
-                            title = shape.text_frame.text.strip()
-                            if title:
-                                return title
+                if not shape.has_text_frame or not shape.is_placeholder:
+                    continue
+                ph = shape.placeholder_format
+                # MSO_PLACEHOLDER.TITLE == 0，SUBTITLE == 1，
+                # CENTER_TITLE == 3
+                if ph.type in (0, 1, 3):
+                    title = shape.text_frame.text.strip()
+                    if title:
+                        return title
         except Exception:
             pass
 
-        # 回退方案：第一个包含文本的形状
+        # 回退方案：第一个包含文本的自由文本框（跳过所有占位符）。
         try:
             for shape in slide.shapes:
-                if shape.has_text_frame:
+                if shape.has_text_frame and not shape.is_placeholder:
                     text = shape.text_frame.text.strip()
                     if text:
                         return text
