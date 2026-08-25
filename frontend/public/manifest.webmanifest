@@ -1,0 +1,10 @@
+{
+  "name": "拾光 - 私人 AI 学习伙伴",
+  "short_name": "拾光",
+  "description": "随时学习、练习和复习你的私人知识库",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f7f8",
+  "theme_color": "#167d8d",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

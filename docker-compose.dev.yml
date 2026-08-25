@@ -1,0 +1,56 @@
+version: "3.8"
+
+# 开发环境覆盖配置
+# 使用方式：docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+
+services:
+  # ============ Backend API (开发模式) ============
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: dev
+    volumes:
+      - ./backend:/app
+      - /app/__pycache__
+      - /app/.pytest_cache
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      - LOG_LEVEL=DEBUG
+    ports:
+      - "8000:8000"
+
+  # ============ Celery Worker (开发模式) ============
+  worker:
+    volumes:
+      - ./backend:/app
+      - /app/__pycache__
+    command: celery -A app.worker worker --loglevel=debug --concurrency=2 --pool=solo
+    environment:
+      - LOG_LEVEL=DEBUG
+
+  # ============ Feishu Bot (开发模式) ============
+  feishu-bot:
+    volumes:
+      - ./feishu-bot:/app
+      - /app/__pycache__
+    command: python main.py
+    environment:
+      - LOG_LEVEL=DEBUG
+
+  # ============ Frontend (开发模式) ============
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: build
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/index.html:/app/index.html
+      - ./frontend/vite.config.ts:/app/vite.config.ts
+      - /app/node_modules
+    command: npm run dev -- --host 0.0.0.0
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000

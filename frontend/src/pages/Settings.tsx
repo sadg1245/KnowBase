@@ -1,0 +1,383 @@
+import React, { useEffect, useState } from 'react';
+import {
+  App, Typography, Tabs, Form, Input, Select, Button, Space, Card, Spin, Descriptions, Tag, Divider,
+} from 'antd';
+import {
+  SaveOutlined, ApiOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, DownloadOutlined,
+} from '@ant-design/icons';
+import {
+  LLMSettings, SystemInfo,
+  getLLMSettings, updateLLMSettings, testLLM, getSystemInfo,
+  getEmbeddingSettings, updateEmbeddingSettings, exportLearningData, getLearningProfile, updateLearningProfile,
+} from '../services/api';
+
+const { Title, Text } = Typography;
+
+const PROVIDERS = [
+  { label: 'OpenAI', value: 'openai' },
+  { label: 'DeepSeek', value: 'deepseek' },
+  { label: '阿里通义 (DashScope)', value: 'dashscope' },
+  { label: '智谱 AI (GLM)', value: 'zhipu' },
+  { label: 'Ollama (本地)', value: 'ollama' },
+];
+
+const MODELS: Record<string, Array<{ label: string; value: string }>> = {
+  openai: [
+    { label: 'GPT-4o', value: 'gpt-4o' },
+    { label: 'GPT-4o Mini', value: 'gpt-4o-mini' },
+    { label: 'GPT-4-Turbo', value: 'gpt-4-turbo' },
+    { label: 'GPT-3.5-Turbo', value: 'gpt-3.5-turbo' },
+  ],
+  deepseek: [
+    { label: 'DeepSeek V4 Flash', value: 'deepseek-v4-flash' },
+    { label: 'DeepSeek V4 Pro', value: 'deepseek-v4-pro' },
+    { label: 'DeepSeek-Chat', value: 'deepseek-chat' },
+    { label: 'DeepSeek-Coder', value: 'deepseek-coder' },
+  ],
+  dashscope: [
+    { label: 'Qwen-Max', value: 'qwen-max' },
+    { label: 'Qwen-Plus', value: 'qwen-plus' },
+    { label: 'Qwen-Turbo', value: 'qwen-turbo' },
+  ],
+  zhipu: [
+    { label: 'GLM-4', value: 'glm-4' },
+    { label: 'GLM-4-Flash', value: 'glm-4-flash' },
+    { label: 'GLM-3-Turbo', value: 'glm-3-turbo' },
+  ],
+  ollama: [
+    { label: 'qwen2:7b', value: 'qwen2:7b' },
+    { label: 'llama3:8b', value: 'llama3:8b' },
+    { label: 'mistral:7b', value: 'mistral:7b' },
+    { label: '自定义模型', value: 'custom' },
+  ],
+};
+
+const EMBEDDING_MODELS: Record<string, Array<{ label: string; value: string }>> = {
+  local: [
+    { label: 'BGE Small 中文 v1.5', value: 'BAAI/bge-small-zh-v1.5' },
+  ],
+  openai: [
+    { label: 'text-embedding-3-small', value: 'text-embedding-3-small' },
+    { label: 'text-embedding-3-large', value: 'text-embedding-3-large' },
+    { label: 'text-embedding-ada-002', value: 'text-embedding-ada-002' },
+  ],
+  dashscope: [
+    { label: 'text-embedding-v2', value: 'text-embedding-v2' },
+    { label: 'text-embedding-v3', value: 'text-embedding-v3' },
+  ],
+  ollama: [
+    { label: 'nomic-embed-text', value: 'nomic-embed-text' },
+    { label: 'mxbai-embed-large', value: 'mxbai-embed-large' },
+  ],
+};
+
+const Settings: React.FC = () => {
+  const { message } = App.useApp();
+  const [llmForm] = Form.useForm();
+  const [embedForm] = Form.useForm();
+  const [learningForm] = Form.useForm();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
+  const [selectedProvider, setSelectedProvider] = useState('openai');
+  const [selectedEmbedProvider, setSelectedEmbedProvider] = useState('local');
+
+  useEffect(() => {
+    const fetchData = async () => {
+      setLoading(true);
+      try {
+        const [settings, embedding, info, profile] = await Promise.all([
+          getLLMSettings(),
+          getEmbeddingSettings(),
+          getSystemInfo(),
+          getLearningProfile(),
+        ]);
+        llmForm.setFieldsValue(settings);
+        setSelectedProvider(settings.provider || 'openai');
+        embedForm.setFieldsValue({
+          embedding_provider: 'local',
+          embedding_model: embedding.model,
+        });
+        setSelectedEmbedProvider('local');
+        setSystemInfo(info);
+        learningForm.setFieldsValue(profile);
+      } catch {
+        message.error('加载设置失败');
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchData();
+  }, []);
+
+  const handleSaveLLM = async () => {
+    try {
+      const values = await llmForm.validateFields();
+      setSaving(true);
+      await updateLLMSettings(values as LLMSettings);
+      message.success('LLM 设置已保存');
+    } catch {
+      // 表单校验错误
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSaveEmbedding = async () => {
+    try {
+      const values = await embedForm.validateFields();
+      setSaving(true);
+      await updateEmbeddingSettings(values.embedding_model);
+      message.success('Embedding 设置已保存；已有文档需要重新索引');
+    } catch {
+      message.error('保存 Embedding 设置失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleTest = async () => {
+    try {
+      const values = await llmForm.validateFields();
+      setTesting(true);
+      setTestResult(null);
+      // 先保存再测试
+      await updateLLMSettings(values as LLMSettings);
+      const result = await testLLM(values.provider, values.model);
+      setTestResult(result);
+      if (result.success) {
+        message.success('连接测试成功');
+      } else {
+        message.error(result.message || '连接测试失败');
+      }
+    } catch {
+      message.error('测试失败');
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div style={{ textAlign: 'center', padding: 80 }}>
+        <Spin size="large" />
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <Title level={3}>系统设置</Title>
+
+      <Tabs
+        defaultActiveKey="llm"
+        style={{ marginTop: 16 }}
+        items={[
+          {
+            key: 'learning',
+            label: '学习偏好',
+            children: (
+              <Card>
+                <Form form={learningForm} layout="vertical" style={{ maxWidth: 600 }}>
+                  <Form.Item name="display_name" label="怎么称呼你" rules={[{ required: true }]}><Input /></Form.Item>
+                  <Form.Item name="daily_goal_minutes" label="每天计划学习多久"><Select options={[10,15,25,30,45,60,90].map(v => ({ label: `${v} 分钟`, value: v }))} /></Form.Item>
+                  <Form.Item name="daily_review_target" label="每天计划复习多少张卡片"><Select options={[5,10,15,20,30,50].map(v => ({ label: `${v} 张`, value: v }))} /></Form.Item>
+                  <Form.Item name="preferred_mode" label="默认学习方式"><Select options={[{label:'通俗讲解',value:'simple'},{label:'深入学习',value:'deep'},{label:'引导思考',value:'socratic'},{label:'费曼复述',value:'feynman'},{label:'直接回答',value:'direct'}]} /></Form.Item>
+                  <Form.Item name="reminder_time" label="飞书每日复习提醒时间"><Input type="time" /></Form.Item>
+                  <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={async () => { try { setSaving(true); await updateLearningProfile(await learningForm.validateFields()); message.success('学习偏好已保存'); } finally { setSaving(false); } }}>保存学习偏好</Button>
+                </Form>
+              </Card>
+            ),
+          },
+          {
+            key: 'llm',
+            label: 'LLM 设置',
+            children: (
+              <Card>
+                <Form form={llmForm} layout="vertical" style={{ maxWidth: 600 }}>
+                  <Form.Item
+                    name="provider"
+                    label="模型提供商"
+                    rules={[{ required: true, message: '请选择提供商' }]}
+                  >
+                    <Select
+                      options={PROVIDERS}
+                      onChange={(val) => setSelectedProvider(val)}
+                      placeholder="请选择"
+                    />
+                  </Form.Item>
+
+                  <Form.Item
+                    name="model"
+                    label="模型"
+                    rules={[{ required: true, message: '请选择模型' }]}
+                  >
+                    <Select
+                      options={MODELS[selectedProvider] || []}
+                      placeholder="请选择模型"
+                      showSearch
+                    />
+                  </Form.Item>
+
+                  <Form.Item
+                    name="api_key"
+                    label="API Key"
+                    rules={[{ required: selectedProvider !== 'ollama', message: '请输入 API Key' }]}
+                  >
+                    <Input.Password
+                      placeholder={
+                        selectedProvider === 'ollama'
+                          ? '本地模型无需 API Key'
+                          : '输入你的 API Key'
+                      }
+                    />
+                  </Form.Item>
+
+                  {selectedProvider === 'ollama' && (
+                    <Form.Item name="base_url" label="Ollama 地址">
+                      <Input placeholder="http://localhost:11434" />
+                    </Form.Item>
+                  )}
+
+                  <Form.Item>
+                    <Space>
+                      <Button
+                        type="primary"
+                        icon={<SaveOutlined />}
+                        onClick={handleSaveLLM}
+                        loading={saving}
+                      >
+                        保存设置
+                      </Button>
+                      <Button
+                        icon={<ApiOutlined />}
+                        onClick={handleTest}
+                        loading={testing}
+                      >
+                        测试连接
+                      </Button>
+                    </Space>
+                  </Form.Item>
+
+                  {testResult && (
+                    <div
+                      style={{
+                        padding: 12,
+                        borderRadius: 6,
+                        background: testResult.success ? '#f6ffed' : '#fff2f0',
+                        border: `1px solid ${testResult.success ? '#b7eb8f' : '#ffccc7'}`,
+                      }}
+                    >
+                      <Space>
+                        {testResult.success ? (
+                          <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                        ) : (
+                          <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+                        )}
+                        <Text>{testResult.message}</Text>
+                      </Space>
+                    </div>
+                  )}
+                </Form>
+              </Card>
+            ),
+          },
+          {
+            key: 'embedding',
+            label: 'Embedding 设置',
+            children: (
+              <Card>
+                <Form form={embedForm} layout="vertical" style={{ maxWidth: 600 }}>
+                  <Form.Item
+                    name="embedding_provider"
+                    label="Embedding 提供商"
+                  >
+                    <Select
+                      options={[
+                        { label: '本地模型', value: 'local' },
+                        { label: 'OpenAI', value: 'openai' },
+                        { label: '阿里通义 (DashScope)', value: 'dashscope' },
+                        { label: 'Ollama (本地)', value: 'ollama' },
+                      ]}
+                      onChange={(val) => setSelectedEmbedProvider(val)}
+                      placeholder="请选择"
+                    />
+                  </Form.Item>
+
+                  <Form.Item
+                    name="embedding_model"
+                    label="Embedding 模型"
+                  >
+                    <Select
+                      options={EMBEDDING_MODELS[selectedEmbedProvider] || []}
+                      placeholder="请选择模型"
+                      showSearch
+                    />
+                  </Form.Item>
+
+                  <Form.Item>
+                    <Button type="primary" icon={<SaveOutlined />} onClick={handleSaveEmbedding} loading={saving}>
+                      保存设置
+                    </Button>
+                  </Form.Item>
+                </Form>
+              </Card>
+            ),
+          },
+          {
+            key: 'data',
+            label: '我的数据',
+            children: (
+              <Card title="导出私人学习数据">
+                <Text type="secondary">下载知识库信息、知识点、卡片、练习和学习记录的 JSON 备份。原始文档可在各知识库中单独下载。</Text>
+                <div style={{ marginTop: 20 }}>
+                  <Button icon={<DownloadOutlined />} onClick={async () => {
+                    const data = await exportLearningData();
+                    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+                    const link = document.createElement('a'); link.href = url; link.download = `拾光学习数据-${new Date().toISOString().slice(0,10)}.json`; link.click(); URL.revokeObjectURL(url);
+                  }}>导出学习数据</Button>
+                </div>
+              </Card>
+            ),
+          },
+          {
+            key: 'system',
+            label: '系统信息',
+            children: (
+              <Card>
+                {systemInfo ? (
+                  <Descriptions bordered column={1}>
+                    <Descriptions.Item label="系统版本">
+                      <Tag color="blue">v{systemInfo.version}</Tag>
+                    </Descriptions.Item>
+                    <Descriptions.Item label="工作区数量">
+                      {systemInfo.total_workspaces}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="文档总数">
+                      {systemInfo.total_documents}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="知识片段总数">
+                      {systemInfo.total_chunks}
+                    </Descriptions.Item>
+                    <Descriptions.Item label="后端运行时间">
+                      {Math.floor(systemInfo.backend_uptime / 3600)}小时
+                      {Math.floor((systemInfo.backend_uptime % 3600) / 60)}分钟
+                    </Descriptions.Item>
+                  </Descriptions>
+                ) : (
+                  <Text type="secondary">
+                    <InfoCircleOutlined /> 无法获取系统信息
+                  </Text>
+                )}
+              </Card>
+            ),
+          },
+        ]}
+      />
+    </div>
+  );
+};
+
+export default Settings;

@@ -1,0 +1,58 @@
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node / frontend build output
+node_modules/
+dist/
+build/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Runtime data, uploads, and local databases
+data/
+backend/data/
+uploads/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Local test and generated output
+.playwright-cli/
+.playwright-mcp/
+.superpowers/
+.worktrees/
+dogfood-output/
+output/
+tmp/
+test-results/
+playwright-report/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+~$*

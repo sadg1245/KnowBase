@@ -1,0 +1,209 @@
+"""
+EmbeddingService — 多提供商文本向量化服务
+
+支持两种 embedding 提供商：
+- local: 使用 sentence-transformers 本地模型（默认 BAAI/bge-small-zh-v1.5）
+- openai: 通过 litellm 调用 OpenAI embedding API
+"""
+
+import asyncio
+from typing import Optional
+
+from loguru import logger
+
+
+class EmbeddingService:
+    """多提供商文本向量化服务"""
+
+    # 默认模型配置
+    DEFAULT_MODELS = {
+        "local": "BAAI/bge-small-zh-v1.5",
+        "openai": "text-embedding-3-small",
+    }
+
+    # 各模型对应的向量维度
+    MODEL_DIMENSIONS = {
+        "BAAI/bge-small-zh-v1.5": 512,
+        "text-embedding-3-small": 1536,
+    }
+
+    def __init__(self, provider: str = "local", model_name: Optional[str] = None):
+        """
+        初始化 EmbeddingService。
+
+        Args:
+            provider: 提供商名称，支持 "local" 和 "openai"
+            model_name: 模型名称，为 None 时使用提供商默认模型
+        """
+        self.provider = provider
+        self.model_name = model_name or self.DEFAULT_MODELS.get(provider)
+        self._model = None  # 延迟加载本地模型
+        self._dimension: Optional[int] = None
+
+        if not self.model_name:
+            raise ValueError(f"未知的 embedding 提供商: {provider}，且未指定模型名称")
+
+        logger.info(f"EmbeddingService 初始化完成: provider={provider}, model={self.model_name}")
+
+    def _load_local_model(self):
+        """延迟加载 sentence-transformers 本地模型"""
+        if self._model is None:
+            try:
+                from sentence_transformers import SentenceTransformer
+
+                logger.info(f"正在加载本地 embedding 模型: {self.model_name}")
+                self._model = SentenceTransformer(self.model_name)
+                logger.info(f"本地 embedding 模型加载完成: {self.model_name}")
+            except ImportError:
+                raise ImportError(
+                    "使用本地 embedding 需要安装 sentence-transformers: "
+                    "pip install sentence-transformers"
+                )
+            except Exception as e:
+                logger.error(f"加载本地 embedding 模型失败: {e}")
+                raise
+
+    def get_dimension(self) -> int:
+        """
+        获取当前模型的向量维度。
+
+        Returns:
+            向量维度整数
+        """
+        if self._dimension is not None:
+            return self._dimension
+
+        # 先尝试从已知配置中获取
+        if self.model_name in self.MODEL_DIMENSIONS:
+            self._dimension = self.MODEL_DIMENSIONS[self.model_name]
+            return self._dimension
+
+        # 本地模型：加载后获取维度
+        if self.provider == "local":
+            self._load_local_model()
+            self._dimension = self._model.get_sentence_embedding_dimension()
+            return self._dimension
+
+        # 远程模型：发送一次请求获取维度
+        if self.provider == "openai":
+            self._dimension = self.MODEL_DIMENSIONS.get(self.model_name, 1536)
+            return self._dimension
+
+        # 兜底
+        logger.warning(f"无法确定模型 {self.model_name} 的维度，默认返回 512")
+        self._dimension = 512
+        return self._dimension
+
+    async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        """
+        批量向量化文本。
+
+        Args:
+            texts: 待向量化的文本列表
+
+        Returns:
+            与输入顺序对应的向量列表
+
+        Raises:
+            ValueError: 输入为空
+            RuntimeError: 向量化过程出错
+        """
+        if not texts:
+            return []
+
+        try:
+            if self.provider == "local":
+                return await self._embed_local(texts)
+            elif self.provider == "openai":
+                return await self._embed_openai(texts)
+            else:
+                raise ValueError(f"不支持的 embedding 提供商: {self.provider}")
+        except Exception as e:
+            logger.error(f"批量向量化失败: {e}")
+            raise RuntimeError(f"批量向量化失败: {e}") from e
+
+    async def embed_query(self, query: str) -> list[float]:
+        """
+        向量化单条查询文本。
+
+        Args:
+            query: 查询文本
+
+        Returns:
+            向量列表
+
+        Raises:
+            RuntimeError: 向量化过程出错
+        """
+        results = await self.embed_texts([query])
+        return results[0]
+
+    async def _embed_local(self, texts: list[str]) -> list[list[float]]:
+        """使用 sentence-transformers 本地推理"""
+        self._load_local_model()
+
+        def _run():
+            # sentence-transformers 的 encode 是同步的，放到线程池执行
+            embeddings = self._model.encode(
+                texts,
+                normalize_embeddings=True,
+                show_progress_bar=False,
+                batch_size=64,
+            )
+            return embeddings.tolist()
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _run)
+
+    async def _embed_openai(self, texts: list[str]) -> list[list[float]]:
+        """通过 litellm 调用 OpenAI embedding API"""
+        try:
+            import litellm
+        except ImportError:
+            raise ImportError(
+                "使用 OpenAI embedding 需要安装 litellm: pip install litellm"
+            )
+
+        try:
+            response = await litellm.aembedding(
+                model=self.model_name,
+                input=texts,
+            )
+            # 按 index 排序以确保顺序正确
+            sorted_data = sorted(response.data, key=lambda x: x.index)
+            return [item.embedding for item in sorted_data]
+        except Exception as e:
+            logger.error(f"OpenAI embedding 调用失败: {e}")
+            raise
+
+
+# ---------------------------------------------------------------------------
+# 工厂函数：供 Celery 任务和 API 路由统一调用
+# ---------------------------------------------------------------------------
+
+_embedding_service_instance: Optional[EmbeddingService] = None
+
+
+def get_embedding_service() -> EmbeddingService:
+    """根据应用配置返回全局单例 EmbeddingService。
+
+    读取 ``DEFAULT_EMBEDDING_PROVIDER`` 和 ``DEFAULT_EMBEDDING_MODEL``
+    环境变量（由 .env / config.py 提供），自动选择 local 或 openai 后端。
+    """
+    global _embedding_service_instance
+    if _embedding_service_instance is not None:
+        return _embedding_service_instance
+
+    from app.config import settings
+
+    provider = settings.DEFAULT_EMBEDDING_PROVIDER  # "local" | "openai"
+    if provider == "local":
+        model_name = settings.DEFAULT_EMBEDDING  # 本地模型名
+    else:
+        model_name = settings.DEFAULT_EMBEDDING_MODEL  # 远程模型名
+
+    _embedding_service_instance = EmbeddingService(
+        provider=provider,
+        model_name=model_name,
+    )
+    return _embedding_service_instance
