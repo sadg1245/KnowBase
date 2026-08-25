@@ -103,6 +103,30 @@ class ParserStructureMetadataTests(unittest.TestCase):
         self.assertIsNone(chunks[0]["metadata"]["heading_level"])
         self.assertEqual(chunks[0]["metadata"]["section_path"], [])
 
+    def test_docx_preserves_heading_levels_through_nine(self):
+        """Ignoring Heading 7 or Heading 9 would collapse deep sections into body text."""
+        from docx import Document as DocxDocument
+
+        with tempfile.TemporaryDirectory() as directory:
+            docx_path = os.path.join(directory, "deep-headings.docx")
+            document = DocxDocument()
+            document.add_heading("Chapter 1", level=1)
+            document.add_paragraph("Chapter body")
+            document.add_heading("Deep heading", level=7)
+            document.add_paragraph("Deep body")
+            document.add_heading("Terminal heading", level=9)
+            document.add_paragraph("Terminal body")
+            document.save(docx_path)
+
+            chunks = DocxParser().parse(docx_path)
+
+        self.assertEqual([chunk["metadata"]["heading_level"] for chunk in chunks], [1, 7, 9])
+        self.assertEqual(chunks[1]["metadata"]["section_path"], ["Chapter 1", "Deep heading"])
+        self.assertEqual(
+            chunks[2]["metadata"]["section_path"],
+            ["Chapter 1", "Deep heading", "Terminal heading"],
+        )
+
 
 class ChunkStructurePersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_upsert_persists_heading_level_and_json_section_path(self):

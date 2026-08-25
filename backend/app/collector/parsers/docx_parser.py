@@ -44,7 +44,7 @@ class DocxParser(BaseParser):
     def _is_heading(style_name: str | None) -> bool:
         """如果 *style_name* 表示标题样式则返回 True。"""
         level = DocxParser._heading_level(style_name)
-        return 1 <= level <= 6
+        return 1 <= level <= 9
 
     @staticmethod
     def _heading_level(style_name: str | None) -> int:
