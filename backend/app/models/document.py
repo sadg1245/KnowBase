@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, String, Text, Integer, DateTime, ForeignKey, func
+from sqlalchemy import Column, String, Text, Integer, DateTime, ForeignKey, JSON, func
 from sqlalchemy.orm import relationship
 
 from app.models.base import Base
@@ -38,6 +38,17 @@ class Document(Base):
     summary = Column(Text, nullable=True)
     outline = Column(Text, nullable=True)
     learning_status = Column(String(20), nullable=False, default="not_started")
+    tags = Column(JSON, nullable=False, default=list)
+    chapter_summaries = Column(JSON, nullable=False, default=list)
+    core_concepts = Column(JSON, nullable=False, default=list)
+    important_terms = Column(JSON, nullable=False, default=list)
+    common_mistakes = Column(JSON, nullable=False, default=list)
+    prerequisites = Column(JSON, nullable=False, default=list)
+    learning_order = Column(JSON, nullable=False, default=list)
+    review_points = Column(JSON, nullable=False, default=list)
+    learning_error_message = Column(Text, nullable=True)
+    processed_at = Column(DateTime(timezone=True), nullable=True)
+    learning_generated_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,

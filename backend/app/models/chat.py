@@ -99,6 +99,8 @@ class DocumentChunk(Base):
     source_file = Column(String(512), nullable=False)
     page_num = Column(Integer, nullable=True)
     heading = Column(String(512), nullable=True)
+    heading_level = Column(Integer, nullable=True)
+    section_path = Column(JSON, nullable=False, default=list)
     chunk_index = Column(Integer, nullable=False, default=0)
     content = Column(Text, nullable=False)
     tokenized_content = Column(Text, nullable=False)

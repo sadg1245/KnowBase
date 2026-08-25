@@ -35,6 +35,13 @@ class KnowledgePointUpdate(BaseModel):
     difficulty: Optional[int] = Field(None, ge=1, le=5)
     mastery: Optional[float] = Field(None, ge=0, le=1)
     tags: Optional[list[str]] = None
+    is_key: Optional[bool] = None
+    mastery_status: Optional[Literal["not_started", "learning", "mastered"]] = None
+
+
+class KnowledgePointMerge(BaseModel):
+    target_id: str
+    source_ids: list[str] = Field(..., min_length=1, max_length=50)
 
 
 class FlashcardCreate(BaseModel):

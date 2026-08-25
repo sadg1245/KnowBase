@@ -51,6 +51,11 @@ class WorkspaceDetailResponse(WorkspaceResponse):
 # 文档 Schema
 # ---------------------------------------------------------------------------
 
+class DocumentUpdate(BaseModel):
+    filename: Optional[str] = Field(None, min_length=1, max_length=512)
+    tags: Optional[list[str]] = Field(None, max_length=30)
+
+
 class DocumentResponse(BaseModel):
     id: str
     workspace_id: str
@@ -63,6 +68,17 @@ class DocumentResponse(BaseModel):
     summary: Optional[str] = None
     outline: Optional[str] = None
     learning_status: str = "not_started"
+    tags: list[str] = Field(default_factory=list)
+    chapter_summaries: list[Any] = Field(default_factory=list)
+    core_concepts: list[Any] = Field(default_factory=list)
+    important_terms: list[Any] = Field(default_factory=list)
+    common_mistakes: list[Any] = Field(default_factory=list)
+    prerequisites: list[Any] = Field(default_factory=list)
+    learning_order: list[Any] = Field(default_factory=list)
+    review_points: list[Any] = Field(default_factory=list)
+    learning_error_message: Optional[str] = None
+    processed_at: Optional[datetime] = None
+    learning_generated_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 
@@ -74,6 +90,10 @@ class DocumentStatusResponse(BaseModel):
     status: str
     chunk_count: int
     error_message: Optional[str] = None
+    learning_status: str = "not_started"
+    learning_error_message: Optional[str] = None
+    processed_at: Optional[datetime] = None
+    learning_generated_at: Optional[datetime] = None
 
 
 # ---------------------------------------------------------------------------

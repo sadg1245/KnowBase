@@ -46,6 +46,8 @@ class KnowledgePoint(Base):
     difficulty = Column(Integer, nullable=False, default=2)
     mastery = Column(Float, nullable=False, default=0.0)
     tags = Column(JSON, nullable=False, default=list)
+    is_key = Column(Boolean, nullable=False, default=False)
+    mastery_status = Column(String(20), nullable=False, default="not_started", index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now(), onupdate=_now)
 
