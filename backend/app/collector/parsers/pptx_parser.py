@@ -169,6 +169,8 @@ class PptxParser(BaseParser):
                     "metadata": {
                         "page_num": slide_index,
                         "heading": slide_title,
+                        "heading_level": 1 if slide_title else None,
+                        "section_path": [slide_title] if slide_title else [],
                         "source_file": source_file,
                     },
                 })

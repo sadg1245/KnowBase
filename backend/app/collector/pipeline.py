@@ -2,6 +2,7 @@
 
 import csv
 import io
+import json
 import os
 from typing import Any
 
@@ -119,6 +120,8 @@ class _XlsxParser(BaseParser):
                             str(cell) if cell is not None else "" for cell in row
                         ]
                         break
+                    if any(cell.strip() for cell in header_row):
+                        lines.append(" | ".join(header_row))
 
                     # 将每个数据行转换为文本
                     for row in ws.iter_rows(min_row=2, values_only=True):
@@ -147,6 +150,8 @@ class _XlsxParser(BaseParser):
                         "metadata": {
                             "page_num": sheet_index,
                             "heading": sheet_name,
+                            "heading_level": 1,
+                            "section_path": [sheet_name],
                             "source_file": source_file,
                         },
                     })
@@ -525,6 +530,10 @@ class DocumentPipeline:
                 meta["doc_id"] = document_id
                 meta["workspace_id"] = workspace_id
                 meta["chunk_index"] = idx
+                meta["section_path"] = json.dumps(
+                    meta.get("section_path") or [],
+                    ensure_ascii=False,
+                )
                 metadatas.append(meta)
 
             doc_ids = [f"{document_id}_chunk_{idx}" for idx in range(len(texts))]

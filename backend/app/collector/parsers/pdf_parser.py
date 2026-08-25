@@ -50,21 +50,34 @@ class PDFParser(BaseParser):
             # 从 PDF 目录（书签 / 大纲）构建 页码 -> 标题 查找表。
             # ``get_toc`` 返回 [level, title, page_number] 条目的列表。
             # ------------------------------------------------------------------
-            toc_headings: dict[int, str] = {}
+            toc_entries: list[tuple[int, int, str]] = []
             try:
                 toc = doc.get_toc(simple=True)
-                for _level, title, page_num in toc:
+                for level, title, page_num in toc:
                     # 目录中的 page_num 从 1 开始
-                    if page_num >= 1 and title:
-                        toc_headings[page_num] = title.strip()
+                    title = title.strip()
+                    if page_num >= 1 and title and level >= 1:
+                        toc_entries.append((page_num, level, title))
+                toc_entries.sort(key=lambda entry: entry[0])
             except Exception as exc:
                 logger.debug("Could not extract TOC from {}: {}", source_file, exc)
 
             total_pages = len(doc)
             scanned_page_count = 0  # 无可提取文本的页面数
+            toc_index = 0
+            heading_stack: list[str] = []
+            current_heading = ""
+            current_heading_level: int | None = None
 
             for page_index in range(total_pages):
                 page_num = page_index + 1  # 从 1 开始
+                while toc_index < len(toc_entries) and toc_entries[toc_index][0] <= page_num:
+                    _, level, title = toc_entries[toc_index]
+                    heading_stack = heading_stack[:level - 1]
+                    heading_stack.append(title)
+                    current_heading = title
+                    current_heading_level = level
+                    toc_index += 1
                 try:
                     page = doc.load_page(page_index)
                     text = page.get_text("text")  # UTF-8，支持 CJK
@@ -80,12 +93,11 @@ class PDFParser(BaseParser):
                 if not text:
                     scanned_page_count += 1
 
-                # 确定标题：优先使用目录条目，否则留空
-                heading = toc_headings.get(page_num, "")
-
                 metadata: dict[str, Any] = {
                     "page_num": page_num,
-                    "heading": heading,
+                    "heading": current_heading,
+                    "heading_level": current_heading_level,
+                    "section_path": list(heading_stack),
                     "source_file": source_file,
                 }
 

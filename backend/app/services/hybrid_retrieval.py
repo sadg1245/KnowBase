@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import asyncio
+import json
 from dataclasses import dataclass
 from collections.abc import Sequence
 
@@ -47,6 +48,18 @@ def build_fts_match_query(value: str) -> str:
     """Build an AND query where every token is a quoted FTS literal."""
     tokens = _search_tokens(value)
     return " AND ".join(f'"{token.replace(chr(34), chr(34) * 2)}"' for token in tokens)
+
+
+def _section_path(value: object) -> list[str]:
+    """Normalize stored or Chroma-serialized paths for the JSON DB column."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
 
 
 def weighted_rrf(
@@ -123,6 +136,8 @@ async def upsert_document_chunks(
         row.source_file = source_file
         row.page_num = metadata.get("page_num")
         row.heading = metadata.get("heading")
+        row.heading_level = metadata.get("heading_level")
+        row.section_path = _section_path(metadata.get("section_path"))
         row.chunk_index = index
         row.content = content
         row.tokenized_content = tokenize_for_search(content)
@@ -174,6 +189,8 @@ async def backfill_keyword_index(db: AsyncSession, chroma_client, batch_size: in
                     source_file=metadata.get("source_file", document.filename),
                     page_num=metadata.get("page_num"),
                     heading=metadata.get("heading"),
+                    heading_level=metadata.get("heading_level"),
+                    section_path=_section_path(metadata.get("section_path")),
                     chunk_index=int(metadata.get("chunk_index", index)),
                     content=content,
                     tokenized_content=tokenize_for_search(content),

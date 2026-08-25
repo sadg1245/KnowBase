@@ -43,9 +43,8 @@ class DocxParser(BaseParser):
     @staticmethod
     def _is_heading(style_name: str | None) -> bool:
         """如果 *style_name* 表示标题样式则返回 True。"""
-        if not style_name:
-            return False
-        return style_name.lower().startswith("heading")
+        level = DocxParser._heading_level(style_name)
+        return 1 <= level <= 6
 
     @staticmethod
     def _heading_level(style_name: str | None) -> int:
@@ -100,21 +99,22 @@ class DocxParser(BaseParser):
 
         chunks: list[dict[str, Any]] = []
         current_heading: str = ""
-        current_level: int = 0
+        current_level: int | None = None
         current_lines: list[str] = []
-        section_counter: int = 0
+        heading_stack: list[str] = []
 
         def _flush():
             """将累积的章节保存为一个块。"""
-            nonlocal current_lines, section_counter
+            nonlocal current_lines
             text = "\n".join(current_lines).strip()
             if text:
-                section_counter += 1
                 chunks.append({
                     "content": text,
                     "metadata": {
-                        "page_num": section_counter,
+                        "page_num": None,
                         "heading": current_heading,
+                        "heading_level": current_level,
+                        "section_path": list(heading_stack),
                         "source_file": source_file,
                     },
                 })
@@ -135,6 +135,8 @@ class DocxParser(BaseParser):
                     _flush()
                     current_heading = text
                     current_level = self._heading_level(style_name)
+                    heading_stack = heading_stack[:current_level - 1]
+                    heading_stack.append(text)
                     # 标题本身成为新块的第一行
                     current_lines.append(text)
                 else:
