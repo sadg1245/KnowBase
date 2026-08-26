@@ -167,24 +167,24 @@ async def _mark_learning_failed(db_session: Any, document_id: str, exc: Exceptio
 
 def _is_transient_exception(exc: Exception) -> bool:
     """Retry known transport/service failures, including wrapped LiteLLM errors."""
-    try:
-        import litellm
-
-        litellm_transient_errors = (
-            litellm.Timeout,
-            litellm.APIConnectionError,
-            litellm.RateLimitError,
-            litellm.ServiceUnavailableError,
-            litellm.InternalServerError,
-        )
-    except (ImportError, AttributeError):
-        litellm_transient_errors = ()
+    litellm_transient_names = {
+        "Timeout",
+        "APIConnectionError",
+        "RateLimitError",
+        "ServiceUnavailableError",
+        "InternalServerError",
+    }
 
     current: BaseException | None = exc
     visited: set[int] = set()
     while current is not None and id(current) not in visited:
         visited.add(id(current))
-        if isinstance(current, (ConnectionError, TimeoutError, OSError, *litellm_transient_errors)):
+        error_type = type(current)
+        is_litellm_transient = (
+            error_type.__name__ in litellm_transient_names
+            and error_type.__module__.split(".", 1)[0] == "litellm"
+        )
+        if isinstance(current, (ConnectionError, TimeoutError, OSError)) or is_litellm_transient:
             return True
         status_code = getattr(current, "status_code", None)
         response = getattr(current, "response", None)
@@ -280,9 +280,9 @@ if celery_app is not None:
             )
 
             # 如果未超过重试上限则尝试重试
-            try:
+            if self.request.retries < self.max_retries:
                 raise self.retry(exc=exc)
-            except self.MaxRetriesExceededError:
+            if self.request.retries >= self.max_retries:
                 logger.error(
                     "[Celery] Max retries exceeded for document {}. "
                     "Marking as failed.",

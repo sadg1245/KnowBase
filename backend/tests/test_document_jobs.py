@@ -199,21 +199,17 @@ class DocumentJobDispatchTests(unittest.IsolatedAsyncioTestCase):
 
 class LearningGenerationRetryTests(unittest.TestCase):
     def test_litellm_transient_errors_are_recognized_through_learning_error(self):
-        import litellm
-
-        error_types = [
-            litellm.Timeout,
-            litellm.APIConnectionError,
-            litellm.RateLimitError,
-            litellm.ServiceUnavailableError,
-            litellm.InternalServerError,
+        error_names = [
+            "Timeout",
+            "APIConnectionError",
+            "RateLimitError",
+            "ServiceUnavailableError",
+            "InternalServerError",
         ]
-        for error_type in error_types:
-            with self.subTest(error_type=error_type.__name__):
-                if error_type is litellm.Timeout:
-                    transient = error_type("timeout", "model", "provider")
-                else:
-                    transient = error_type("temporary", "provider", "model")
+        for error_name in error_names:
+            with self.subTest(error_type=error_name):
+                error_type = type(error_name, (Exception,), {"__module__": "litellm.exceptions"})
+                transient = error_type("temporary")
                 try:
                     raise LearningGenerationError("generation failed") from transient
                 except LearningGenerationError as wrapped:
@@ -271,3 +267,51 @@ class LearningGenerationRetryTests(unittest.TestCase):
         self.assertEqual(attempts, 4)
         self.assertEqual(result.result["status"], "failed")
         self.assertEqual(document.learning_status, "failed")
+
+
+class DocumentProcessingRetryTests(unittest.TestCase):
+    def test_four_eager_transient_failures_mark_document_failed(self):
+        class Session:
+            async def close(self):
+                return None
+
+        class FailingPipeline:
+            async def process_document(self, **_kwargs):
+                nonlocal attempts
+                attempts += 1
+                raise TimeoutError("temporary outage")
+
+            async def _update_document_status(self, _db, _document_id, **values):
+                document.status = values["status"]
+                document.error_message = values["error_message"]
+
+        document = Document(
+            id="document-id",
+            workspace_id="workspace-id",
+            filename="notes.txt",
+            file_path="notes.txt",
+            file_type=".txt",
+            status="processing",
+        )
+        attempts = 0
+        original_eager = tasks.celery_app.conf.task_always_eager
+        original_propagates = tasks.celery_app.conf.task_eager_propagates
+        tasks.celery_app.conf.update(task_always_eager=True, task_eager_propagates=False)
+        try:
+            with patch("app.collector.tasks._get_db_session", side_effect=Session), patch(
+                "app.collector.tasks._build_pipeline",
+                side_effect=FailingPipeline,
+            ):
+                result = tasks.process_document_task.apply(
+                    args=(document.id, document.file_path, document.file_type, document.workspace_id)
+                )
+        finally:
+            tasks.celery_app.conf.update(
+                task_always_eager=original_eager,
+                task_eager_propagates=original_propagates,
+            )
+
+        self.assertEqual(attempts, 4)
+        self.assertEqual(result.result["status"], "failed")
+        self.assertEqual(document.status, "failed")
+        self.assertEqual(document.error_message, "temporary outage")
