@@ -16,6 +16,7 @@ from app.config import Settings
 from app.models.document import Document
 from app.models.workspace import Workspace
 from app.models.learning import KnowledgePoint
+from app.services.document_jobs import enqueue_document_processing
 from app.schemas.schemas import (
     DocumentResponse,
     DocumentStatusResponse,
@@ -302,21 +303,19 @@ async def upload_documents(
         await db.flush()
         await db.refresh(document)
 
-        # 分发到 Celery worker 异步处理（含向量生成）
+        document.status = "processing"
+        await db.flush()
+        await db.commit()
+
+        # Dispatch only after another worker session can see the processing state.
         try:
-            from app.collector.tasks import process_document_task
-            process_document_task.delay(
-                document_id=document.id,
-                file_path=save_path,
-                file_type=document.file_type,
-                workspace_id=workspace_id,
-            )
-            document.status = "processing"
-            await db.flush()
+            enqueue_document_processing(document)
             logger.info("Dispatched document '{}' to Celery worker", document.id)
         except Exception as celery_exc:
-            logger.warning("Celery dispatch failed ({}) — running inline fallback", celery_exc)
-            await _process_document(db, document, settings)
+            document.status = "failed"
+            document.error_message = f"Queue dispatch failed: {celery_exc}"[:1000]
+            await db.commit()
+            logger.warning("Celery dispatch failed for '{}': {}", document.id, celery_exc)
         await db.refresh(document)
 
         responses.append(

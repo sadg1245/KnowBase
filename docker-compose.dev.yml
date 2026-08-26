@@ -25,7 +25,7 @@ services:
     volumes:
       - ./backend:/app
       - /app/__pycache__
-    command: celery -A app.worker worker --loglevel=debug --concurrency=2 --pool=solo
+    command: celery -A app.collector.tasks worker --loglevel=debug --concurrency=2 --pool=solo
     environment:
       - LOG_LEVEL=DEBUG
 

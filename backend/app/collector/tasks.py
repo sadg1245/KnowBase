@@ -13,6 +13,7 @@ import asyncio
 from typing import Any
 
 from loguru import logger
+from sqlalchemy import select
 
 # ---------------------------------------------------------------------------
 # 尝试创建 Celery 应用。如果未安装 Celery，则将 ``celery_app`` 设为
@@ -102,6 +103,78 @@ def _build_pipeline() -> Any:
     )
 
 
+async def _queue_learning_generation(db_session: Any, document_id: str) -> None:
+    """Persist the learning job state before asking Celery to execute it."""
+    from app.models.document import Document
+
+    document = (await db_session.execute(
+        select(Document).where(Document.id == document_id)
+    )).scalar_one_or_none()
+    if document is None:
+        raise ValueError(f"Document {document_id} was not found after processing")
+
+    document.learning_status = "queued"
+    document.learning_error_message = None
+    await db_session.commit()
+
+    try:
+        from app.services.document_jobs import enqueue_learning_generation
+
+        enqueue_learning_generation(document_id)
+    except Exception as exc:
+        document.learning_status = "failed"
+        document.learning_error_message = f"Learning queue dispatch failed: {exc}"[:1000]
+        await db_session.commit()
+        logger.exception("Failed to dispatch learning generation for {}", document_id)
+
+
+async def _generate_learning_content(db_session: Any, document_id: str) -> dict[str, Any]:
+    """Run one durable learning-generation attempt in the worker session."""
+    from app.config import settings
+    from app.models.document import Document
+    from app.services.learning_content import generate_document_learning_content
+
+    document = (await db_session.execute(
+        select(Document).where(Document.id == document_id)
+    )).scalar_one_or_none()
+    if document is None:
+        raise ValueError(f"Document {document_id} was not found")
+
+    document.learning_status = "generating"
+    document.learning_error_message = None
+    await db_session.commit()
+    await generate_document_learning_content(db_session, document_id, settings)
+    await db_session.commit()
+    return {"document_id": document_id, "status": "ready"}
+
+
+async def _mark_learning_failed(db_session: Any, document_id: str, exc: Exception) -> None:
+    """Make terminal worker errors visible on the document record."""
+    await db_session.rollback()
+    from app.models.document import Document
+
+    document = (await db_session.execute(
+        select(Document).where(Document.id == document_id)
+    )).scalar_one_or_none()
+    if document is None:
+        return
+    document.learning_status = "failed"
+    document.learning_error_message = str(exc)[:1000]
+    await db_session.commit()
+
+
+def _is_transient_exception(exc: Exception) -> bool:
+    """Retry network and operating-system failures, not validation failures."""
+    current: BaseException | None = exc
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        if isinstance(current, (ConnectionError, TimeoutError, OSError)):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 # ---------------------------------------------------------------------------
 # Celery 任务
 # ---------------------------------------------------------------------------
@@ -169,6 +242,10 @@ if celery_app is not None:
                         db_session=db_session,
                     )
                 )
+                if result.get("status") == "ready":
+                    loop.run_until_complete(
+                        _queue_learning_generation(db_session, document_id)
+                    )
             finally:
                 loop.close()
 
@@ -222,39 +299,71 @@ if celery_app is not None:
                 except Exception:
                     pass
 
-else:
-    # Celery 不可用——提供一个桩函数以避免导入失败
-    def process_document_task(  # type: ignore[misc]
+
+    @celery_app.task(
+        name="collector.generate_learning_content",
+        bind=True,
+        max_retries=3,
+        default_retry_delay=30,
+        acks_late=True,
+    )
+    def generate_learning_content_task(
+        self,
         document_id: str,
-        file_path: str,
-        file_type: str,
-        workspace_id: str,
     ) -> dict[str, Any]:
-        """桩函数：当未安装 Celery 时同步运行流水线。"""
-        logger.warning(
-            "Celery not available. Running process_document_task synchronously.",
-        )
-        pipeline = _build_pipeline()
-        db_session = _get_db_session()
-
-        loop = asyncio.new_event_loop()
+        """Generate learning material after document parsing has completed."""
+        db_session = None
         try:
-            result = loop.run_until_complete(
-                pipeline.process_document(
-                    document_id=document_id,
-                    file_path=file_path,
-                    file_type=file_type,
-                    workspace_id=workspace_id,
-                    db_session=db_session,
-                )
-            )
-        finally:
-            loop.close()
+            db_session = _get_db_session()
+            loop = asyncio.new_event_loop()
             try:
-                close_loop = asyncio.new_event_loop()
-                close_loop.run_until_complete(db_session.close())
-                close_loop.close()
-            except Exception:
-                pass
+                return loop.run_until_complete(
+                    _generate_learning_content(db_session, document_id)
+                )
+            finally:
+                loop.close()
+        except Exception as exc:
+            logger.error("[Celery] Learning generation failed for {}: {}", document_id, exc)
+            if _is_transient_exception(exc):
+                if db_session is not None:
+                    loop = asyncio.new_event_loop()
+                    try:
+                        loop.run_until_complete(db_session.rollback())
+                    finally:
+                        loop.close()
+                try:
+                    raise self.retry(exc=exc)
+                except self.MaxRetriesExceededError:
+                    pass
 
-        return result
+            if db_session is not None:
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(
+                        _mark_learning_failed(db_session, document_id, exc)
+                    )
+                finally:
+                    loop.close()
+            return {
+                "document_id": document_id,
+                "status": "failed",
+                "error": str(exc),
+            }
+        finally:
+            if db_session is not None:
+                loop = asyncio.new_event_loop()
+                try:
+                    loop.run_until_complete(db_session.close())
+                finally:
+                    loop.close()
+
+else:
+    class _UnavailableTask:
+        """Reject dispatch when Celery is unavailable; never run work inline."""
+
+        def delay(self, **_kwargs: Any) -> None:
+            raise RuntimeError("Celery is unavailable")
+
+
+    process_document_task = _UnavailableTask()
+    generate_learning_content_task = _UnavailableTask()
