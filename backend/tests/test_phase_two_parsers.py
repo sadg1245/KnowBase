@@ -127,6 +127,28 @@ class ParserStructureMetadataTests(unittest.TestCase):
             ["Chapter 1", "Deep heading", "Terminal heading"],
         )
 
+    def test_docx_replaces_skipped_heading_level_without_retaining_deeper_paths(self):
+        """Slicing by list length leaves old deep headings after a skipped-level fallback."""
+        from docx import Document as DocxDocument
+
+        with tempfile.TemporaryDirectory() as directory:
+            docx_path = os.path.join(directory, "skipped-level-fallback.docx")
+            document = DocxDocument()
+            document.add_heading("Chapter 1", level=1)
+            document.add_heading("Deep branch A", level=7)
+            document.add_heading("Terminal branch", level=9)
+            document.add_paragraph("Terminal body")
+            document.add_heading("Deep branch B", level=7)
+            document.add_paragraph("Replacement body")
+            document.save(docx_path)
+
+            chunks = DocxParser().parse(docx_path)
+
+        self.assertEqual(
+            chunks[-1]["metadata"]["section_path"],
+            ["Chapter 1", "Deep branch B"],
+        )
+
 
 class ChunkStructurePersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def test_upsert_persists_heading_level_and_json_section_path(self):

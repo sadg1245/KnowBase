@@ -101,7 +101,7 @@ class DocxParser(BaseParser):
         current_heading: str = ""
         current_level: int | None = None
         current_lines: list[str] = []
-        heading_stack: list[str] = []
+        heading_stack: list[tuple[int, str]] = []
 
         def _flush():
             """将累积的章节保存为一个块。"""
@@ -114,7 +114,7 @@ class DocxParser(BaseParser):
                         "page_num": None,
                         "heading": current_heading,
                         "heading_level": current_level,
-                        "section_path": list(heading_stack),
+                        "section_path": [title for _, title in heading_stack],
                         "source_file": source_file,
                     },
                 })
@@ -135,8 +135,10 @@ class DocxParser(BaseParser):
                     _flush()
                     current_heading = text
                     current_level = self._heading_level(style_name)
-                    heading_stack = heading_stack[:current_level - 1]
-                    heading_stack.append(text)
+                    heading_stack = [
+                        entry for entry in heading_stack if entry[0] < current_level
+                    ]
+                    heading_stack.append((current_level, text))
                     # 标题本身成为新块的第一行
                     current_lines.append(text)
                 else:
