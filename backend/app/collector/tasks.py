@@ -112,6 +112,8 @@ async def _queue_learning_generation(db_session: Any, document_id: str) -> None:
     )).scalar_one_or_none()
     if document is None:
         raise ValueError(f"Document {document_id} was not found after processing")
+    if document.status != "ready":
+        raise RuntimeError(f"Document {document_id} is not ready for learning generation")
 
     document.learning_status = "queued"
     document.learning_error_message = None
@@ -164,12 +166,30 @@ async def _mark_learning_failed(db_session: Any, document_id: str, exc: Exceptio
 
 
 def _is_transient_exception(exc: Exception) -> bool:
-    """Retry network and operating-system failures, not validation failures."""
+    """Retry known transport/service failures, including wrapped LiteLLM errors."""
+    try:
+        import litellm
+
+        litellm_transient_errors = (
+            litellm.Timeout,
+            litellm.APIConnectionError,
+            litellm.RateLimitError,
+            litellm.ServiceUnavailableError,
+            litellm.InternalServerError,
+        )
+    except (ImportError, AttributeError):
+        litellm_transient_errors = ()
+
     current: BaseException | None = exc
     visited: set[int] = set()
     while current is not None and id(current) not in visited:
         visited.add(id(current))
-        if isinstance(current, (ConnectionError, TimeoutError, OSError)):
+        if isinstance(current, (ConnectionError, TimeoutError, OSError, *litellm_transient_errors)):
+            return True
+        status_code = getattr(current, "status_code", None)
+        response = getattr(current, "response", None)
+        status_code = status_code or getattr(response, "status_code", None)
+        if status_code in {408, 429, 500, 501, 502, 503, 504}:
             return True
         current = current.__cause__ or current.__context__
     return False
@@ -324,17 +344,14 @@ if celery_app is not None:
                 loop.close()
         except Exception as exc:
             logger.error("[Celery] Learning generation failed for {}: {}", document_id, exc)
-            if _is_transient_exception(exc):
+            if _is_transient_exception(exc) and self.request.retries < self.max_retries:
                 if db_session is not None:
                     loop = asyncio.new_event_loop()
                     try:
                         loop.run_until_complete(db_session.rollback())
                     finally:
                         loop.close()
-                try:
-                    raise self.retry(exc=exc)
-                except self.MaxRetriesExceededError:
-                    pass
+                raise self.retry(exc=exc)
 
             if db_session is not None:
                 loop = asyncio.new_event_loop()

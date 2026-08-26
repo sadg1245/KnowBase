@@ -15,9 +15,11 @@ import app.models  # noqa: F401 - register all model metadata
 from app.api.routes.documents import upload_documents
 from app.config import Settings
 from app.collector import tasks
+from app.collector.pipeline import DocumentPipeline
 from app.models.base import Base
 from app.models.document import Document
 from app.models.workspace import Workspace
+from app.services.learning_content import LearningGenerationError
 
 
 class DocumentJobDispatchTests(unittest.IsolatedAsyncioTestCase):
@@ -144,3 +146,128 @@ class DocumentJobDispatchTests(unittest.IsolatedAsyncioTestCase):
 
         await asyncio.wait_for(observed.wait(), timeout=1)
         self.assertEqual(observed_statuses, ["queued"])
+
+    async def test_status_commit_failure_rolls_back_and_propagates(self):
+        class FailingSession:
+            rolled_back = False
+
+            async def execute(self, _statement):
+                return None
+
+            async def commit(self):
+                raise RuntimeError("database unavailable")
+
+            async def rollback(self):
+                self.rolled_back = True
+
+        db = FailingSession()
+        with self.assertRaisesRegex(RuntimeError, "database unavailable"):
+            await DocumentPipeline._update_document_status(
+                db,
+                "document-id",
+                status="ready",
+            )
+        self.assertTrue(db.rolled_back)
+
+    async def test_non_ready_document_is_not_queued_or_dispatched(self):
+        class Result:
+            def scalar_one_or_none(self):
+                return document
+
+        class DurableSession:
+            async def execute(self, _statement):
+                return Result()
+
+            async def commit(self):
+                raise AssertionError("a non-ready document must not be committed as queued")
+
+        document = Document(
+            id="document-id",
+            workspace_id=self.workspace_id,
+            filename="notes.txt",
+            file_path="notes.txt",
+            file_type=".txt",
+            status="processing",
+            learning_status="not_started",
+        )
+        with patch("app.services.document_jobs.enqueue_learning_generation") as dispatch:
+            with self.assertRaisesRegex(RuntimeError, "not ready"):
+                await tasks._queue_learning_generation(DurableSession(), document.id)
+        dispatch.assert_not_called()
+        self.assertEqual(document.learning_status, "not_started")
+
+
+class LearningGenerationRetryTests(unittest.TestCase):
+    def test_litellm_transient_errors_are_recognized_through_learning_error(self):
+        import litellm
+
+        error_types = [
+            litellm.Timeout,
+            litellm.APIConnectionError,
+            litellm.RateLimitError,
+            litellm.ServiceUnavailableError,
+            litellm.InternalServerError,
+        ]
+        for error_type in error_types:
+            with self.subTest(error_type=error_type.__name__):
+                if error_type is litellm.Timeout:
+                    transient = error_type("timeout", "model", "provider")
+                else:
+                    transient = error_type("temporary", "provider", "model")
+                try:
+                    raise LearningGenerationError("generation failed") from transient
+                except LearningGenerationError as wrapped:
+                    self.assertTrue(tasks._is_transient_exception(wrapped))
+
+    def test_four_eager_transient_failures_mark_learning_failed(self):
+        class Result:
+            def scalar_one_or_none(self):
+                return document
+
+        class Session:
+            async def execute(self, _statement):
+                return Result()
+
+            async def commit(self):
+                return None
+
+            async def rollback(self):
+                return None
+
+            async def close(self):
+                return None
+
+        document = Document(
+            id="document-id",
+            workspace_id="workspace-id",
+            filename="notes.txt",
+            file_path="notes.txt",
+            file_type=".txt",
+            status="ready",
+            learning_status="queued",
+        )
+        attempts = 0
+
+        async def always_timeout(_db, _document_id):
+            nonlocal attempts
+            attempts += 1
+            raise TimeoutError("temporary outage")
+
+        original_eager = tasks.celery_app.conf.task_always_eager
+        original_propagates = tasks.celery_app.conf.task_eager_propagates
+        tasks.celery_app.conf.update(task_always_eager=True, task_eager_propagates=False)
+        try:
+            with patch("app.collector.tasks._get_db_session", side_effect=Session), patch(
+                "app.collector.tasks._generate_learning_content",
+                side_effect=always_timeout,
+            ):
+                result = tasks.generate_learning_content_task.apply(args=(document.id,))
+        finally:
+            tasks.celery_app.conf.update(
+                task_always_eager=original_eager,
+                task_eager_propagates=original_propagates,
+            )
+
+        self.assertEqual(attempts, 4)
+        self.assertEqual(result.result["status"], "failed")
+        self.assertEqual(document.learning_status, "failed")

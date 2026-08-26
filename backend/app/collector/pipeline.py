@@ -386,15 +386,7 @@ class DocumentPipeline:
         这里使用通用的 SQLAlchemy 2.x 异步模式。请调整 ``Document`` 的导入
         路径以匹配你项目中的模型位置。
         """
-        try:
-            from app.models.document import Document  # 绝对导入
-        except ImportError:
-            logger.debug(
-                "app.models.document.Document not importable; "
-                "skipping DB status update for doc {}.",
-                document_id,
-            )
-            return
+        from app.models.document import Document
 
         try:
             from sqlalchemy import update
@@ -411,8 +403,13 @@ class DocumentPipeline:
             )
             try:
                 await db_session.rollback()
-            except Exception:
-                pass
+            except Exception as rollback_exc:
+                logger.error(
+                    "Failed to roll back document {} status update: {}",
+                    document_id,
+                    rollback_exc,
+                )
+            raise
 
     # ------------------------------------------------------------------ #
     # 主入口
