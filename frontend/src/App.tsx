@@ -13,6 +13,7 @@ import { AuthStatus, getAuthStatus, unlockVault } from './services/api';
 const Dashboard = lazy(() => import('./pages/Dashboard'));
 const Workspaces = lazy(() => import('./pages/Workspaces'));
 const KnowledgeBase = lazy(() => import('./pages/KnowledgeBase'));
+const DocumentDetail = lazy(() => import('./pages/DocumentDetail'));
 const Upload = lazy(() => import('./pages/Upload'));
 const LearningChat = lazy(() => import('./pages/LearningChat'));
 const ReviewCenter = lazy(() => import('./pages/ReviewCenter'));
@@ -93,6 +94,7 @@ const AppContent: React.FC = () => {
             <Route path="/knowledge" element={<Workspaces />} />
             <Route path="/workspaces" element={<Workspaces />} />
             <Route path="/knowledge/:id" element={<KnowledgeBase />} />
+            <Route path="/knowledge/:workspaceId/documents/:documentId" element={<DocumentDetail />} />
             <Route path="/workspaces/:id/documents" element={<KnowledgeBase />} />
             <Route path="/learn" element={<LearningChat />} />
             <Route path="/review" element={<ReviewCenter />} />

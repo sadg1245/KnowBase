@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { App, Button, Drawer, Space, Typography } from 'antd';
 import { FileTextOutlined, MenuOutlined } from '@ant-design/icons';
 
@@ -32,6 +32,7 @@ import { EvidenceDrawer } from '../components/learning/EvidenceDrawer';
 import { LearningModePanel } from '../components/learning/LearningModePanel';
 import { MobileLearningControls } from '../components/learning/MobileLearningControls';
 import { SessionSidebar } from '../components/learning/SessionSidebar';
+import { sourceDetailTarget } from '../features/learning/sourceNavigation';
 
 
 const { Text, Title } = Typography;
@@ -49,6 +50,7 @@ const historyMessage = (item: ChatMessage): DisplayMessage => ({
 
 const LearningChat: React.FC = () => {
   const { message } = App.useApp();
+  const navigate = useNavigate();
   const [params] = useSearchParams();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspacesLoading, setWorkspacesLoading] = useState(true);
@@ -71,6 +73,11 @@ const LearningChat: React.FC = () => {
   const pendingDocumentIdsRef = useRef<string[] | undefined>();
 
   const sessionState = useChatSessions();
+  const openSource = useCallback((item: SourceItem) => {
+    const target = workspaceId ? sourceDetailTarget(workspaceId, item) : null;
+    if (target) navigate(target);
+    else setSource(item);
+  }, [navigate, workspaceId]);
 
   const handleChatEvent = useCallback((event: ChatEvent) => {
     draftRef.current = applyChatEvent(draftRef.current, event as Record<string, unknown>);
@@ -288,7 +295,7 @@ const LearningChat: React.FC = () => {
         <ChatTranscript
           messages={messages}
           endRef={endRef}
-          onSource={setSource}
+          onSource={openSource}
           onSuggestion={(value) => void sendQuestion(value)}
           onCard={(item) => void action('卡片', () => createMessageCard(item.id))}
           onNote={(item) => void action('笔记', () => createMessageNote(item.id))}
@@ -301,7 +308,7 @@ const LearningChat: React.FC = () => {
     </div>
     <Drawer title="学习会话" placement="left" width={300} open={sessionsDrawer} onClose={() => setSessionsDrawer(false)} className="learning-session-drawer">{sessionSidebar}</Drawer>
     <Drawer title="学习设置" placement="bottom" height="82vh" open={settingsDrawer} onClose={() => setSettingsDrawer(false)} className="learning-settings-drawer">{modePanel}</Drawer>
-    <EvidenceDrawer source={source} onClose={() => setSource(null)} />
+    <EvidenceDrawer source={source} onClose={() => setSource(null)} onOpenSource={openSource} />
   </div>;
 };
 

@@ -35,7 +35,7 @@ export const ChatTranscript: React.FC<Props> = ({ messages, endRef, onSource, on
     <div className="learning-message-body">
       {item.role === 'assistant' && item.evidenceStatus ? <Tag className="learning-evidence-tag" color={item.evidenceStatus === 'supported' ? 'success' : item.evidenceStatus === 'error' ? 'error' : 'warning'}>{evidenceStatusLabel(item.evidenceStatus)}</Tag> : null}
       <div className="learning-message-content">{item.content
-        ? <LearningMessageContent content={item.content} />
+        ? <LearningMessageContent content={item.content} sources={item.sources} onSource={onSource} />
         : <Text type="secondary">正在检索并整理证据…</Text>}
       </div>
       {item.role === 'assistant' && item.content ? <>

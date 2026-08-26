@@ -39,7 +39,41 @@ export interface Document {
   chunk_count: number;
   status: 'pending' | 'processing' | 'ready' | 'failed';
   error_message?: string | null;
+  summary?: string | null;
+  outline?: string | null;
+  learning_status: 'not_started' | 'queued' | 'generating' | 'ready' | 'failed';
+  learning_error_message?: string | null;
+  tags: string[];
+  chapter_summaries: unknown[];
+  core_concepts: unknown[];
+  important_terms: unknown[];
+  common_mistakes: unknown[];
+  prerequisites: unknown[];
+  learning_order: unknown[];
+  review_points: unknown[];
+  processed_at?: string | null;
+  learning_generated_at?: string | null;
   created_at: string;
+  updated_at: string;
+}
+
+export interface DocumentSection {
+  chunk_id: string;
+  chunk_index: number;
+  page_num?: number | null;
+  heading?: string | null;
+  heading_level?: number | null;
+  section_path: string[];
+  content: string;
+  document_id?: string;
+  previous_chunk_id?: string | null;
+  next_chunk_id?: string | null;
+}
+
+export interface DocumentSectionsResponse {
+  document_id: string;
+  outline: Array<Omit<DocumentSection, 'content' | 'chunk_index'>>;
+  items: DocumentSection[];
 }
 
 export interface SearchResult {
@@ -59,6 +93,7 @@ export interface SourceItem {
   score: number;
   document_id?: string | null;
   heading?: string | null;
+  chunk_id?: string | null;
 }
 
 export interface BackendSourceItem {
@@ -68,6 +103,7 @@ export interface BackendSourceItem {
   score: number;
   document_id?: string | null;
   heading?: string | null;
+  chunk_id?: string | null;
 }
 
 export type ChatEvent =
@@ -86,6 +122,7 @@ const normalizeSource = (source: BackendSourceItem): SourceItem => ({
   score: source.score,
   document_id: source.document_id,
   heading: source.heading,
+  chunk_id: source.chunk_id,
 });
 
 export interface LLMSettings {
@@ -159,6 +196,18 @@ export const getDocumentStatus = async (docId: string): Promise<Document> => {
   const res = await api.get(`/documents/${docId}/status`);
   return res.data;
 };
+
+export const getDocument = async (id: string): Promise<Document> => (await api.get(`/documents/${id}`)).data;
+export const updateDocument = async (id: string, values: { filename?: string; tags?: string[] }): Promise<Document> =>
+  (await api.patch(`/documents/${id}`, values)).data;
+export const getDocumentSections = async (id: string): Promise<DocumentSectionsResponse> =>
+  (await api.get(`/documents/${id}/sections`)).data;
+export const getDocumentSection = async (documentId: string, chunkId: string): Promise<DocumentSection> =>
+  (await api.get(`/documents/${documentId}/sections/${encodeURIComponent(chunkId)}`)).data;
+export const reprocessDocument = async (id: string): Promise<Document> =>
+  (await api.post(`/documents/${id}/reprocess`)).data;
+export const regenerateDocumentLearning = async (id: string): Promise<Document> =>
+  (await api.post(`/documents/${id}/regenerate-learning`)).data;
 
 // ============ 检索接口 ============
 
@@ -291,7 +340,8 @@ export interface KnowledgePoint {
   id: string; workspace_id: string; document_id?: string | null; title: string;
   summary: string; explanation: string; source_page?: number | null;
   source_heading?: string | null; importance: number; difficulty: number;
-  mastery: number; tags: string[]; created_at: string;
+  mastery: number; tags: string[]; is_key: boolean;
+  mastery_status: 'not_started' | 'learning' | 'mastered'; created_at: string;
 }
 
 export interface Flashcard {
@@ -319,8 +369,13 @@ export interface LearningDashboard {
 
 export interface KnowledgeBaseDetail extends Workspace {
   progress: number; card_count: number; quiz_count: number;
-  documents: (Document & { summary?: string | null; outline?: string | null; learning_status?: string })[];
+  documents: (Document & { outline_items?: DocumentSectionsResponse['outline'] })[];
   knowledge_points: KnowledgePoint[];
+  recent_activities: Array<{ id: string; type: string; title: string; duration_seconds: number; payload?: Record<string, unknown> | null; created_at: string }>;
+  recommendations: Array<{
+    type: 'retry_document' | 'retry_learning' | 'generate_learning' | 'review_point' | 'continue_chat';
+    title: string; document_id?: string; knowledge_point_id?: string;
+  }>;
 }
 
 export const getLearningDashboard = async (): Promise<LearningDashboard> => (await api.get('/learning/dashboard')).data;
@@ -333,6 +388,10 @@ export const analyzeKnowledgeBase = async (id: string, documentId?: string, rege
 export const updateKnowledgePoint = async (id: string, values: Partial<KnowledgePoint>): Promise<KnowledgePoint> => (await api.put(`/learning/knowledge-points/${id}`, values)).data;
 export const deleteKnowledgePoint = async (id: string): Promise<void> => { await api.delete(`/learning/knowledge-points/${id}`); };
 export const knowledgePointToCard = async (id: string): Promise<Flashcard> => (await api.post(`/learning/knowledge-points/${id}/card`)).data;
+export const mergeKnowledgePoints = async (targetId: string, sourceIds: string[]): Promise<KnowledgePoint> =>
+  (await api.post('/learning/knowledge-points/merge', { target_id: targetId, source_ids: sourceIds })).data;
+export const knowledgePointToQuiz = async (id: string): Promise<QuizQuestion> =>
+  (await api.post(`/learning/knowledge-points/${id}/quiz`)).data;
 export const getCards = async (dueOnly = false, workspaceId?: string): Promise<Flashcard[]> => (await api.get('/learning/cards', { params: { due_only: dueOnly, workspace_id: workspaceId } })).data;
 export const createCard = async (values: Pick<Flashcard, 'workspace_id' | 'front' | 'back'> & Partial<Flashcard>): Promise<Flashcard> => (await api.post('/learning/cards', values)).data;
 export const reviewCard = async (id: string, rating: 1 | 2 | 3 | 4): Promise<Flashcard> => (await api.post(`/learning/cards/${id}/review`, { rating })).data;
