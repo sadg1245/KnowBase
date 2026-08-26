@@ -2,6 +2,7 @@
 
 import os
 import uuid
+from datetime import datetime, timezone
 from typing import Optional
 
 import aiofiles
@@ -14,12 +15,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db, get_settings
 from app.config import Settings
 from app.models.document import Document
+from app.models.chat import DocumentChunk
 from app.models.workspace import Workspace
 from app.models.learning import KnowledgePoint
-from app.services.document_jobs import enqueue_document_processing
+from app.services.document_jobs import enqueue_document_processing, enqueue_learning_generation
 from app.schemas.schemas import (
+    DocumentSectionDetail,
+    DocumentSectionsResponse,
     DocumentResponse,
     DocumentStatusResponse,
+    DocumentUpdate,
     UploadResponse,
 )
 
@@ -387,6 +392,149 @@ async def get_document(
     return document
 
 
+@router.patch("/documents/{document_id}", response_model=DocumentResponse)
+async def update_document(
+    document_id: str,
+    payload: DocumentUpdate,
+    db: AsyncSession = Depends(get_db),
+) -> Document:
+    document = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one_or_none()
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if payload.filename is not None:
+        document.filename = payload.filename.strip()
+    if payload.tags is not None:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in payload.tags:
+            tag = raw.strip()
+            if tag and tag not in seen:
+                seen.add(tag)
+                normalized.append(tag)
+        document.tags = normalized
+    document.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(document)
+    return document
+
+
+def _section_item(chunk: DocumentChunk) -> dict:
+    return {
+        "chunk_id": chunk.id,
+        "chunk_index": chunk.chunk_index,
+        "page_num": chunk.page_num,
+        "heading": chunk.heading,
+        "heading_level": chunk.heading_level,
+        "section_path": list(chunk.section_path or []),
+        "content": chunk.content,
+    }
+
+
+async def _document_chunks(db: AsyncSession, document_id: str) -> list[DocumentChunk]:
+    document = (await db.execute(select(Document.id).where(Document.id == document_id))).scalar_one_or_none()
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    rows = await db.execute(
+        select(DocumentChunk)
+        .where(DocumentChunk.document_id == document_id)
+        .order_by(DocumentChunk.chunk_index.asc())
+    )
+    return list(rows.scalars().all())
+
+
+@router.get("/documents/{document_id}/sections", response_model=DocumentSectionsResponse)
+async def list_document_sections(
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    chunks = await _document_chunks(db, document_id)
+    outline: list[dict] = []
+    seen: set[tuple] = set()
+    for chunk in chunks:
+        key = (tuple(chunk.section_path or []), chunk.heading, chunk.page_num)
+        if key not in seen:
+            seen.add(key)
+            outline.append({
+                "section_path": list(chunk.section_path or []),
+                "heading": chunk.heading,
+                "heading_level": chunk.heading_level,
+                "page_num": chunk.page_num,
+                "chunk_id": chunk.id,
+            })
+    return {"document_id": document_id, "outline": outline, "items": [_section_item(row) for row in chunks]}
+
+
+@router.get("/documents/{document_id}/sections/{chunk_id}", response_model=DocumentSectionDetail)
+async def get_document_section(
+    document_id: str,
+    chunk_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    chunks = await _document_chunks(db, document_id)
+    index = next((i for i, row in enumerate(chunks) if row.id == chunk_id), None)
+    if index is None:
+        raise HTTPException(status_code=404, detail="Document section not found")
+    payload = _section_item(chunks[index])
+    payload.update({
+        "document_id": document_id,
+        "previous_chunk_id": chunks[index - 1].id if index > 0 else None,
+        "next_chunk_id": chunks[index + 1].id if index + 1 < len(chunks) else None,
+    })
+    return payload
+
+
+@router.post("/documents/{document_id}/reprocess", response_model=DocumentResponse, status_code=202)
+async def reprocess_document(
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> Document:
+    document = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one_or_none()
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if document.status in {"pending", "processing"}:
+        raise HTTPException(status_code=409, detail="Document processing is already active")
+    document.status = "processing"
+    document.error_message = None
+    document.learning_status = "not_started"
+    document.learning_error_message = None
+    await db.commit()
+    try:
+        enqueue_document_processing(document)
+    except Exception as exc:
+        document.status = "failed"
+        document.error_message = f"Queue dispatch failed: {exc}"[:1000]
+        await db.commit()
+        raise HTTPException(status_code=503, detail=document.error_message) from exc
+    await db.refresh(document)
+    return document
+
+
+@router.post("/documents/{document_id}/regenerate-learning", response_model=DocumentResponse, status_code=202)
+async def regenerate_document_learning(
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+) -> Document:
+    document = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one_or_none()
+    if document is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+    if document.status != "ready":
+        raise HTTPException(status_code=400, detail="Document parsing must be ready first")
+    if document.learning_status in {"queued", "generating"}:
+        raise HTTPException(status_code=409, detail="Learning generation is already active")
+    document.learning_status = "queued"
+    document.learning_error_message = None
+    await db.commit()
+    try:
+        enqueue_learning_generation(document.id)
+    except Exception as exc:
+        document.learning_status = "failed"
+        document.learning_error_message = f"Learning queue dispatch failed: {exc}"[:1000]
+        await db.commit()
+        raise HTTPException(status_code=503, detail=document.learning_error_message) from exc
+    await db.refresh(document)
+    return document
+
+
 @router.get("/documents/{document_id}/content")
 async def preview_document(
     document_id: str,
@@ -427,6 +575,10 @@ async def get_document_status(
         "status": document.status,
         "chunk_count": document.chunk_count,
         "error_message": document.error_message,
+        "learning_status": document.learning_status,
+        "learning_error_message": document.learning_error_message,
+        "processed_at": document.processed_at,
+        "learning_generated_at": document.learning_generated_at,
     }
 
 

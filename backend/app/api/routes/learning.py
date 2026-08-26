@@ -13,12 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import get_db, get_settings
 from app.config import Settings
 from app.models.document import Document
+from app.models.chat import DocumentChunk
 from app.models.learning import Flashcard, KnowledgePoint, QuizQuestion, ReviewLog, StudyActivity, UserProfile
 from app.models.workspace import Workspace
 from app.services.learning_content import LearningGenerationError, generate_document_learning_content
 from app.schemas.learning import (
     ActivityCreate, AnalyzeRequest, FlashcardCreate, KnowledgePointCreate,
-    KnowledgePointUpdate, ProfileUpdate, QuizGenerateRequest, QuizSubmitRequest,
+    KnowledgePointMerge, KnowledgePointUpdate, ProfileUpdate, QuizGenerateRequest, QuizSubmitRequest,
     ReviewRequest, WorkspaceLearningUpdate,
 )
 
@@ -35,7 +36,8 @@ def _point(row: KnowledgePoint) -> dict:
         "title": row.title, "summary": row.summary, "explanation": row.explanation,
         "source_page": row.source_page, "source_heading": row.source_heading,
         "importance": row.importance, "difficulty": row.difficulty,
-        "mastery": row.mastery, "tags": row.tags or [], "created_at": _iso(row.created_at),
+        "mastery": row.mastery, "tags": row.tags or [], "is_key": row.is_key,
+        "mastery_status": row.mastery_status, "created_at": _iso(row.created_at),
     }
 
 
@@ -159,16 +161,74 @@ async def workspace_learning_detail(workspace_id: str, db: AsyncSession = Depend
         raise HTTPException(404, "Knowledge base not found")
     documents = (await db.execute(select(Document).where(Document.workspace_id == workspace_id).order_by(Document.created_at.desc()))).scalars().all()
     points = (await db.execute(select(KnowledgePoint).where(KnowledgePoint.workspace_id == workspace_id).order_by(KnowledgePoint.importance.desc(), KnowledgePoint.created_at.desc()))).scalars().all()
+    activities = (await db.execute(
+        select(StudyActivity)
+        .where(StudyActivity.workspace_id == workspace_id)
+        .order_by(StudyActivity.created_at.desc())
+        .limit(8)
+    )).scalars().all()
+    chunk_rows = (await db.execute(
+        select(DocumentChunk)
+        .where(DocumentChunk.workspace_id == workspace_id)
+        .order_by(DocumentChunk.document_id, DocumentChunk.chunk_index)
+    )).scalars().all()
+    outlines: dict[str, list[dict]] = {}
+    outline_seen: dict[str, set[tuple]] = {}
+    for chunk in chunk_rows:
+        key = (tuple(chunk.section_path or []), chunk.heading, chunk.page_num)
+        if key in outline_seen.setdefault(chunk.document_id, set()):
+            continue
+        outline_seen[chunk.document_id].add(key)
+        outlines.setdefault(chunk.document_id, []).append({
+            "chunk_id": chunk.id,
+            "heading": chunk.heading,
+            "heading_level": chunk.heading_level,
+            "section_path": list(chunk.section_path or []),
+            "page_num": chunk.page_num,
+        })
     card_count = (await db.execute(select(func.count(Flashcard.id)).where(Flashcard.workspace_id == workspace_id))).scalar() or 0
     quiz_count = (await db.execute(select(func.count(QuizQuestion.id)).where(QuizQuestion.workspace_id == workspace_id))).scalar() or 0
     mastery = sum(p.mastery for p in points) / len(points) if points else 0
+    recommendations: list[dict] = []
+    for document in documents:
+        if document.status == "failed":
+            recommendations.append({"type": "retry_document", "document_id": document.id, "title": f"重新解析 {document.filename}"})
+    for document in documents:
+        if document.learning_status == "failed":
+            recommendations.append({"type": "retry_learning", "document_id": document.id, "title": f"重新生成 {document.filename} 的学习内容"})
+    for document in documents:
+        if document.status == "ready" and document.learning_status == "not_started":
+            recommendations.append({"type": "generate_learning", "document_id": document.id, "title": f"生成 {document.filename} 的学习内容"})
+    for point in points:
+        if point.is_key and point.mastery_status != "mastered":
+            recommendations.append({"type": "review_point", "knowledge_point_id": point.id, "title": f"复习重点：{point.title}"})
+    recommendations.append({"type": "continue_chat", "title": "继续学习对话"})
+    recommendations = recommendations[:5]
+
     return {
         "id": workspace.id, "name": workspace.name, "description": workspace.description or "",
         "learning_goal": workspace.learning_goal or "", "domain": workspace.domain,
         "accent_color": workspace.accent_color, "archived": workspace.archived,
         "progress": round(mastery * 100), "card_count": card_count, "quiz_count": quiz_count,
-        "documents": [{"id": d.id, "filename": d.filename, "file_type": d.file_type, "status": d.status, "chunk_count": d.chunk_count, "summary": d.summary, "outline": d.outline, "learning_status": d.learning_status, "created_at": _iso(d.created_at)} for d in documents],
+        "documents": [{
+            "id": d.id, "filename": d.filename, "file_type": d.file_type,
+            "status": d.status, "error_message": d.error_message,
+            "chunk_count": d.chunk_count, "summary": d.summary, "outline": d.outline,
+            "learning_status": d.learning_status, "learning_error_message": d.learning_error_message,
+            "tags": d.tags or [], "chapter_summaries": d.chapter_summaries or [],
+            "core_concepts": d.core_concepts or [], "important_terms": d.important_terms or [],
+            "common_mistakes": d.common_mistakes or [], "prerequisites": d.prerequisites or [],
+            "learning_order": d.learning_order or [], "review_points": d.review_points or [],
+            "processed_at": _iso(d.processed_at), "learning_generated_at": _iso(d.learning_generated_at),
+            "created_at": _iso(d.created_at), "outline_items": outlines.get(d.id, []),
+        } for d in documents],
         "knowledge_points": [_point(row) for row in points],
+        "recent_activities": [{
+            "id": row.id, "type": row.activity_type, "title": row.title,
+            "duration_seconds": row.duration_seconds, "payload": row.payload,
+            "created_at": _iso(row.created_at),
+        } for row in activities],
+        "recommendations": recommendations,
     }
 
 
@@ -247,8 +307,65 @@ async def create_point(payload: KnowledgePointCreate, db: AsyncSession = Depends
 async def update_point(point_id: str, payload: KnowledgePointUpdate, db: AsyncSession = Depends(get_db)) -> dict:
     row = (await db.execute(select(KnowledgePoint).where(KnowledgePoint.id == point_id))).scalar_one_or_none()
     if not row: raise HTTPException(404, "Knowledge point not found")
-    for key, value in payload.model_dump(exclude_none=True).items(): setattr(row, key, value)
+    values = payload.model_dump(exclude_none=True)
+    explicit_status = "mastery_status" in payload.model_fields_set
+    for key, value in values.items(): setattr(row, key, value)
+    if explicit_status and payload.mastery_status == "mastered":
+        row.mastery = 1.0
+    elif payload.mastery is not None and not explicit_status:
+        row.mastery_status = "mastered" if payload.mastery >= 1 else ("learning" if payload.mastery > 0 else "not_started")
     await db.flush(); return _point(row)
+
+
+@router.post("/knowledge-points/merge")
+async def merge_points(payload: KnowledgePointMerge, db: AsyncSession = Depends(get_db)) -> dict:
+    ids = list(dict.fromkeys([payload.target_id, *payload.source_ids]))
+    rows = (await db.execute(select(KnowledgePoint).where(KnowledgePoint.id.in_(ids)))).scalars().all()
+    by_id = {row.id: row for row in rows}
+    target = by_id.get(payload.target_id)
+    sources = [by_id.get(point_id) for point_id in payload.source_ids if point_id != payload.target_id]
+    if target is None or any(row is None for row in sources):
+        raise HTTPException(404, "Knowledge point not found")
+    typed_sources = [row for row in sources if row is not None]
+    if any(row.workspace_id != target.workspace_id for row in typed_sources):
+        raise HTTPException(400, "Knowledge points must belong to the same workspace")
+
+    def unique_text(values: list[str]) -> str:
+        return "\n\n".join(dict.fromkeys(value.strip() for value in values if value and value.strip()))
+
+    target.tags = list(dict.fromkeys([*(target.tags or []), *(tag for row in typed_sources for tag in (row.tags or []))]))
+    target.summary = unique_text([target.summary, *(row.summary for row in typed_sources)])
+    target.explanation = unique_text([target.explanation, *(row.explanation for row in typed_sources)])
+    target.importance = max([target.importance, *(row.importance for row in typed_sources)])
+    target.difficulty = max([target.difficulty, *(row.difficulty for row in typed_sources)])
+    target.mastery = max([target.mastery, *(row.mastery for row in typed_sources)])
+    target.is_key = target.is_key or any(row.is_key for row in typed_sources)
+    target.mastery_status = "mastered" if target.mastery >= 1 else ("learning" if target.mastery > 0 else target.mastery_status)
+    for row in typed_sources:
+        await db.delete(row)
+    await db.flush()
+    return _point(target)
+
+
+@router.post("/knowledge-points/{point_id}/quiz", status_code=201)
+async def point_to_quiz(point_id: str, db: AsyncSession = Depends(get_db)) -> dict:
+    point = (await db.execute(select(KnowledgePoint).where(KnowledgePoint.id == point_id))).scalar_one_or_none()
+    if not point:
+        raise HTTPException(404, "Knowledge point not found")
+    label = point.source_heading or (f"第 {point.source_page} 页" if point.source_page else None)
+    quiz = QuizQuestion(
+        workspace_id=point.workspace_id,
+        knowledge_point_id=point.id,
+        question_type="short",
+        prompt=f"请解释：{point.title}",
+        answer=point.explanation or point.summary,
+        explanation=point.explanation or point.summary,
+        source_label=label,
+    )
+    db.add(quiz)
+    await db.flush()
+    await db.refresh(quiz)
+    return _quiz(quiz)
 
 
 @router.delete("/knowledge-points/{point_id}", status_code=200)

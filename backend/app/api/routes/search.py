@@ -16,7 +16,7 @@ from app.api.deps import get_db, get_settings
 from app.config import Settings
 from app.models.conversation import Conversation
 from app.services.conversation_service import ConversationService
-from app.services.hybrid_retrieval import HybridRetrievalService
+from app.services.hybrid_retrieval import HybridRetrievalService, RetrievalCandidate
 from app.services.learning_answer import (
     answer_requires_model,
     build_follow_up_suggestions,
@@ -34,6 +34,19 @@ from app.schemas.schemas import (
 
 
 router = APIRouter(tags=["search"])
+
+
+def serialize_source(candidate: RetrievalCandidate) -> dict[str, object]:
+    """Serialize one retrieval candidate consistently for SSE and persistence."""
+    return {
+        "content": candidate.content,
+        "source_file": candidate.source_file,
+        "page_num": candidate.page_num,
+        "score": round(candidate.rerank_score, 4),
+        "document_id": candidate.document_id,
+        "heading": candidate.heading,
+        "chunk_id": candidate.chunk_id,
+    }
 
 
 def _document_where(document_ids: list[str]) -> dict | None:
@@ -334,18 +347,7 @@ async def chat(
     )
     await db.commit()
 
-    source_items = [
-        {
-            "content": item.content,
-            "source_file": item.source_file,
-            "page_num": item.page_num,
-            "score": round(item.rerank_score, 4),
-            "document_id": item.document_id,
-            "heading": item.heading,
-            "chunk_id": item.chunk_id,
-        }
-        for item in retrieval.items
-    ]
+    source_items = [serialize_source(item) for item in retrieval.items]
     context_chunks = [
         f"[资料{index}] 来源：{item['source_file']}"
         + (f"，第 {item['page_num']} 页" if item.get("page_num") else "")

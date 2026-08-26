@@ -96,6 +96,28 @@ class DocumentStatusResponse(BaseModel):
     learning_generated_at: Optional[datetime] = None
 
 
+class DocumentSectionItem(BaseModel):
+    chunk_id: str
+    chunk_index: int
+    page_num: Optional[int] = None
+    heading: Optional[str] = None
+    heading_level: Optional[int] = None
+    section_path: list[str] = Field(default_factory=list)
+    content: str
+
+
+class DocumentSectionsResponse(BaseModel):
+    document_id: str
+    outline: list[dict[str, Any]] = Field(default_factory=list)
+    items: list[DocumentSectionItem] = Field(default_factory=list)
+
+
+class DocumentSectionDetail(DocumentSectionItem):
+    document_id: str
+    previous_chunk_id: Optional[str] = None
+    next_chunk_id: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # 对话 Schema
 # ---------------------------------------------------------------------------
@@ -152,6 +174,7 @@ class SourceItem(BaseModel):
     score: float = 0.0
     document_id: Optional[str] = None
     heading: Optional[str] = None
+    chunk_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -185,6 +208,7 @@ class SearchResult(BaseModel):
     score: float
     document_id: Optional[str] = None
     heading: Optional[str] = None
+    chunk_id: Optional[str] = None
 
 
 class SearchResponse(BaseModel):

@@ -277,6 +277,8 @@ class RAGEngine:
                 "file": source_file,
                 "page": page_num,
                 "heading": heading,
+                "document_id": metadata.get("document_id") or metadata.get("doc_id"),
+                "chunk_id": metadata.get("chunk_id") or metadata.get("id"),
                 "content_preview": content[:200] + "..." if len(content) > 200 else content,
                 "distance": distance,
             })
