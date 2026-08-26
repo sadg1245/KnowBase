@@ -65,30 +65,38 @@ Completion = Callable[..., Awaitable[Any] | Any]
 
 
 def _provider_configuration(settings: Settings) -> tuple[str, str, str | None]:
-    provider = settings.DEFAULT_LLM_PROVIDER.lower()
-    api_key = {
-        "openai": settings.OPENAI_API_KEY,
-        "deepseek": settings.DEEPSEEK_API_KEY,
-        "dashscope": settings.DASHSCOPE_API_KEY,
-        "qwen": settings.DASHSCOPE_API_KEY,
-        "zhipu": settings.ZHIPU_API_KEY,
-        "glm": settings.ZHIPU_API_KEY,
-        "ollama": "ollama",
-    }.get(provider)
-    if not api_key:
-        raise LearningGenerationError("No configured LLM provider is available for learning generation")
+    try:
+        provider = (settings.DEFAULT_LLM_PROVIDER or "").strip().lower()
+        model = (settings.DEFAULT_LLM_MODEL or "").strip()
+        api_keys = {
+            "openai": settings.OPENAI_API_KEY,
+            "deepseek": settings.DEEPSEEK_API_KEY,
+            "dashscope": settings.DASHSCOPE_API_KEY,
+            "qwen": settings.DASHSCOPE_API_KEY,
+            "zhipu": settings.ZHIPU_API_KEY,
+            "glm": settings.ZHIPU_API_KEY,
+            "ollama": "ollama",
+        }
+        if not provider or provider not in api_keys or not model:
+            raise ValueError("provider and model must be configured")
+        api_key = api_keys[provider]
+        if not api_key:
+            raise ValueError("provider API key must be configured")
 
-    model = settings.DEFAULT_LLM_MODEL
-    api_base = None
-    if provider == "deepseek":
-        model, api_base = f"deepseek/{model}", "https://api.deepseek.com/v1"
-    elif provider in {"dashscope", "qwen"}:
-        model, api_base = f"openai/{model}", "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    elif provider in {"zhipu", "glm"}:
-        model, api_base = f"openai/{model}", "https://open.bigmodel.cn/api/paas/v4"
-    elif provider == "ollama":
-        model, api_base = f"ollama/{model}", settings.OLLAMA_BASE_URL
-    return model, api_key, api_base
+        api_base = None
+        if provider == "deepseek":
+            model, api_base = f"deepseek/{model}", "https://api.deepseek.com/v1"
+        elif provider in {"dashscope", "qwen"}:
+            model, api_base = f"openai/{model}", "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        elif provider in {"zhipu", "glm"}:
+            model, api_base = f"openai/{model}", "https://open.bigmodel.cn/api/paas/v4"
+        elif provider == "ollama":
+            model, api_base = f"ollama/{model}", settings.OLLAMA_BASE_URL
+        return model, api_key, api_base
+    except LearningGenerationError:
+        raise
+    except Exception as exc:
+        raise LearningGenerationError("No configured LLM provider is available for learning generation") from exc
 
 
 def _generation_prompt(chunks: list[DocumentChunk]) -> str:
@@ -144,25 +152,21 @@ async def build_learning_material(
     if not chunks:
         raise LearningGenerationError("Cannot generate learning material without document chunks")
 
-    model, api_key, api_base = _provider_configuration(settings)
-    if completion is None:
-        try:
+    try:
+        model, api_key, api_base = _provider_configuration(settings)
+        if completion is None:
             import litellm
             completion = litellm.acompletion
-        except Exception as exc:  # pragma: no cover - depends on optional runtime install
-            raise LearningGenerationError("The configured learning model is unavailable") from exc
-
-    kwargs: dict[str, Any] = {
-        "model": model,
-        "messages": [{"role": "user", "content": _generation_prompt(chunks)}],
-        "temperature": 0.2,
-        "max_tokens": 4000,
-        "api_key": api_key,
-        "timeout": 60,
-    }
-    if api_base:
-        kwargs["api_base"] = api_base
-    try:
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": [{"role": "user", "content": _generation_prompt(chunks)}],
+            "temperature": 0.2,
+            "max_tokens": 4000,
+            "api_key": api_key,
+            "timeout": 60,
+        }
+        if api_base:
+            kwargs["api_base"] = api_base
         response = completion(**kwargs)
         if inspect.isawaitable(response):
             response = await response
@@ -185,6 +189,12 @@ async def replace_document_learning_content(
         .order_by(DocumentChunk.chunk_index),
     )).scalars().all()
     chunks_by_index = {chunk.chunk_index: chunk for chunk in chunks}
+    unknown_indices = {
+        point.source_chunk_index for point in material.knowledge_points
+        if point.source_chunk_index not in chunks_by_index
+    }
+    if unknown_indices:
+        raise LearningGenerationError("Learning material references unknown document chunks")
 
     await db.execute(delete(KnowledgePoint).where(KnowledgePoint.document_id == document.id))
     for point in material.knowledge_points:

@@ -12,7 +12,12 @@ from app.models.chat import DocumentChunk
 from app.models.document import Document
 from app.models.learning import KnowledgePoint
 from app.models.workspace import Workspace
-from app.services.learning_content import LearningMaterial, replace_document_learning_content
+from app.services.learning_content import (
+    LearningGenerationError,
+    LearningMaterial,
+    _provider_configuration,
+    replace_document_learning_content,
+)
 
 
 def material_payload(**overrides):
@@ -57,6 +62,17 @@ class LearningMaterialTests(unittest.TestCase):
     def test_learning_material_rejects_empty_knowledge_points(self):
         with self.assertRaises(ValidationError):
             LearningMaterial.model_validate(material_payload(knowledge_points=[]))
+
+    def test_missing_provider_is_normalized_to_learning_generation_error(self):
+        from app.config import Settings
+
+        settings = Settings.model_construct(
+            DEFAULT_LLM_PROVIDER=None,
+            DEFAULT_LLM_MODEL="test-model",
+        )
+
+        with self.assertRaises(LearningGenerationError):
+            _provider_configuration(settings)
 
 
 class LearningContentReplacementTests(unittest.IsolatedAsyncioTestCase):
@@ -108,3 +124,43 @@ class LearningContentReplacementTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(rows[0].source_heading, "Introduction")
             self.assertEqual(document.learning_status, "ready")
 
+    async def test_replace_rejects_unknown_source_before_deleting_existing_points(self):
+        async with self.session_factory() as db:
+            workspace = Workspace(name="Test", slug="source-validation")
+            db.add(workspace)
+            await db.flush()
+            document = Document(
+                workspace_id=workspace.id,
+                filename="notes.txt",
+                file_path="notes.txt",
+                file_type=".txt",
+                status="ready",
+            )
+            db.add(document)
+            await db.flush()
+            old_point = KnowledgePoint(
+                workspace_id=workspace.id,
+                document_id=document.id,
+                title="Existing point",
+                summary="Existing summary",
+                explanation="Existing explanation",
+            )
+            db.add(old_point)
+            await db.flush()
+            material = LearningMaterial.model_validate(material_payload(knowledge_points=[{
+                "title": "Invalid source",
+                "summary": "Summary",
+                "explanation": "Explanation",
+                "importance": 3,
+                "difficulty": 2,
+                "tags": [],
+                "source_chunk_index": 999,
+            }]))
+
+            with self.assertRaises(LearningGenerationError):
+                await replace_document_learning_content(db, document, material)
+
+            rows = (await db.execute(select(KnowledgePoint).where(
+                KnowledgePoint.document_id == document.id,
+            ))).scalars().all()
+            self.assertEqual([row.id for row in rows], [old_point.id])
