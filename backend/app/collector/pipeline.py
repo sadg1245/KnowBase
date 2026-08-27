@@ -4,6 +4,7 @@ import csv
 import io
 import json
 import os
+from datetime import datetime, timezone
 from typing import Any
 
 from loguru import logger
@@ -496,6 +497,7 @@ class DocumentPipeline:
                 await self._update_document_status(
                     db_session, document_id,
                     status="ready", chunk_count=0, error_message=None,
+                    processed_at=datetime.now(timezone.utc),
                 )
                 return {
                     "chunks_count": 0,
@@ -562,6 +564,7 @@ class DocumentPipeline:
                 status="ready",
                 chunk_count=len(split_chunks),
                 error_message=None,
+                processed_at=datetime.now(timezone.utc),
             )
 
             summary = {

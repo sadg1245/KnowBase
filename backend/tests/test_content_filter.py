@@ -187,8 +187,10 @@ class DocumentPipelineContentBoundaryTests(unittest.IsolatedAsyncioTestCase):
             keyword_chunks = (await db.execute(
                 select(DocumentChunk).where(DocumentChunk.document_id == document.id).order_by(DocumentChunk.chunk_index)
             )).scalars().all()
+            await db.refresh(document)
 
         self.assertEqual(result["chunks_count"], 2)
+        self.assertIsNotNone(document.processed_at)
         self.assertEqual(vector_store.texts, ["Python正文", "附录代码"])
         self.assertEqual([item.content for item in keyword_chunks], ["Python正文", "附录代码"])
 
@@ -220,8 +222,10 @@ class DocumentPipelineContentBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 workspace.id,
                 db,
             )
+            await db.refresh(document)
 
         self.assertEqual(result["chunks_count"], 0)
+        self.assertIsNotNone(document.processed_at)
         self.assertEqual(vector_store.texts, [])
 
 

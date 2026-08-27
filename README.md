@@ -294,7 +294,7 @@ python -m bot.main
 
 | 格式 | 解析器 | 说明 |
 |------|--------|------|
-| PDF | PyMuPDF | 支持扫描件 OCR 提示 |
+| PDF | PyMuPDF | 按物理页提取文本；不提供 OCR |
 | Word (.docx) | python-docx | 保留段落结构和标题层级 |
 | Word (.doc) | 转换后解析 | 旧格式 |
 | PPT (.pptx) | python-pptx | 逐页提取文本+备注 |
@@ -352,3 +352,36 @@ python -m bot.main
 | 向量数据库 | ChromaDB 本地 = 免费 |
 | 飞书机器人 | 免费 |
 | **月均总计** | **约 10-80 元** |
+
+## 第二阶段：结构化学习工作流
+
+上传请求只保存文件和数据库记录，然后把解析任务提交给 Celery；请求不会同步执行文档解析、向量化或 LLM 调用。解析成功后，工作进程会自动排队生成文档摘要、章节摘要、核心概念、重要术语、易错点、前置知识、推荐学习顺序、复习点和知识点。
+
+运行该流程需要 Redis、Celery worker 和 ChromaDB。开发环境 worker 命令为：
+
+```bash
+celery -A app.collector.tasks worker --loglevel=debug --concurrency=2 --pool=solo
+```
+
+文档解析状态 `status`：
+
+| 状态 | 含义 |
+|---|---|
+| `pending` | 已创建记录，等待提交处理 |
+| `processing` | 正在解析、切片和建立索引 |
+| `ready` | 解析及索引已完成，可预览和生成学习内容 |
+| `failed` | 解析或任务派发失败，可在文档详情页查看原因并重新解析 |
+
+学习内容状态 `learning_status`：
+
+| 状态 | 含义 |
+|---|---|
+| `not_started` | 尚未生成 |
+| `queued` | 已提交到 Celery |
+| `generating` | 正在调用 LLM 并校验结构化结果 |
+| `ready` | 摘要与知识点已生成 |
+| `failed` | 生成失败，可查看原因并重新生成 |
+
+知识库详情页展示学习目标、进度、文档、章节、核心知识点、最近学习记录和继续学习建议。文档详情路由为 `/knowledge/{workspaceId}/documents/{documentId}`；回答来源含稳定 `chunk_id` 时会附带 `?chunk=...&page=...` 并定位到对应页或切片，历史来源缺少 `chunk_id` 时仍在证据抽屉中显示。
+
+文档名称和标签、AI 生成的知识点均可编辑；知识点还支持删除、合并、标记重点/已掌握以及生成卡片或练习。解析失败使用“重新解析”，学习内容失败使用“重新生成学习内容”。系统不提供 OCR，扫描版 PDF 需要先在外部完成文字识别。
