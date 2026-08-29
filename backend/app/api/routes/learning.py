@@ -17,6 +17,7 @@ from app.models.chat import DocumentChunk
 from app.models.learning import Flashcard, KnowledgePoint, QuizQuestion, ReviewLog, StudyActivity, UserProfile
 from app.models.workspace import Workspace
 from app.services.learning_content import LearningGenerationError, generate_document_learning_content
+from app.services.review_service import apply_card_review, schedule_review
 from app.schemas.learning import (
     ActivityCreate, AnalyzeRequest, FlashcardCreate, KnowledgePointCreate,
     KnowledgePointMerge, KnowledgePointUpdate, ProfileUpdate, QuizGenerateRequest, QuizSubmitRequest,
@@ -63,19 +64,6 @@ def _quiz(row: QuizQuestion, reveal: bool = False) -> dict:
     if reveal:
         data["answer"] = row.answer
     return data
-
-
-def schedule_review(previous: int, ease: float, rating: int) -> tuple[int, float]:
-    """Return a deterministic next interval and ease for the four review ratings."""
-    if rating == 1:
-        return 1, max(1.3, ease - .2)
-    if rating == 2:
-        return max(1, round(max(1, previous) * 1.3)), max(1.3, ease - .1)
-    if rating == 3:
-        return (1 if previous == 0 else max(2, round(previous * ease))), ease
-    if rating == 4:
-        return (3 if previous == 0 else max(4, round(previous * (ease + .35)))), min(3.2, ease + .1)
-    raise ValueError("rating must be between 1 and 4")
 
 
 async def _profile(db: AsyncSession) -> UserProfile:
@@ -410,16 +398,8 @@ async def delete_card(card_id: str, db: AsyncSession = Depends(get_db)) -> None:
 async def review_card(card_id: str, payload: ReviewRequest, db: AsyncSession = Depends(get_db)) -> dict:
     card = (await db.execute(select(Flashcard).where(Flashcard.id == card_id))).scalar_one_or_none()
     if not card: raise HTTPException(404, "Card not found")
-    previous = card.interval_days
-    interval, ease = schedule_review(previous, card.ease, payload.rating)
-    card.interval_days, card.ease, card.review_count = interval, ease, card.review_count + 1
-    card.due_at = datetime.now(timezone.utc) + timedelta(days=interval)
-    db.add(ReviewLog(card_id=card.id, rating=payload.rating, previous_interval=previous, next_interval=interval))
-    if card.knowledge_point_id:
-        point = (await db.execute(select(KnowledgePoint).where(KnowledgePoint.id == card.knowledge_point_id))).scalar_one_or_none()
-        if point: point.mastery = max(0, min(1, point.mastery + {1: -.12, 2: .02, 3: .12, 4: .2}[payload.rating]))
-    db.add(StudyActivity(workspace_id=card.workspace_id, activity_type="review", title="完成了一张知识卡复习", duration_seconds=30, payload={"rating": payload.rating}))
-    await db.flush(); return _card(card)
+    change = await apply_card_review(db, card, payload.rating, payload.duration_seconds)
+    return {"card": _card(card), "change": change}
 
 
 @router.post("/quizzes/generate")
