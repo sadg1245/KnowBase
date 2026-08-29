@@ -346,8 +346,39 @@ export interface KnowledgePoint {
 
 export interface Flashcard {
   id: string; workspace_id: string; knowledge_point_id?: string | null;
-  front: string; back: string; source_label?: string | null; due_at: string;
+  front: string; back: string; source_label?: string | null;
+  source_type: 'manual' | 'knowledge_point' | 'answer' | 'selection';
+  source_snapshot?: Record<string, unknown> | Record<string, unknown>[] | null;
+  tags: string[]; difficulty: number; mastery: number;
+  mastery_status: 'not_started' | 'learning' | 'mastered'; due_at: string;
   interval_days: number; ease: number; review_count: number;
+  algorithm_version: string; scheduler_data: Record<string, unknown>;
+  last_reviewed_at?: string | null; total_review_seconds: number;
+  created_at: string; updated_at: string;
+}
+
+export interface CardDraft {
+  workspace_id: string; front: string; back: string; source_label?: string | null;
+  tags?: string[]; difficulty?: number; due_at?: string;
+}
+
+export interface ReviewSummary {
+  due_count: number; new_count: number; completed_today: number;
+  estimated_minutes: number; streak_days: number; overdue_count: number;
+  daily_target: number;
+  weak_points: Array<Pick<KnowledgePoint, 'id' | 'workspace_id' | 'title' | 'mastery' | 'mastery_status' | 'importance' | 'is_key'>>;
+}
+
+export interface ReviewChange {
+  previous_mastery: number; next_mastery: number;
+  previous_status: Flashcard['mastery_status']; next_status: Flashcard['mastery_status'];
+  previous_interval: number; next_interval: number; duration_seconds: number;
+}
+
+export interface ReviewResponse { card: Flashcard; change: ReviewChange }
+
+export interface SelectionCardDraft extends CardDraft {
+  document_id: string; source_excerpt: string; source_page?: number | null; source_heading?: string | null;
 }
 
 export interface QuizQuestion {
@@ -392,9 +423,26 @@ export const mergeKnowledgePoints = async (targetId: string, sourceIds: string[]
   (await api.post('/learning/knowledge-points/merge', { target_id: targetId, source_ids: sourceIds })).data;
 export const knowledgePointToQuiz = async (id: string): Promise<QuizQuestion> =>
   (await api.post(`/learning/knowledge-points/${id}/quiz`)).data;
-export const getCards = async (dueOnly = false, workspaceId?: string): Promise<Flashcard[]> => (await api.get('/learning/cards', { params: { due_only: dueOnly, workspace_id: workspaceId } })).data;
-export const createCard = async (values: Pick<Flashcard, 'workspace_id' | 'front' | 'back'> & Partial<Flashcard>): Promise<Flashcard> => (await api.post('/learning/cards', values)).data;
-export const reviewCard = async (id: string, rating: 1 | 2 | 3 | 4): Promise<Flashcard> => (await api.post(`/learning/cards/${id}/review`, { rating })).data;
+export const getCards = async (
+  dueOnly = false,
+  workspaceId?: string,
+  filters: { sourceType?: Flashcard['source_type']; tag?: string; query?: string } = {},
+): Promise<Flashcard[]> => (await api.get('/learning/cards', { params: {
+  due_only: dueOnly,
+  workspace_id: workspaceId,
+  source_type: filters.sourceType,
+  tag: filters.tag,
+  query: filters.query,
+} })).data;
+export const createCard = async (values: CardDraft): Promise<Flashcard> => (await api.post('/learning/cards', values)).data;
+export const updateCard = async (id: string, values: Partial<CardDraft>): Promise<Flashcard> => (await api.put(`/learning/cards/${id}`, values)).data;
+export const createSelectionCard = async (values: SelectionCardDraft): Promise<Flashcard> => (await api.post('/learning/cards/from-selection', values)).data;
+export const generateWorkspaceCards = async (workspaceId: string, knowledgePointIds: string[] = []): Promise<{ created_count: number; cards: Flashcard[] }> =>
+  (await api.post(`/learning/workspaces/${workspaceId}/cards/generate`, { knowledge_point_ids: knowledgePointIds })).data;
+export const getReviewSummary = async (timezoneOffsetMinutes: number): Promise<ReviewSummary> =>
+  (await api.get('/learning/review/summary', { params: { timezone_offset_minutes: timezoneOffsetMinutes } })).data;
+export const reviewCard = async (id: string, rating: 1 | 2 | 3 | 4, durationSeconds = 0): Promise<ReviewResponse> =>
+  (await api.post(`/learning/cards/${id}/review`, { rating, duration_seconds: durationSeconds })).data;
 export const deleteCard = async (id: string): Promise<void> => { await api.delete(`/learning/cards/${id}`); };
 export const generateQuiz = async (workspaceId: string, count = 5, documentIds: string[] = []): Promise<QuizQuestion[]> => (await api.post('/learning/quizzes/generate', { workspace_id: workspaceId, document_ids: documentIds, count, question_type: 'mixed' })).data;
 export const getQuizzes = async (wrongOnly = false, workspaceId?: string, documentIds: string[] = []): Promise<QuizQuestion[]> => (await api.get('/learning/quizzes', {
