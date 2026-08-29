@@ -1,8 +1,10 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Alert, App, Button, Card, Empty, Form, Input, Modal, Space, Spin, Tag, Typography } from 'antd';
-import { ArrowLeftOutlined, EditOutlined, ReloadOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import {
+  CardDraft,
+  createSelectionCard,
   Document,
   DocumentSection,
   getDocument,
@@ -11,8 +13,11 @@ import {
   regenerateDocumentLearning,
   reprocessDocument,
   updateDocument,
+  Workspace,
 } from '../services/api';
 import { buildOutline, pdfPageFragment, resolveSelectedChunk } from './documentDetailState';
+import { CardEditorModal } from '../components/review/CardEditorModal';
+import { DocumentCardSelection, normalizeDocumentCardSelection } from './documentCardSelection';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -51,10 +56,14 @@ const DocumentDetail: React.FC = () => {
   const [sections, setSections] = useState<DocumentSection[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [cardBusy, setCardBusy] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [cardEditorOpen, setCardEditorOpen] = useState(false);
+  const [cardSelection, setCardSelection] = useState<DocumentCardSelection | null>(null);
   const [blobUrl, setBlobUrl] = useState<string>();
   const [form] = Form.useForm();
   const selectedRef = useRef<HTMLDivElement>(null);
+  const sourceRef = useRef<HTMLElement>(null);
 
   const load = useCallback(async (quiet = false) => {
     if (!documentId) return;
@@ -93,6 +102,58 @@ const DocumentDetail: React.FC = () => {
   }, [document?.id, document?.file_type, message]);
 
   const choose = (section: DocumentSection) => setParams({ chunk: section.chunk_id, ...(section.page_num ? { page: String(section.page_num) } : {}) });
+  const selectionInitialValues = useMemo<Partial<CardDraft>>(() => ({
+    workspace_id: workspaceId,
+    front: '',
+    back: cardSelection?.excerpt || '',
+    source_label: [document?.filename, cardSelection?.heading, cardSelection?.page ? `第 ${cardSelection.page} 页` : ''].filter(Boolean).join(' · '),
+    difficulty: 2,
+    tags: document?.tags || [],
+  }), [cardSelection, document?.filename, document?.tags, workspaceId]);
+  const workspaceOptions = useMemo<Workspace[]>(() => workspaceId ? [{
+    id: workspaceId, name: '当前知识库', description: '', document_count: 1, created_at: '',
+  }] : [], [workspaceId]);
+
+  const captureSelection = (event: React.MouseEvent<HTMLElement>) => {
+    if ((event.target as Element).closest('button')) return;
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed || !selection.rangeCount) { setCardSelection(null); return; }
+    const range = selection.getRangeAt(0);
+    const closestSource = (node: Node): HTMLElement | null => {
+      const element = node.nodeType === Node.ELEMENT_NODE ? node as Element : node.parentElement;
+      return element?.closest<HTMLElement>('article[data-chunk-id]') || null;
+    };
+    const start = closestSource(range.startContainer);
+    const end = closestSource(range.endContainer);
+    if (!start || !end || !sourceRef.current?.contains(start) || !sourceRef.current.contains(end)) { setCardSelection(null); return; }
+    setCardSelection(normalizeDocumentCardSelection({
+      text: selection.toString(),
+      startChunkId: start.dataset.chunkId,
+      endChunkId: end.dataset.chunkId,
+      page: start.dataset.page ? Number(start.dataset.page) : undefined,
+      heading: start.dataset.heading,
+    }));
+  };
+
+  const saveSelectionCard = async (values: CardDraft) => {
+    if (!cardSelection || !documentId || !workspaceId) return;
+    setCardBusy(true);
+    try {
+      await createSelectionCard({
+        ...values,
+        workspace_id: workspaceId,
+        document_id: documentId,
+        source_excerpt: cardSelection.excerpt,
+        source_page: cardSelection.page,
+        source_heading: cardSelection.heading,
+      });
+      setCardEditorOpen(false);
+      setCardSelection(null);
+      window.getSelection()?.removeAllRanges();
+      message.success('已从原文选段生成卡片');
+    } catch (error: any) { message.error(error?.response?.data?.detail || '选段卡片创建失败'); }
+    finally { setCardBusy(false); }
+  };
   const run = async (kind: 'parse' | 'learn') => {
     if (!document) return;
     setBusy(true);
@@ -127,9 +188,10 @@ const DocumentDetail: React.FC = () => {
 
     <div className="document-detail-grid">
       <aside className="document-outline paper-card"><Title level={3}>章节目录</Title>{outline.length ? outline.map(item => <Button key={item.chunk_id} type={selected?.chunk_id === item.chunk_id ? 'primary' : 'text'} block onClick={() => choose(item)}>{item.section_path.join(' › ') || item.heading || `第 ${item.page_num ?? item.chunk_index + 1} 节`}</Button>) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无目录" />}</aside>
-      <main className="document-source paper-card"><Title level={3}>原文预览</Title>
+      <main ref={sourceRef} className="document-source paper-card" onMouseUp={captureSelection}><div className="document-source-heading"><Title level={3}>原文预览</Title>{cardSelection && <Button type="primary" icon={<PlusOutlined />} onClick={() => setCardEditorOpen(true)}>从选段生成卡片</Button>}</div>
+        {cardSelection && <div className="document-selection-hint">已选择：{cardSelection.excerpt}</div>}
         {document.file_type === '.pdf' && blobUrl ? <iframe title={document.filename} src={`${blobUrl}${pdfPageFragment(selected?.page_num)}`} className="pdf-preview" /> :
-          sections.length ? sections.map(item => <article id={`source-${item.chunk_id}`} ref={selected?.chunk_id === item.chunk_id ? selectedRef : undefined} key={item.chunk_id} className={`source-card ${selected?.chunk_id === item.chunk_id ? 'selected' : ''}`} onClick={() => choose(item)}><Space><Tag>{item.page_num ? `第 ${item.page_num} 页` : `片段 ${item.chunk_index + 1}`}</Tag>{item.heading && <Text strong>{item.heading}</Text>}</Space><Paragraph>{item.content}</Paragraph></article>) : <Empty description="暂无解析内容" />}
+          sections.length ? sections.map(item => <article id={`source-${item.chunk_id}`} data-chunk-id={item.chunk_id} data-page={item.page_num ?? undefined} data-heading={item.heading ?? undefined} ref={selected?.chunk_id === item.chunk_id ? selectedRef : undefined} key={item.chunk_id} className={`source-card ${selected?.chunk_id === item.chunk_id ? 'selected' : ''}`} onClick={() => choose(item)}><Space><Tag>{item.page_num ? `第 ${item.page_num} 页` : `片段 ${item.chunk_index + 1}`}</Tag>{item.heading && <Text strong>{item.heading}</Text>}</Space><Paragraph>{item.content}</Paragraph></article>) : <Empty description="暂无解析内容" />}
       </main>
       <aside className="document-learning paper-card"><StructuredLearningPanel document={document} /></aside>
     </div>
@@ -140,6 +202,16 @@ const DocumentDetail: React.FC = () => {
         setDocument(next); setEditOpen(false); message.success('文档信息已更新');
       }}><Form.Item name="filename" label="文档名称" rules={[{ required: true }]}><Input /></Form.Item><Form.Item name="tags" label="标签（逗号分隔）"><Input /></Form.Item></Form>
     </Modal>
+    <CardEditorModal
+      open={cardEditorOpen}
+      workspaces={workspaceOptions}
+      initialValues={selectionInitialValues}
+      sourceExcerpt={cardSelection?.excerpt}
+      lockWorkspace
+      submitting={cardBusy}
+      onCancel={() => setCardEditorOpen(false)}
+      onSubmit={saveSelectionCard}
+    />
   </div>;
 };
 

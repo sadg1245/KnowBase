@@ -4,6 +4,7 @@ import { App, Button, Empty, Modal, Space, Spin, Tabs, Tag, Typography } from 'a
 import { ArrowLeftOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import {
   deleteDocument, deleteKnowledgePoint, getKnowledgeBaseDetail, KnowledgeBaseDetail,
+  generateWorkspaceCards,
   knowledgePointToCard, knowledgePointToQuiz, mergeKnowledgePoints,
   regenerateDocumentLearning, reprocessDocument, updateKnowledgePoint,
 } from '../services/api';
@@ -41,6 +42,15 @@ const KnowledgeBase: React.FC = () => {
     catch (error: any) { message.error(error?.response?.data?.detail || '操作失败'); }
   };
 
+  const generateCards = async (pointIds: string[]) => {
+    if (!id) return;
+    try {
+      const result = await generateWorkspaceCards(id, pointIds);
+      message.success(`已生成 ${result.created_count} 张卡片`);
+      await load(true);
+    } catch (error: any) { message.error(error?.response?.data?.detail || '批量生成卡片失败'); }
+  };
+
   if (loading) return <Spin size="large" />;
   if (!data) return <Empty description="没有找到这个知识库" />;
   const openDocument = (documentId: string) => navigate(`/knowledge/${data.id}/documents/${documentId}`);
@@ -55,7 +65,7 @@ const KnowledgeBase: React.FC = () => {
         else document.getElementById(`point-${recommendation.knowledge_point_id}`)?.scrollIntoView({ behavior: 'smooth' });
       }} /> },
       { key: 'documents', label: `文档 ${data.documents.length}`, children: <KnowledgeDocumentList documents={data.documents} onOpen={openDocument} onReprocess={docId => void action(() => reprocessDocument(docId), '已重新提交解析')} onRegenerate={docId => void action(() => regenerateDocumentLearning(docId), '已重新提交学习内容生成')} onDelete={docId => Modal.confirm({ title: '删除这份资料？', content: '相关切片和知识点也会删除。', onOk: () => action(() => deleteDocument(docId), '文档已删除') })} /> },
-      { key: 'points', label: `知识点 ${data.knowledge_points.length}`, children: <KnowledgePointManager points={data.knowledge_points} onUpdate={(pointId, values) => action(() => updateKnowledgePoint(pointId, values), '知识点已更新')} onDelete={pointId => Modal.confirm({ title: '删除知识点？', onOk: () => action(() => deleteKnowledgePoint(pointId), '知识点已删除') })} onMerge={(target, sources) => action(() => mergeKnowledgePoints(target, sources), '知识点已合并')} onCard={pointId => action(() => knowledgePointToCard(pointId), '复习卡片已生成')} onQuiz={pointId => action(() => knowledgePointToQuiz(pointId), '练习已生成')} /> },
+      { key: 'points', label: `知识点 ${data.knowledge_points.length}`, children: <KnowledgePointManager points={data.knowledge_points} onUpdate={(pointId, values) => action(() => updateKnowledgePoint(pointId, values), '知识点已更新')} onDelete={pointId => Modal.confirm({ title: '删除知识点？', onOk: () => action(() => deleteKnowledgePoint(pointId), '知识点已删除') })} onMerge={(target, sources) => action(() => mergeKnowledgePoints(target, sources), '知识点已合并')} onCard={pointId => action(() => knowledgePointToCard(pointId), '复习卡片已生成')} onQuiz={pointId => action(() => knowledgePointToQuiz(pointId), '练习已生成')} onGenerateCards={generateCards} /> },
     ]} />
   </div>;
 };

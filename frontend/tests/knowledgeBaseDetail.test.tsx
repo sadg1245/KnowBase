@@ -28,6 +28,6 @@ test('knowledge detail components render statuses, activity, recommendation and 
   assert.match(overview, /Recent study/); assert.match(overview, /Continue learning/); assert.match(overview, /第一章/);
   const documents = renderToStaticMarkup(<KnowledgeDocumentList documents={detail.documents} onOpen={() => undefined} onReprocess={() => undefined} onRegenerate={() => undefined} onDelete={() => undefined} />);
   assert.match(documents, /failure reason/); assert.match(documents, /重新解析/); assert.match(documents, /学习内容/);
-  const points = renderToStaticMarkup(<KnowledgePointManager points={[point]} onUpdate={async () => undefined} onDelete={() => undefined} onMerge={async () => undefined} onCard={async () => undefined} onQuiz={async () => undefined} />);
-  for (const pattern of [/重点/, /已掌握/, /编\s*辑/, /删\s*除/, /生成卡片/, /生成练习/]) assert.match(points, pattern);
+  const points = renderToStaticMarkup(<KnowledgePointManager points={[point]} onUpdate={async () => undefined} onDelete={() => undefined} onMerge={async () => undefined} onCard={async () => undefined} onQuiz={async () => undefined} onGenerateCards={async () => undefined} />);
+  for (const pattern of [/重点/, /已掌握/, /编\s*辑/, /删\s*除/, /生成卡片/, /批量生成卡片/, /生成练习/]) assert.match(points, pattern);
 });
