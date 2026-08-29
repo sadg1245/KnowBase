@@ -6,8 +6,8 @@ import random
 import re
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, get_settings
@@ -19,7 +19,8 @@ from app.models.workspace import Workspace
 from app.services.learning_content import LearningGenerationError, generate_document_learning_content
 from app.services.review_service import apply_card_review, schedule_review
 from app.schemas.learning import (
-    ActivityCreate, AnalyzeRequest, FlashcardCreate, KnowledgePointCreate,
+    ActivityCreate, AnalyzeRequest, FlashcardCreate, FlashcardGenerateRequest,
+    FlashcardSelectionCreate, FlashcardUpdate, KnowledgePointCreate,
     KnowledgePointMerge, KnowledgePointUpdate, ProfileUpdate, QuizGenerateRequest, QuizSubmitRequest,
     ReviewRequest, WorkspaceLearningUpdate,
 )
@@ -47,9 +48,33 @@ def _card(row: Flashcard) -> dict:
         "id": row.id, "workspace_id": row.workspace_id,
         "knowledge_point_id": row.knowledge_point_id, "front": row.front,
         "back": row.back, "source_label": row.source_label,
+        "source_type": row.source_type, "source_snapshot": row.source_snapshot,
+        "tags": row.tags or [], "difficulty": row.difficulty,
+        "mastery": row.mastery, "mastery_status": row.mastery_status,
         "due_at": _iso(row.due_at), "interval_days": row.interval_days,
         "ease": row.ease, "review_count": row.review_count,
+        "algorithm_version": row.algorithm_version,
+        "scheduler_data": row.scheduler_data or {},
+        "last_reviewed_at": _iso(row.last_reviewed_at),
+        "total_review_seconds": row.total_review_seconds,
+        "created_at": _iso(row.created_at), "updated_at": _iso(row.updated_at),
     }
+
+
+async def _workspace_or_404(db: AsyncSession, workspace_id: str) -> Workspace:
+    workspace = (await db.execute(select(Workspace).where(Workspace.id == workspace_id))).scalar_one_or_none()
+    if not workspace:
+        raise HTTPException(404, "Knowledge base not found")
+    return workspace
+
+
+async def _document_in_workspace(db: AsyncSession, document_id: str, workspace_id: str) -> Document:
+    document = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one_or_none()
+    if not document:
+        raise HTTPException(404, "Document not found")
+    if document.workspace_id != workspace_id:
+        raise HTTPException(400, "Document does not belong to this knowledge base")
+    return document
 
 
 def _quiz(row: QuizQuestion, reveal: bool = False) -> dict:
@@ -367,31 +392,167 @@ async def delete_point(point_id: str, db: AsyncSession = Depends(get_db)) -> Non
 async def point_to_card(point_id: str, db: AsyncSession = Depends(get_db)) -> dict:
     point = (await db.execute(select(KnowledgePoint).where(KnowledgePoint.id == point_id))).scalar_one_or_none()
     if not point: raise HTTPException(404, "Knowledge point not found")
+    existing = (await db.execute(select(Flashcard).where(Flashcard.knowledge_point_id == point.id))).scalar_one_or_none()
+    if existing:
+        return _card(existing)
     label = point.source_heading or (f"第 {point.source_page} 页" if point.source_page else None)
-    card = Flashcard(workspace_id=point.workspace_id, knowledge_point_id=point.id, front=f"什么是“{point.title}”？", back=point.explanation or point.summary, source_label=label)
+    card = Flashcard(
+        workspace_id=point.workspace_id,
+        knowledge_point_id=point.id,
+        front=f"什么是“{point.title}”？",
+        back=point.explanation or point.summary,
+        source_label=label,
+        source_type="knowledge_point",
+        source_snapshot={
+            "knowledge_point_id": point.id,
+            "document_id": point.document_id,
+            "page": point.source_page,
+            "heading": point.source_heading,
+        },
+        tags=point.tags or [],
+        difficulty=point.difficulty,
+        mastery=point.mastery,
+        mastery_status=point.mastery_status,
+    )
     db.add(card); await db.flush(); await db.refresh(card)
     return _card(card)
 
 
+@router.post("/workspaces/{workspace_id}/cards/generate", status_code=201)
+async def generate_workspace_cards(
+    workspace_id: str,
+    payload: FlashcardGenerateRequest,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    await _workspace_or_404(db, workspace_id)
+    stmt = select(KnowledgePoint).where(KnowledgePoint.workspace_id == workspace_id)
+    if payload.knowledge_point_ids:
+        stmt = stmt.where(KnowledgePoint.id.in_(payload.knowledge_point_ids))
+    points = (await db.execute(stmt.order_by(KnowledgePoint.importance.desc(), KnowledgePoint.created_at.asc()))).scalars().all()
+    if payload.knowledge_point_ids and len(points) != len(set(payload.knowledge_point_ids)):
+        raise HTTPException(400, "One or more knowledge points do not belong to this knowledge base")
+    existing_ids = set((await db.execute(
+        select(Flashcard.knowledge_point_id).where(
+            Flashcard.workspace_id == workspace_id,
+            Flashcard.knowledge_point_id.is_not(None),
+        )
+    )).scalars().all())
+    created: list[dict] = []
+    for point in points:
+        if point.id in existing_ids:
+            continue
+        label = point.source_heading or (f"第 {point.source_page} 页" if point.source_page else None)
+        card = Flashcard(
+            workspace_id=workspace_id,
+            knowledge_point_id=point.id,
+            front=f"什么是“{point.title}”？",
+            back=point.explanation or point.summary,
+            source_label=label,
+            source_type="knowledge_point",
+            source_snapshot={
+                "knowledge_point_id": point.id,
+                "document_id": point.document_id,
+                "page": point.source_page,
+                "heading": point.source_heading,
+            },
+            tags=point.tags or [],
+            difficulty=point.difficulty,
+            mastery=point.mastery,
+            mastery_status=point.mastery_status,
+        )
+        db.add(card)
+        await db.flush()
+        created.append(_card(card))
+    return {"created_count": len(created), "cards": created}
+
+
 @router.get("/cards")
-async def list_cards(workspace_id: str | None = None, due_only: bool = False, db: AsyncSession = Depends(get_db)) -> list[dict]:
+async def list_cards(
+    workspace_id: str | None = None,
+    due_only: bool = False,
+    source_type: str | None = None,
+    tag: str | None = None,
+    query: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
     stmt = select(Flashcard)
     if workspace_id: stmt = stmt.where(Flashcard.workspace_id == workspace_id)
     if due_only: stmt = stmt.where(Flashcard.due_at <= datetime.now(timezone.utc))
+    if source_type: stmt = stmt.where(Flashcard.source_type == source_type)
+    if query:
+        pattern = f"%{query.strip()}%"
+        stmt = stmt.where(or_(Flashcard.front.ilike(pattern), Flashcard.back.ilike(pattern)))
     rows = (await db.execute(stmt.order_by(Flashcard.due_at.asc()))).scalars().all()
-    return [_card(row) for row in rows]
+    if tag:
+        rows = [row for row in rows if tag in (row.tags or [])]
+    safe_limit = max(1, min(500, limit))
+    safe_offset = max(0, offset)
+    return [_card(row) for row in rows[safe_offset:safe_offset + safe_limit]]
 
 
 @router.post("/cards", status_code=201)
 async def create_card(payload: FlashcardCreate, db: AsyncSession = Depends(get_db)) -> dict:
-    row = Flashcard(**payload.model_dump()); db.add(row); await db.flush(); await db.refresh(row); return _card(row)
+    await _workspace_or_404(db, payload.workspace_id)
+    values = payload.model_dump()
+    values.update(source_type="manual", source_snapshot=None, knowledge_point_id=None)
+    row = Flashcard(**values)
+    db.add(row); await db.flush(); await db.refresh(row); return _card(row)
 
 
-@router.delete("/cards/{card_id}", status_code=200)
-async def delete_card(card_id: str, db: AsyncSession = Depends(get_db)) -> None:
+@router.post("/cards/from-selection", status_code=201)
+async def selection_to_card(payload: FlashcardSelectionCreate, db: AsyncSession = Depends(get_db)) -> dict:
+    await _workspace_or_404(db, payload.workspace_id)
+    document = await _document_in_workspace(db, payload.document_id, payload.workspace_id)
+    location = payload.source_heading or (f"第 {payload.source_page} 页" if payload.source_page else None)
+    source_label = f"{document.filename} · {location}" if location else document.filename
+    row = Flashcard(
+        workspace_id=payload.workspace_id,
+        front=payload.front,
+        back=payload.back,
+        source_label=source_label,
+        source_type="selection",
+        source_snapshot={
+            "document_id": document.id,
+            "source_file": document.filename,
+            "excerpt": payload.source_excerpt,
+            "page": payload.source_page,
+            "heading": payload.source_heading,
+        },
+        tags=payload.tags,
+        difficulty=payload.difficulty,
+    )
+    db.add(row); await db.flush(); await db.refresh(row)
+    return _card(row)
+
+
+@router.put("/cards/{card_id}")
+async def update_card(card_id: str, payload: FlashcardUpdate, db: AsyncSession = Depends(get_db)) -> dict:
+    row = (await db.execute(select(Flashcard).where(Flashcard.id == card_id))).scalar_one_or_none()
+    if not row:
+        raise HTTPException(404, "Card not found")
+    values = payload.model_dump(exclude_unset=True)
+    next_workspace_id = values.get("workspace_id", row.workspace_id)
+    if next_workspace_id != row.workspace_id:
+        await _workspace_or_404(db, next_workspace_id)
+        if row.knowledge_point_id:
+            point = (await db.execute(select(KnowledgePoint).where(KnowledgePoint.id == row.knowledge_point_id))).scalar_one_or_none()
+            if point and point.workspace_id != next_workspace_id:
+                raise HTTPException(400, "Knowledge point does not belong to the target knowledge base")
+    for key, value in values.items():
+        setattr(row, key, value)
+    row.updated_at = datetime.now(timezone.utc)
+    await db.flush(); await db.refresh(row)
+    return _card(row)
+
+
+@router.delete("/cards/{card_id}", status_code=204)
+async def delete_card(card_id: str, db: AsyncSession = Depends(get_db)) -> Response:
     row = (await db.execute(select(Flashcard).where(Flashcard.id == card_id))).scalar_one_or_none()
     if not row: raise HTTPException(404, "Card not found")
     await db.delete(row)
+    return Response(status_code=204)
 
 
 @router.post("/cards/{card_id}/review")

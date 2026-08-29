@@ -153,6 +153,8 @@ class ConversationServiceTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(note_a["id"], note_b["id"])
             self.assertEqual(card_a["id"], card_b["id"])
+            self.assertEqual(card_a["source_type"], "answer")
+            self.assertEqual(card_a["source_snapshot"], [{"source_file": "资料.pdf"}])
             self.assertEqual(mistake_a["id"], mistake_b["id"])
             self.assertFalse(feedback["helpful"])
             feedback_count = (await db.execute(select(func.count(ChatFeedback.id)))).scalar()

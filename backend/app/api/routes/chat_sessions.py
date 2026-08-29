@@ -165,10 +165,22 @@ async def create_message_card(message_id: str, db: AsyncSession = Depends(get_db
             front=await _previous_question(db, message),
             back=message.content,
             source_label=(message.sources or [{}])[0].get("source_file") if message.sources else None,
+            source_type="answer",
+            source_snapshot=message.sources or [],
         )
         db.add(existing)
         await db.flush()
-    return {"id": existing.id, "front": existing.front, "back": existing.back, "source_label": existing.source_label}
+    elif existing.source_type == "manual":
+        existing.source_type = "answer"
+        existing.source_snapshot = message.sources or []
+    return {
+        "id": existing.id,
+        "front": existing.front,
+        "back": existing.back,
+        "source_label": existing.source_label,
+        "source_type": existing.source_type,
+        "source_snapshot": existing.source_snapshot,
+    }
 
 
 @router.post("/messages/{message_id}/note", status_code=201)

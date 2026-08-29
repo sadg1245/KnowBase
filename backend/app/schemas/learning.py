@@ -92,6 +92,27 @@ class FlashcardUpdate(BaseModel):
         return _normalized_tags(values)
 
 
+class FlashcardSelectionCreate(BaseModel):
+    workspace_id: str
+    document_id: str
+    front: str = Field(..., min_length=1)
+    back: str = Field(..., min_length=1)
+    source_excerpt: str = Field(..., min_length=1)
+    source_page: Optional[int] = Field(None, ge=1)
+    source_heading: Optional[str] = Field(None, max_length=255)
+    tags: list[str] = Field(default_factory=list)
+    difficulty: int = Field(2, ge=1, le=5)
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, values: list[str]) -> list[str]:
+        return _normalized_tags(values) or []
+
+
+class FlashcardGenerateRequest(BaseModel):
+    knowledge_point_ids: list[str] = Field(default_factory=list, max_length=100)
+
+
 class ReviewRequest(BaseModel):
     rating: Literal[1, 2, 3, 4]
     duration_seconds: int = Field(0, ge=0, le=3600)
