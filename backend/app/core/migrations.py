@@ -60,6 +60,25 @@ async def run_compat_migrations(conn) -> None:
         },
         "flashcards": {
             "origin_message_id": "VARCHAR(36)",
+            "tags": "JSON NOT NULL DEFAULT '[]'",
+            "difficulty": "INTEGER NOT NULL DEFAULT 2",
+            "mastery": "FLOAT NOT NULL DEFAULT 0.0",
+            "mastery_status": "VARCHAR(20) NOT NULL DEFAULT 'not_started'",
+            "source_type": "VARCHAR(30) NOT NULL DEFAULT 'manual'",
+            "source_snapshot": "JSON",
+            "algorithm_version": "VARCHAR(20) NOT NULL DEFAULT 'simple_v1'",
+            "scheduler_data": "JSON NOT NULL DEFAULT '{}'",
+            "last_reviewed_at": "DATETIME",
+            "total_review_seconds": "INTEGER NOT NULL DEFAULT 0",
+            "updated_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+        },
+        "review_logs": {
+            "duration_seconds": "INTEGER NOT NULL DEFAULT 0",
+            "previous_mastery": "FLOAT NOT NULL DEFAULT 0.0",
+            "next_mastery": "FLOAT NOT NULL DEFAULT 0.0",
+            "previous_status": "VARCHAR(20) NOT NULL DEFAULT 'not_started'",
+            "next_status": "VARCHAR(20) NOT NULL DEFAULT 'learning'",
+            "algorithm_version": "VARCHAR(20) NOT NULL DEFAULT 'simple_v1'",
         },
     }
     for table, columns in additions.items():
@@ -76,6 +95,12 @@ async def run_compat_migrations(conn) -> None:
     await conn.execute(text(
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_quiz_questions_origin_message_id "
         "ON quiz_questions(origin_message_id) WHERE origin_message_id IS NOT NULL"
+    ))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_flashcards_mastery_status ON flashcards(mastery_status)"
+    ))
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_flashcards_source_type ON flashcards(source_type)"
     ))
     try:
         await conn.execute(text(

@@ -3,7 +3,23 @@
 from datetime import datetime
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+
+CardSourceType = Literal["manual", "knowledge_point", "answer", "selection"]
+
+
+def _normalized_tags(values: list[str] | None) -> list[str] | None:
+    if values is None:
+        return None
+    result: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        tag = value.strip()
+        if tag and tag not in seen:
+            seen.add(tag)
+            result.append(tag)
+    return result
 
 
 class ProfileUpdate(BaseModel):
@@ -50,10 +66,35 @@ class FlashcardCreate(BaseModel):
     front: str = Field(..., min_length=1)
     back: str = Field(..., min_length=1)
     source_label: Optional[str] = None
+    tags: list[str] = Field(default_factory=list)
+    difficulty: int = Field(2, ge=1, le=5)
+    source_type: CardSourceType = "manual"
+    source_snapshot: Optional[dict[str, Any]] = None
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, values: list[str]) -> list[str]:
+        return _normalized_tags(values) or []
+
+
+class FlashcardUpdate(BaseModel):
+    workspace_id: Optional[str] = None
+    front: Optional[str] = Field(None, min_length=1)
+    back: Optional[str] = Field(None, min_length=1)
+    source_label: Optional[str] = None
+    tags: Optional[list[str]] = None
+    difficulty: Optional[int] = Field(None, ge=1, le=5)
+    due_at: Optional[datetime] = None
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_tags(cls, values: list[str] | None) -> list[str] | None:
+        return _normalized_tags(values)
 
 
 class ReviewRequest(BaseModel):
     rating: Literal[1, 2, 3, 4]
+    duration_seconds: int = Field(0, ge=0, le=3600)
 
 
 class QuizGenerateRequest(BaseModel):
