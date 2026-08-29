@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from math import ceil
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.learning import Flashcard, KnowledgePoint, ReviewLog, StudyActivity
+from app.models.learning import Flashcard, KnowledgePoint, ReviewLog, StudyActivity, UserProfile
 
 
 ALGORITHM_VERSION = "simple_v1"
@@ -39,6 +40,101 @@ def mastery_status_for(mastery: float, review_count: int) -> str:
     if review_count == 0 and mastery == 0:
         return "not_started"
     return "mastered" if mastery >= 0.8 else "learning"
+
+
+def local_day_bounds(now: datetime, offset_minutes: int) -> tuple[datetime, datetime]:
+    """Return the UTC boundaries of the local calendar day containing ``now``."""
+    offset = timedelta(minutes=offset_minutes)
+    local_now = now + offset
+    local_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return local_start - offset, local_start + timedelta(days=1) - offset
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+async def build_review_summary(
+    db: AsyncSession,
+    timezone_offset_minutes: int,
+    now: datetime | None = None,
+) -> dict:
+    """Aggregate the learner's review-day metrics using their local date."""
+    current = now or datetime.now(timezone.utc)
+    day_start, day_end = local_day_bounds(current, timezone_offset_minutes)
+    due_cards = (
+        await db.execute(select(Flashcard).where(Flashcard.due_at <= current).order_by(Flashcard.due_at.asc()))
+    ).scalars().all()
+    due_count = len(due_cards)
+    new_count = sum(1 for card in due_cards if card.review_count == 0)
+    overdue_count = sum(1 for card in due_cards if _as_utc(card.due_at) < day_start)
+
+    today_reviews = (
+        await db.execute(select(ReviewLog).where(
+            ReviewLog.reviewed_at >= day_start,
+            ReviewLog.reviewed_at < day_end,
+        ))
+    ).scalars().all()
+    durations = list((await db.execute(
+        select(ReviewLog.duration_seconds)
+        .where(ReviewLog.duration_seconds > 0)
+        .order_by(ReviewLog.reviewed_at.desc())
+        .limit(30)
+    )).scalars().all())
+    average_seconds = (sum(durations) / len(durations)) if durations else 30
+    estimated_minutes = ceil((due_count * average_seconds) / 60) if due_count else 0
+
+    history_start = day_start - timedelta(days=120)
+    review_dates = list((await db.execute(
+        select(ReviewLog.reviewed_at).where(ReviewLog.reviewed_at >= history_start)
+    )).scalars().all())
+    activity_dates = list((await db.execute(
+        select(StudyActivity.created_at).where(StudyActivity.created_at >= history_start)
+    )).scalars().all())
+    offset = timedelta(minutes=timezone_offset_minutes)
+    active_dates = {(_as_utc(value) + offset).date() for value in [*review_dates, *activity_dates]}
+    cursor = (current + offset).date()
+    if cursor not in active_dates:
+        cursor -= timedelta(days=1)
+    streak_days = 0
+    while cursor in active_dates:
+        streak_days += 1
+        cursor -= timedelta(days=1)
+
+    point_ids = {card.knowledge_point_id for card in due_cards if card.knowledge_point_id}
+    weak_points: list[dict] = []
+    if point_ids:
+        points = (
+            await db.execute(
+                select(KnowledgePoint)
+                .where(KnowledgePoint.id.in_(point_ids))
+                .order_by(KnowledgePoint.is_key.desc(), KnowledgePoint.mastery.asc(), KnowledgePoint.importance.desc())
+                .limit(5)
+            )
+        ).scalars().all()
+        weak_points = [{
+            "id": point.id,
+            "workspace_id": point.workspace_id,
+            "title": point.title,
+            "mastery": point.mastery,
+            "mastery_status": point.mastery_status,
+            "importance": point.importance,
+            "is_key": point.is_key,
+        } for point in points]
+
+    profile = (await db.execute(select(UserProfile).limit(1))).scalar_one_or_none()
+    return {
+        "due_count": due_count,
+        "new_count": new_count,
+        "completed_today": len(today_reviews),
+        "estimated_minutes": estimated_minutes,
+        "streak_days": streak_days,
+        "overdue_count": overdue_count,
+        "weak_points": weak_points,
+        "daily_target": profile.daily_review_target if profile else 10,
+    }
 
 
 async def apply_card_review(

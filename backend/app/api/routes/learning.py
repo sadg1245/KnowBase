@@ -17,7 +17,7 @@ from app.models.chat import DocumentChunk
 from app.models.learning import Flashcard, KnowledgePoint, QuizQuestion, ReviewLog, StudyActivity, UserProfile
 from app.models.workspace import Workspace
 from app.services.learning_content import LearningGenerationError, generate_document_learning_content
-from app.services.review_service import apply_card_review, schedule_review
+from app.services.review_service import apply_card_review, build_review_summary, schedule_review
 from app.schemas.learning import (
     ActivityCreate, AnalyzeRequest, FlashcardCreate, FlashcardGenerateRequest,
     FlashcardSelectionCreate, FlashcardUpdate, KnowledgePointCreate,
@@ -464,6 +464,14 @@ async def generate_workspace_cards(
         await db.flush()
         created.append(_card(card))
     return {"created_count": len(created), "cards": created}
+
+
+@router.get("/review/summary")
+async def review_summary(
+    timezone_offset_minutes: int = Query(0, ge=-840, le=840),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    return await build_review_summary(db, timezone_offset_minutes)
 
 
 @router.get("/cards")
