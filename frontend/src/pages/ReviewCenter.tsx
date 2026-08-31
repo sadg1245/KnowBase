@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { App, Button, Empty, Modal, Skeleton } from 'antd';
+import { App, Button, Empty, Skeleton } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import { ReviewOverview } from '../components/review/ReviewOverview';
 import { CardLibrary, type CardLibraryFilters } from '../components/review/CardLibrary';
@@ -16,7 +16,7 @@ import {
 type ReviewMode = 'overview' | 'library' | 'session' | 'results';
 
 const ReviewCenter: React.FC = () => {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const [mode, setMode] = useState<ReviewMode>('overview');
   const [summary, setSummary] = useState<ReviewSummary | null>(null);
   const [dueCards, setDueCards] = useState<Flashcard[]>([]);
@@ -87,7 +87,7 @@ const ReviewCenter: React.FC = () => {
     finally { setSubmitting(false); }
   };
 
-  const removeCard = (card: Flashcard) => Modal.confirm({
+  const removeCard = (card: Flashcard) => modal.confirm({
     title: '删除这张卡片？',
     content: `“${card.front}”及其复习记录将无法继续使用。`,
     okText: '删除', okButtonProps: { danger: true }, cancelText: '取消',

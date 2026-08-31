@@ -70,7 +70,9 @@ async def run_compat_migrations(conn) -> None:
             "scheduler_data": "JSON NOT NULL DEFAULT '{}'",
             "last_reviewed_at": "DATETIME",
             "total_review_seconds": "INTEGER NOT NULL DEFAULT 0",
-            "updated_at": "DATETIME DEFAULT CURRENT_TIMESTAMP",
+            # SQLite rejects non-constant defaults when ALTER TABLE adds a
+            # column. Add it nullable, then backfill legacy rows below.
+            "updated_at": "DATETIME",
         },
         "review_logs": {
             "duration_seconds": "INTEGER NOT NULL DEFAULT 0",
@@ -87,6 +89,10 @@ async def run_compat_migrations(conn) -> None:
         for name, ddl in columns.items():
             if name not in existing:
                 await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
+
+    await conn.execute(text(
+        "UPDATE flashcards SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL"
+    ))
 
     await conn.execute(text(
         "CREATE UNIQUE INDEX IF NOT EXISTS ix_flashcards_origin_message_id "

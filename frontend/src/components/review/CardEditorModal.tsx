@@ -44,7 +44,7 @@ export const CardEditorModal: React.FC<CardEditorModalProps> = ({
     confirmLoading={submitting}
     onCancel={onCancel}
     onOk={() => form.submit()}
-    destroyOnClose
+    destroyOnHidden
   >
     <Form form={form} layout="vertical" onFinish={values => onSubmit({ ...values, tags: values.tags || [] })}>
       <Form.Item name="workspace_id" label="所属知识库" rules={[{ required: true, message: '请选择知识库' }]}>

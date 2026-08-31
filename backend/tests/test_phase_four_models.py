@@ -3,12 +3,14 @@
 import unittest
 
 from pydantic import ValidationError
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.models  # noqa: F401 - register complete SQLAlchemy metadata
 from app.models.base import Base
 from app.models.learning import Flashcard, ReviewLog
 from app.models.workspace import Workspace
+from app.core.migrations import run_compat_migrations
 from app.schemas.learning import FlashcardCreate, FlashcardUpdate, ReviewRequest
 
 
@@ -87,6 +89,34 @@ class PhaseFourModelTests(unittest.IsolatedAsyncioTestCase):
             <= fields
         )
         self.assertFalse({"review_count", "ease", "interval_days"} & fields)
+
+    async def test_compat_migrations_upgrade_legacy_card_rows_idempotently(self):
+        engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        try:
+            async with engine.begin() as connection:
+                legacy_tables = [
+                    "CREATE TABLE workspaces (id TEXT PRIMARY KEY)",
+                    "CREATE TABLE documents (id TEXT PRIMARY KEY)",
+                    "CREATE TABLE document_chunks (id TEXT PRIMARY KEY, tokenized_content TEXT, heading TEXT, source_file TEXT)",
+                    "CREATE TABLE knowledge_points (id TEXT PRIMARY KEY)",
+                    "CREATE TABLE user_profiles (id TEXT PRIMARY KEY)",
+                    "CREATE TABLE conversations (id TEXT PRIMARY KEY)",
+                    "CREATE TABLE quiz_questions (id TEXT PRIMARY KEY)",
+                    "CREATE TABLE flashcards (id TEXT PRIMARY KEY, front TEXT, back TEXT)",
+                    "CREATE TABLE review_logs (id TEXT PRIMARY KEY, flashcard_id TEXT, rating INTEGER)",
+                ]
+                for ddl in legacy_tables:
+                    await connection.execute(text(ddl))
+                await connection.execute(text("INSERT INTO flashcards VALUES ('legacy', 'Q', 'A')"))
+                await run_compat_migrations(connection)
+                await run_compat_migrations(connection)
+                row = (await connection.execute(text(
+                    "SELECT id, front, back, source_type, updated_at FROM flashcards"
+                ))).one()
+                self.assertEqual(row[:4], ("legacy", "Q", "A", "manual"))
+                self.assertIsNotNone(row.updated_at)
+        finally:
+            await engine.dispose()
 
 
 if __name__ == "__main__":

@@ -92,7 +92,9 @@ const DocumentDetail: React.FC = () => {
     params.get('chunk'),
     Number(params.get('page')) || undefined,
   ), [params, sections]);
-  useEffect(() => selectedRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }), [selected?.chunk_id]);
+  useEffect(() => {
+    selectedRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }, [selected?.chunk_id]);
 
   useEffect(() => {
     if (!document || document.file_type !== '.pdf') { setBlobUrl(undefined); return; }
