@@ -305,8 +305,8 @@ async def build_generated_paper(
             raise ValueError("assessment questions must be an array")
         actual_count = len(raw_questions)
         if actual_count != request.count:
-            if request.strict_sources:
-                raise _StrictEvidenceInsufficiency(actual_count, max(0, request.count - actual_count))
+            if request.strict_sources and actual_count < request.count:
+                raise _StrictEvidenceInsufficiency(actual_count, request.count - actual_count)
             raise ValueError("assessment must contain exactly the requested number of questions")
         paper = GeneratedPaper.model_validate(payload)
         actual_types = {question.question_type for question in paper.questions}

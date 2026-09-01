@@ -162,6 +162,16 @@ class AssessmentGenerationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("missing_question_types=short_answer", str(raised.exception))
         self.assertEqual(len(calls), 2)
 
+    async def test_strict_over_count_is_repaired_then_rejected_as_invalid_output(self):
+        invalid = {"questions": [generated_question(), generated_question(prompt="A different question")]}
+        completion, calls = recording_completion(invalid, invalid)
+
+        with self.assertRaises(AssessmentAIError) as raised:
+            await build_generated_paper(EVIDENCE, REQUEST, SETTINGS, completion)
+
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertEqual(len(calls), 2)
+
     async def test_non_strict_semantic_paper_insufficiency_remains_a_502(self):
         request = REQUEST.model_copy(update={"count": 2, "question_types": ["single_choice", "short_answer"], "strict_sources": False})
         invalid = {"questions": [generated_question(), generated_question(prompt="A different question")]}
