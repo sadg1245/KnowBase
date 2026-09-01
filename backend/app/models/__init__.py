@@ -4,6 +4,7 @@ from app.models.document import Document
 from app.models.conversation import Conversation
 from app.models.chat import ChatSession, LearningNote, ChatFeedback, DocumentChunk, RetrievalRun, RetrievalHit
 from app.models.learning import UserProfile, KnowledgePoint, Flashcard, ReviewLog, QuizQuestion, StudyActivity
+from app.models.assessment import QuizSet, QuizRun, QuizAttempt, MistakeRecord, WeakKnowledgeState, LearningTask
 
 __all__ = [
     "Base",
@@ -14,4 +15,5 @@ __all__ = [
     "Document",
     "Conversation", "ChatSession", "LearningNote", "ChatFeedback", "DocumentChunk", "RetrievalRun", "RetrievalHit",
     "UserProfile", "KnowledgePoint", "Flashcard", "ReviewLog", "QuizQuestion", "StudyActivity",
+    "QuizSet", "QuizRun", "QuizAttempt", "MistakeRecord", "WeakKnowledgeState", "LearningTask",
 ]
