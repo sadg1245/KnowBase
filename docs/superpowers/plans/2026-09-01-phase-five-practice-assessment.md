@@ -425,7 +425,7 @@ git commit -m "feat: expose phase five assessment APIs"
 
 **Interfaces:**
 - Produces TypeScript types matching all new API schemas.
-- Produces API functions `generateQuizSet`, `getQuizSet`, `createQuizRun`, `startQuizRun`, `submitQuizQuestion`, `submitQuizPaper`, `retryQuizRun`, `getMistakes`, `redoMistake`, `getWeakKnowledge`, `getLearningTasks`, and `completeLearningTask`.
+- Produces API functions `generateQuizSet`, `getQuizSet`, `createQuizRun`, `startQuizRun`, `submitQuizQuestion`, `submitQuizPaper`, `retryQuizRun`, `retryAttemptGrading`, `getMistakes`, `redoMistake`, `getWeakKnowledge`, `getLearningTasks`, and `completeLearningTask`.
 - Produces pure state functions `createPracticeSession`, `setAnswer`, `recordAttempt`, `remainingSeconds`, `unansweredQuestionIds`, and `practiceResults`.
 
 - [ ] **Step 1: Write failing state-machine tests**
@@ -636,7 +636,7 @@ Create a temporary database outside the repository with the pre-phase-five `quiz
 
 - [ ] **Step 5: Run desktop Playwright acceptance**
 
-Flow: `/practice` -> configure all requested fields -> generate a six-type strict-source paper -> start sequential mode -> answer one objective and one subjective question -> verify timer, answer, explanation, AI feedback, and source navigation -> intentionally miss a question -> verify it appears in the mistake notebook -> redo it twice correctly -> verify mastered status.
+Flow: `/practice` -> configure all requested fields -> generate a six-type strict-source paper -> start sequential mode -> answer one objective and one subjective question -> verify timer, answer, explanation, AI feedback, and source navigation -> intentionally miss a question -> verify it appears in the mistake notebook -> redo it twice correctly -> verify mastered status. Use Playwright route fixtures for the browser workflow unless a local no-cost model is already configured; AI provider behavior itself is proven by backend tests with injected completion functions, and verification must not consume a paid external model without explicit authorization.
 
 - [ ] **Step 6: Run weak-knowledge and review-link acceptance**
 
