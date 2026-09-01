@@ -17,6 +17,8 @@ NOW = datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc)
 class AssessmentScoringTests(unittest.TestCase):
     def test_normalize_answer_handles_unicode_spaces_case_and_punctuation(self):
         self.assertEqual(normalize_answer("  A  B\u2003! "), "a b")
+        self.assertEqual(normalize_answer("ß"), "ß")
+        self.assertFalse(grade_objective("single_choice", "ß", "ss").is_correct)
         self.assertEqual(normalize_answer("答案，。"), "答案")
 
     def test_single_choice_is_scalar_and_normalized(self):
@@ -37,7 +39,7 @@ class AssessmentScoringTests(unittest.TestCase):
     def test_fill_blank_requires_each_position_and_accepts_answer_alternatives(self):
         result = grade_objective("fill_blank", [["Paris", "巴黎"], "France"], [" 巴黎。 ", "france"])
         self.assertTrue(result.is_correct)
-        self.assertTrue(grade_objective("fill_blank", [["Paris", "巴黎"], "France"], ["Paris"]).is_correct is False)
+        self.assertFalse(grade_objective("fill_blank", [["Paris", "巴黎"], "France"], ["Paris"]).is_correct)
 
     def test_unknown_or_non_objective_question_type_is_not_graded(self):
         result = grade_objective("short_answer", "x", "x")
@@ -66,6 +68,7 @@ class AssessmentScoringTests(unittest.TestCase):
     def test_elapsed_seconds_clamps_negative_and_limit(self):
         self.assertEqual(elapsed_seconds(NOW, NOW - timedelta(seconds=2), None), 0)
         self.assertEqual(elapsed_seconds(NOW, NOW + timedelta(seconds=12), 10), 10)
+        self.assertEqual(elapsed_seconds(NOW, NOW + timedelta(seconds=12), -10), 0)
         self.assertEqual(elapsed_seconds(NOW, NOW + timedelta(milliseconds=1999), None), 1)
 
 

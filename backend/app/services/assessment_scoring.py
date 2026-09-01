@@ -7,7 +7,6 @@ import string
 from copy import copy
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
 
 
 _SURROUNDING_PUNCTUATION = string.punctuation + "，。！？；：、（）【】［］「」『』《》〈〉“”‘’"
@@ -40,7 +39,7 @@ def normalize_answer(value: object) -> object:
     if isinstance(value, str):
         text = _WHITESPACE.sub(" ", value).strip()
         text = text.strip(_SURROUNDING_PUNCTUATION).strip()
-        return text.casefold()
+        return "".join(chr(ord(char) + 32) if "A" <= char <= "Z" else char for char in text)
     if isinstance(value, list):
         return [normalize_answer(item) for item in value]
     if isinstance(value, tuple):
@@ -123,4 +122,4 @@ def next_mistake_state(
 def elapsed_seconds(started_at: datetime, finished_at: datetime, limit: int | None) -> int:
     """Return elapsed whole seconds, clamped to zero and an optional limit."""
     elapsed = max(0, int((finished_at - started_at).total_seconds()))
-    return min(elapsed, limit) if limit is not None else elapsed
+    return min(elapsed, max(0, limit)) if limit is not None else elapsed
