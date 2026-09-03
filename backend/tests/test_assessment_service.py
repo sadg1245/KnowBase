@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -23,6 +24,8 @@ from app.services.assessment_service import (
     AssessmentStateError,
     create_quiz_run,
     generate_quiz_set,
+    serialize_question,
+    serialize_quiz_run,
     serialize_quiz_set,
     start_quiz_run,
     submit_paper,
@@ -164,6 +167,33 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
         await self.db.commit()
         return quiz_set, question
 
+    async def add_question(
+        self,
+        quiz_set: QuizSet,
+        *,
+        position: int,
+        question_type: str = "true_false",
+    ) -> QuizQuestion:
+        question = QuizQuestion(
+            workspace_id=self.workspace.id,
+            quiz_set_id=quiz_set.id,
+            document_id=self.document.id,
+            knowledge_point_id=self.point.id,
+            question_type=question_type,
+            prompt=f"Question {position}",
+            options=["True", "False"] if question_type == "true_false" else None,
+            answer="True",
+            answer_payload="True",
+            explanation="Because it is true.",
+            grading_rubric={"key_points": ["true"]} if question_type == "short_answer" else {},
+            source_snapshot=[{"chunk_id": self.chunk.id, "document_id": self.document.id}],
+            position=position,
+        )
+        self.db.add(question)
+        quiz_set.question_count = max(quiz_set.question_count, position)
+        await self.db.commit()
+        return question
+
     async def test_generation_validates_cross_scope_documents_before_calling_ai(self):
         other_workspace = Workspace(name="Other", slug="other")
         self.db.add(other_workspace)
@@ -230,6 +260,20 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(questions[0].knowledge_point_id, self.point.id)
         self.assertEqual(questions[0].document_id, self.document.id)
 
+    async def test_generation_releases_write_transaction_while_waiting_for_ai(self):
+        async def complete_without_open_transaction(**_kwargs):
+            self.assertFalse(self.db.in_transaction())
+            return _response({"questions": [_generated_question()]})
+
+        generated = await generate_quiz_set(
+            self.db,
+            self.request(),
+            SETTINGS,
+            complete_without_open_transaction,
+        )
+
+        self.assertEqual(generated.status, "ready")
+
     async def test_failed_generation_persists_failed_set_without_partial_questions(self):
         async def unavailable(**_kwargs):
             raise RuntimeError("offline")
@@ -266,13 +310,33 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_answers_are_hidden_until_sequential_reveal_or_paper_submission(self):
         quiz_set, question = await self.make_set()
+        question.grading_rubric = {"key_points": ["three sides"]}
+        question.source_snapshot = [{
+            "chunk_id": self.chunk.id,
+            "document_id": self.document.id,
+            "source_file": self.document.filename,
+            "page": 3,
+            "section_path": ["Geometry", "Foundations"],
+            "excerpt": "A triangle has three sides.",
+        }]
         run = await create_quiz_run(self.db, quiz_set.id)
         await start_quiz_run(self.db, run.id, NOW)
 
         hidden = serialize_quiz_set(quiz_set, questions=[question], run=run, attempts=[])
-        self.assertNotIn("answer", hidden["questions"][0])
-        self.assertNotIn("answer_payload", hidden["questions"][0])
-        self.assertNotIn("grading_rubric", hidden["questions"][0])
+        hidden_question = hidden["questions"][0]
+        self.assertNotIn("answer", hidden_question)
+        self.assertNotIn("answer_payload", hidden_question)
+        self.assertNotIn("grading_rubric", hidden_question)
+        self.assertNotIn("explanation", hidden_question)
+        self.assertEqual(
+            hidden_question["source_snapshot"],
+            [{
+                "chunk_id": self.chunk.id,
+                "document_id": self.document.id,
+                "source_file": self.document.filename,
+                "page": 3,
+            }],
+        )
 
         attempt = await submit_question(
             self.db,
@@ -317,6 +381,58 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(revealed_paper["questions"][0]["answer_payload"], "Three")
 
+    async def test_serializer_rejects_cross_scope_run_questions_and_attempts(self):
+        quiz_set, question = await self.make_set()
+        other_set, other_question = await self.make_set()
+        run = await create_quiz_run(self.db, quiz_set.id)
+        other_run = await create_quiz_run(self.db, other_set.id)
+        cross_set_attempt = QuizAttempt(
+            quiz_set_id=other_set.id,
+            quiz_run_id=other_run.id,
+            question_id=other_question.id,
+            attempt_number=1,
+            user_answer="Three",
+            is_correct=True,
+            score=1,
+            max_score=1,
+        )
+        wrong_question_attempt = QuizAttempt(
+            quiz_set_id=quiz_set.id,
+            quiz_run_id=run.id,
+            question_id=other_question.id,
+            attempt_number=1,
+            user_answer="Three",
+            is_correct=True,
+            score=1,
+            max_score=1,
+        )
+
+        invalid_calls = [
+            lambda: serialize_quiz_set(other_set, questions=[other_question], run=run),
+            lambda: serialize_quiz_set(quiz_set, questions=[other_question], run=run),
+            lambda: serialize_quiz_set(
+                quiz_set,
+                questions=[question],
+                run=run,
+                attempts=[cross_set_attempt],
+            ),
+            lambda: serialize_question(question, attempt=cross_set_attempt),
+            lambda: serialize_quiz_run(
+                run,
+                quiz_set=quiz_set,
+                questions=[other_question],
+            ),
+            lambda: serialize_quiz_run(
+                run,
+                questions=[question],
+                attempts=[wrong_question_attempt],
+            ),
+        ]
+        for invalid_call in invalid_calls:
+            with self.subTest(call=invalid_call):
+                with self.assertRaises(AssessmentScopeError):
+                    invalid_call()
+
     async def test_retry_round_does_not_reveal_from_an_older_run_attempt(self):
         quiz_set, question = await self.make_set()
         first_run = await create_quiz_run(self.db, quiz_set.id)
@@ -341,6 +457,7 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn("answer", serialized["questions"][0])
         self.assertNotIn("answer_payload", serialized["questions"][0])
+        self.assertNotIn("attempt", serialized["questions"][0])
 
     async def test_wrong_submission_creates_attempt_mistake_and_updates_compatibility_fields(self):
         quiz_set, question = await self.make_set()
@@ -371,6 +488,141 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(activity.duration_seconds, 12)
         self.assertEqual(run.graded_count, 1)
         self.assertEqual(run.max_score, 1)
+
+    async def test_same_run_question_can_only_be_submitted_once(self):
+        quiz_set, question = await self.make_set()
+        await self.add_question(quiz_set, position=2)
+        run = await create_quiz_run(self.db, quiz_set.id)
+        await start_quiz_run(self.db, run.id, NOW)
+
+        await submit_question(
+            self.db,
+            run.id,
+            question.id,
+            QuestionSubmitRequest(answer="Two", duration_seconds=4),
+            SETTINGS,
+            now=NOW + timedelta(seconds=4),
+        )
+        with self.assertRaises(AssessmentStateError):
+            await submit_question(
+                self.db,
+                run.id,
+                question.id,
+                QuestionSubmitRequest(answer="Three", duration_seconds=5),
+                SETTINGS,
+                now=NOW + timedelta(seconds=5),
+            )
+
+        self.assertEqual(await self.db.scalar(select(func.count(QuizAttempt.id))), 1)
+        self.assertEqual(await self.db.scalar(select(func.count(StudyActivity.id))), 1)
+        await self.db.refresh(question)
+        self.assertEqual(question.attempts, 1)
+        self.assertEqual(question.correct_attempts, 0)
+
+    async def test_concurrent_duplicate_submission_has_one_persisted_winner(self):
+        quiz_set, question = await self.make_set()
+        await self.add_question(quiz_set, position=2)
+        run = await create_quiz_run(self.db, quiz_set.id)
+        await start_quiz_run(self.db, run.id, NOW)
+        await self.db.commit()
+
+        async def submit_once(answer: str):
+            async with self.sessions() as session:
+                return await submit_question(
+                    session,
+                    run.id,
+                    question.id,
+                    QuestionSubmitRequest(answer=answer, duration_seconds=4),
+                    SETTINGS,
+                    now=NOW + timedelta(seconds=4),
+                )
+
+        results = await asyncio.gather(submit_once("Two"), submit_once("Three"), return_exceptions=True)
+
+        self.assertEqual(sum(isinstance(result, QuizAttempt) for result in results), 1)
+        self.assertEqual(sum(isinstance(result, AssessmentStateError) for result in results), 1)
+        self.assertEqual(await self.db.scalar(select(func.count(QuizAttempt.id))), 1)
+        self.assertEqual(await self.db.scalar(select(func.count(StudyActivity.id))), 1)
+
+    async def test_concurrent_round_creation_is_monotonic_without_integrity_errors(self):
+        quiz_set, _ = await self.make_set()
+
+        async def create_once():
+            async with self.sessions() as session:
+                return await create_quiz_run(session, quiz_set.id)
+
+        results = await asyncio.gather(create_once(), create_once(), return_exceptions=True)
+
+        self.assertTrue(all(isinstance(result, QuizRun) for result in results), results)
+        self.assertEqual(sorted(result.round_number for result in results), [1, 2])
+
+    async def test_concurrent_runs_update_one_mistake_and_question_counters_without_lost_writes(self):
+        quiz_set, question = await self.make_set()
+        first_run = await create_quiz_run(self.db, quiz_set.id)
+        await start_quiz_run(self.db, first_run.id, NOW)
+        second_run = await create_quiz_run(self.db, quiz_set.id)
+        await start_quiz_run(self.db, second_run.id, NOW)
+        await self.db.commit()
+
+        async def submit_wrong(run_id: str):
+            async with self.sessions() as session:
+                return await submit_question(
+                    session,
+                    run_id,
+                    question.id,
+                    QuestionSubmitRequest(answer="Two", duration_seconds=1),
+                    SETTINGS,
+                    now=NOW + timedelta(seconds=1),
+                )
+
+        results = await asyncio.gather(
+            submit_wrong(first_run.id),
+            submit_wrong(second_run.id),
+            return_exceptions=True,
+        )
+
+        self.assertTrue(all(isinstance(result, QuizAttempt) for result in results), results)
+        async with self.sessions() as verifier:
+            persisted_question = await verifier.get(QuizQuestion, question.id)
+            persisted_point = await verifier.get(KnowledgePoint, self.point.id)
+            mistake = (await verifier.execute(select(MistakeRecord))).scalar_one()
+            self.assertEqual(mistake.wrong_count, 2)
+            self.assertEqual(persisted_question.attempts, 2)
+            self.assertEqual(persisted_question.correct_attempts, 0)
+            self.assertEqual(persisted_point.mastery, 0.34)
+            self.assertEqual(await verifier.scalar(select(func.count(StudyActivity.id))), 2)
+
+    async def test_question_duration_cannot_exceed_server_elapsed_or_remaining_time(self):
+        quiz_set, first = await self.make_set()
+        second = await self.add_question(quiz_set, position=2)
+        await self.add_question(quiz_set, position=3)
+        run = await create_quiz_run(self.db, quiz_set.id)
+        await start_quiz_run(self.db, run.id, NOW)
+
+        first_attempt = await submit_question(
+            self.db,
+            run.id,
+            first.id,
+            QuestionSubmitRequest(answer="Three", duration_seconds=999),
+            SETTINGS,
+            now=NOW + timedelta(seconds=12),
+        )
+        second_attempt = await submit_question(
+            self.db,
+            run.id,
+            second.id,
+            QuestionSubmitRequest(answer="True", duration_seconds=999),
+            SETTINGS,
+            now=NOW + timedelta(seconds=15),
+        )
+        activities = (
+            await self.db.execute(select(StudyActivity).order_by(StudyActivity.created_at))
+        ).scalars().all()
+
+        self.assertEqual(first_attempt.duration_seconds, 12)
+        self.assertEqual(second_attempt.duration_seconds, 3)
+        self.assertEqual([activity.duration_seconds for activity in activities], [12, 3])
+        self.assertLessEqual(sum(activity.duration_seconds for activity in activities), 15)
 
     async def test_two_correct_redos_master_the_existing_mistake(self):
         quiz_set, question = await self.make_set()
@@ -447,11 +699,90 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.db.scalar(select(func.count(MistakeRecord.id)))), 0)
         self.assertEqual(question.attempts, 0)
         self.assertEqual(question.correct_attempts, 0)
+        self.assertEqual(question.last_answer, "My explanation")
         self.assertIsNone(question.last_correct)
         self.assertEqual(run.graded_count, 0)
         self.assertEqual(run.correct_count, 0)
         self.assertEqual(run.score, 0)
         self.assertEqual(run.max_score, 0)
+
+    async def test_subjective_grading_waits_without_a_write_transaction(self):
+        quiz_set, question = await self.make_set()
+        question.question_type = "short_answer"
+        question.options = None
+        question.answer_payload = "A triangle has three sides."
+        question.grading_rubric = {"key_points": ["three sides"]}
+        await self.db.commit()
+        run = await create_quiz_run(self.db, quiz_set.id)
+        await start_quiz_run(self.db, run.id, NOW)
+
+        async def complete_without_open_transaction(**_kwargs):
+            self.assertFalse(self.db.in_transaction())
+            return _response({
+                "score": 1,
+                "max_score": 1,
+                "is_correct": True,
+                "feedback": "Correct",
+                "error_reason": None,
+                "matched_points": ["three sides"],
+                "missing_points": [],
+            })
+
+        attempt = await submit_question(
+            self.db,
+            run.id,
+            question.id,
+            QuestionSubmitRequest(answer="It has three sides."),
+            SETTINGS,
+            complete_without_open_transaction,
+            now=NOW + timedelta(seconds=2),
+        )
+
+        self.assertEqual(attempt.evaluation_status, "graded")
+
+    async def test_paper_collects_all_ai_grades_before_persisting_and_revalidates_run(self):
+        quiz_set, first = await self.make_set(answer_mode="full_paper")
+        first.question_type = "short_answer"
+        first.options = None
+        first.grading_rubric = {"key_points": ["three sides"]}
+        second = await self.add_question(quiz_set, position=2, question_type="short_answer")
+        run = await create_quiz_run(self.db, quiz_set.id)
+        await start_quiz_run(self.db, run.id, NOW)
+        await self.db.commit()
+        completion_count = 0
+
+        async def complete_then_invalidate(**_kwargs):
+            nonlocal completion_count
+            completion_count += 1
+            self.assertFalse(self.db.in_transaction())
+            async with self.sessions() as other:
+                self.assertEqual(await other.scalar(select(func.count(QuizAttempt.id))), 0)
+                if completion_count == 2:
+                    persisted_run = await other.get(QuizRun, run.id)
+                    persisted_run.status = "submitted"
+                    await other.commit()
+            return _response({
+                "score": 1,
+                "max_score": 1,
+                "is_correct": True,
+                "feedback": "Correct",
+                "error_reason": None,
+                "matched_points": ["true"],
+                "missing_points": [],
+            })
+
+        with self.assertRaises(AssessmentStateError):
+            await submit_paper(
+                self.db,
+                run.id,
+                {first.id: "Three sides", second.id: "True"},
+                SETTINGS,
+                complete_then_invalidate,
+                now=NOW + timedelta(seconds=5),
+            )
+
+        self.assertEqual(completion_count, 2)
+        self.assertEqual(await self.db.scalar(select(func.count(QuizAttempt.id))), 0)
 
     async def test_full_paper_grades_supplied_answers_and_uses_server_elapsed_time(self):
         quiz_set, question = await self.make_set(answer_mode="full_paper")

@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import weakref
+from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable, Sequence
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
@@ -55,6 +60,48 @@ class AssessmentStateError(AssessmentServiceError):
 
 class AssessmentValidationError(AssessmentServiceError, ValueError):
     status_code = 422
+
+
+_LOCKS_BY_LOOP: weakref.WeakKeyDictionary[
+    Any,
+    weakref.WeakValueDictionary[str, asyncio.Lock],
+] = weakref.WeakKeyDictionary()
+
+
+def _lock_key(db: AsyncSession, namespace: str, entity_id: str) -> str:
+    return f"{id(db.get_bind())}:{namespace}:{entity_id}"
+
+
+@asynccontextmanager
+async def _process_lock(db: AsyncSession, namespace: str, entity_id: str):
+    if db.get_bind().dialect.name != "sqlite":
+        yield
+        return
+    loop = asyncio.get_running_loop()
+    locks = _LOCKS_BY_LOOP.setdefault(loop, weakref.WeakValueDictionary())
+    key = _lock_key(db, namespace, entity_id)
+    lock = locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        locks[key] = lock
+    async with lock:
+        yield
+
+
+async def _clean_transaction(db: AsyncSession) -> None:
+    if db.in_transaction():
+        await db.commit()
+
+
+@dataclass(frozen=True)
+class _PreparedGrade:
+    user_answer: Any
+    evaluation_status: str
+    is_correct: bool | None
+    score: float | None
+    max_score: float
+    feedback: Any
+    error_reason: str | None
 
 
 def _now() -> datetime:
@@ -230,6 +277,15 @@ async def generate_quiz_set(
 ) -> QuizSet:
     """Validate a generation scope, call the configured AI, and persist atomically."""
     documents, points, evidence = await _generation_scope(db, request)
+    evidence_payload = [{
+        "id": chunk.id,
+        "document_id": chunk.document_id,
+        "source_file": chunk.source_file,
+        "page_num": chunk.page_num,
+        "heading": chunk.heading,
+        "section_path": list(chunk.section_path or []),
+        "content": chunk.content,
+    } for chunk in evidence]
     quiz_set = QuizSet(
         workspace_id=request.workspace_id,
         title=request.title or "Assessment",
@@ -245,55 +301,85 @@ async def generate_quiz_set(
         status="generating",
     )
     db.add(quiz_set)
-    await db.flush()
+    await db.commit()
 
     try:
-        paper = await build_generated_paper(evidence, request, settings, completion)
+        paper = await build_generated_paper(evidence_payload, request, settings, completion)
     except Exception as exc:
-        quiz_set.status = "failed"
-        quiz_set.generation_error = str(exc)
-        await db.commit()
-        await db.refresh(quiz_set)
+        try:
+            persisted_set = (
+                await db.execute(
+                    select(QuizSet).where(QuizSet.id == quiz_set.id).with_for_update()
+                )
+            ).scalar_one()
+            persisted_set.status = "failed"
+            persisted_set.generation_error = str(exc)
+            await db.commit()
+            quiz_set = persisted_set
+        except SQLAlchemyError as persistence_error:
+            await db.rollback()
+            raise AssessmentServiceError("Could not persist failed assessment generation") from persistence_error
         raise
 
-    questions: list[QuizQuestion] = []
-    for position, generated in enumerate(paper.questions, start=1):
-        source_snapshot = [dict(source) for source in generated.source_snapshot]
-        document_id = next(
-            (
-                source.get("document_id")
-                for source in source_snapshot
-                if source.get("document_id")
-            ),
-            None,
-        )
-        questions.append(QuizQuestion(
-            workspace_id=request.workspace_id,
-            quiz_set_id=quiz_set.id,
-            document_id=document_id,
-            knowledge_point_id=_question_point_id(generated, points),
-            question_type=generated.question_type,
-            prompt=generated.prompt,
-            options=list(generated.options) or None,
-            answer=_legacy_text(generated.answer_payload),
-            difficulty_level=generated.difficulty,
-            answer_payload=generated.answer_payload,
-            grading_rubric=dict(generated.grading_rubric),
-            source_snapshot=source_snapshot,
-            strict_sources=request.strict_sources,
-            generation_model=paper.generation_model,
-            position=position,
-            explanation=generated.explanation,
-            source_label=_source_label(source_snapshot),
-        ))
-    db.add_all(questions)
-    quiz_set.question_count = len(questions)
-    quiz_set.generation_model = paper.generation_model
-    quiz_set.generation_error = None
-    quiz_set.status = "ready"
-    await db.commit()
-    await db.refresh(quiz_set)
-    return quiz_set
+    try:
+        persisted_set = (
+            await db.execute(
+                select(QuizSet).where(QuizSet.id == quiz_set.id).with_for_update()
+            )
+        ).scalar_one()
+        if persisted_set.status != "generating":
+            raise AssessmentStateError("Quiz set generation is no longer pending")
+        questions: list[QuizQuestion] = []
+        for position, generated in enumerate(paper.questions, start=1):
+            source_snapshot = [dict(source) for source in generated.source_snapshot]
+            document_id = next(
+                (
+                    source.get("document_id")
+                    for source in source_snapshot
+                    if source.get("document_id")
+                ),
+                None,
+            )
+            questions.append(QuizQuestion(
+                workspace_id=request.workspace_id,
+                quiz_set_id=persisted_set.id,
+                document_id=document_id,
+                knowledge_point_id=_question_point_id(generated, points),
+                question_type=generated.question_type,
+                prompt=generated.prompt,
+                options=list(generated.options) or None,
+                answer=_legacy_text(generated.answer_payload),
+                difficulty_level=generated.difficulty,
+                answer_payload=generated.answer_payload,
+                grading_rubric=dict(generated.grading_rubric),
+                source_snapshot=source_snapshot,
+                strict_sources=request.strict_sources,
+                generation_model=paper.generation_model,
+                position=position,
+                explanation=generated.explanation,
+                source_label=_source_label(source_snapshot),
+            ))
+        db.add_all(questions)
+        persisted_set.question_count = len(questions)
+        persisted_set.generation_model = paper.generation_model
+        persisted_set.generation_error = None
+        persisted_set.status = "ready"
+        await db.commit()
+        return persisted_set
+    except AssessmentServiceError:
+        await db.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        await db.rollback()
+        failed_set = await db.get(QuizSet, quiz_set.id)
+        if failed_set is not None:
+            failed_set.status = "failed"
+            failed_set.generation_error = "Could not persist generated assessment"
+            await db.commit()
+        raise AssessmentServiceError("Could not persist generated assessment") from exc
+    except Exception:
+        await db.rollback()
+        raise
 
 
 async def _quiz_set(db: AsyncSession, quiz_set_id: str) -> QuizSet:
@@ -317,28 +403,50 @@ async def create_quiz_run(
     resume: bool = False,
 ) -> QuizRun:
     """Create a monotonic answer round, or explicitly resume an unfinished one."""
-    quiz_set = await _quiz_set(db, quiz_set_id)
-    if quiz_set.status != "ready":
-        raise AssessmentStateError("Quiz set is not ready")
-    latest = (
-        await db.execute(
-            select(QuizRun)
-            .where(QuizRun.quiz_set_id == quiz_set_id)
-            .order_by(QuizRun.round_number.desc())
-            .limit(1)
-        )
-    ).scalar_one_or_none()
-    if resume and latest is not None and latest.status != "submitted":
-        return latest
-    run = QuizRun(
-        quiz_set_id=quiz_set_id,
-        round_number=(latest.round_number + 1) if latest else 1,
-        answer_mode=quiz_set.answer_mode,
-        status="not_started",
-    )
-    db.add(run)
-    await db.flush()
-    return run
+    async with _process_lock(db, "round", quiz_set_id):
+        await _clean_transaction(db)
+        try:
+            quiz_set = (
+                await db.execute(
+                    select(QuizSet).where(QuizSet.id == quiz_set_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if quiz_set is None:
+                raise AssessmentNotFoundError("Quiz set not found")
+            if quiz_set.status != "ready":
+                raise AssessmentStateError("Quiz set is not ready")
+            latest = (
+                await db.execute(
+                    select(QuizRun)
+                    .where(QuizRun.quiz_set_id == quiz_set_id)
+                    .order_by(QuizRun.round_number.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+            if resume and latest is not None and latest.status != "submitted":
+                await db.commit()
+                return latest
+            run = QuizRun(
+                quiz_set_id=quiz_set_id,
+                round_number=(latest.round_number + 1) if latest else 1,
+                answer_mode=quiz_set.answer_mode,
+                status="not_started",
+            )
+            db.add(run)
+            await db.commit()
+            return run
+        except AssessmentServiceError:
+            await db.rollback()
+            raise
+        except IntegrityError as exc:
+            await db.rollback()
+            raise AssessmentStateError("A quiz run round was created concurrently; retry") from exc
+        except SQLAlchemyError as exc:
+            await db.rollback()
+            raise AssessmentServiceError("Could not create quiz run") from exc
+        except Exception:
+            await db.rollback()
+            raise
 
 
 async def start_quiz_run(
@@ -347,16 +455,34 @@ async def start_quiz_run(
     now: datetime | None = None,
 ) -> QuizRun:
     """Start a run once; repeated starts preserve the server timestamp."""
-    run = await _quiz_run(db, run_id)
-    if run.status == "submitted":
-        raise AssessmentStateError("Submitted quiz runs cannot be restarted")
-    if run.status == "not_started":
-        run.status = "in_progress"
-        run.started_at = now or _now()
-        await db.flush()
-    elif run.status != "in_progress":
-        raise AssessmentStateError("Quiz run has an invalid status")
-    return run
+    async with _process_lock(db, "run", run_id):
+        await _clean_transaction(db)
+        try:
+            run = (
+                await db.execute(
+                    select(QuizRun).where(QuizRun.id == run_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if run is None:
+                raise AssessmentNotFoundError("Quiz run not found")
+            if run.status == "submitted":
+                raise AssessmentStateError("Submitted quiz runs cannot be restarted")
+            if run.status == "not_started":
+                run.status = "in_progress"
+                run.started_at = now or _now()
+            elif run.status != "in_progress":
+                raise AssessmentStateError("Quiz run has an invalid status")
+            await db.commit()
+            return run
+        except AssessmentServiceError:
+            await db.rollback()
+            raise
+        except SQLAlchemyError as exc:
+            await db.rollback()
+            raise AssessmentServiceError("Could not start quiz run") from exc
+        except Exception:
+            await db.rollback()
+            raise
 
 
 def _mistake_state(record: MistakeRecord | None) -> MistakeState | None:
@@ -396,7 +522,10 @@ async def _update_mistake(
 ) -> None:
     record = (
         await db.execute(
-            select(MistakeRecord).where(MistakeRecord.question_id == question.id)
+            select(MistakeRecord)
+            .where(MistakeRecord.question_id == question.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
     ).scalar_one_or_none()
     state = next_mistake_state(
@@ -430,7 +559,14 @@ async def _update_point_mastery(
 ) -> None:
     if point_id is None:
         return
-    point = await db.get(KnowledgePoint, point_id)
+    point = (
+        await db.execute(
+            select(KnowledgePoint)
+            .where(KnowledgePoint.id == point_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
     if point is None:
         return
     point.mastery = round(max(0.0, min(1.0, point.mastery + (0.12 if correct else -0.08))), 6)
@@ -470,21 +606,11 @@ async def _finish_if_complete(
     run.elapsed_seconds = _run_elapsed(run, submitted_at, quiz_set.duration_limit_seconds)
 
 
-async def _submit_question(
+async def _submission_context(
     db: AsyncSession,
     run_id: str,
     question_id: str,
-    payload: QuestionSubmitRequest,
-    settings: Settings,
-    completion: Completion | None = None,
-    now: datetime | None = None,
-    is_redo: bool = False,
-    *,
-    _record_activity: bool = True,
-    _finish_run: bool = True,
-) -> QuizAttempt:
-    """Persist one immutable answer and all same-transaction compatibility state."""
-    submitted_at = now or _now()
+) -> tuple[QuizRun, QuizSet, QuizQuestion]:
     run = await _quiz_run(db, run_id)
     if run.status != "in_progress" or run.started_at is None:
         raise AssessmentStateError("Quiz run must be started before submission")
@@ -494,16 +620,23 @@ async def _submit_question(
         raise AssessmentNotFoundError("Quiz question not found")
     if question.quiz_set_id != run.quiz_set_id:
         raise AssessmentScopeError("Question does not belong to this quiz run")
-
-    previous_attempt_number = await db.scalar(
-        select(func.max(QuizAttempt.attempt_number)).where(
+    existing = await db.scalar(
+        select(func.count(QuizAttempt.id)).where(
             QuizAttempt.quiz_run_id == run.id,
             QuizAttempt.question_id == question.id,
         )
     )
-    attempt_number = int(previous_attempt_number or 0) + 1
-    duration = max(0, int(payload.duration_seconds))
+    if int(existing or 0):
+        raise AssessmentStateError("This question has already been submitted in this quiz run")
+    return run, quiz_set, question
 
+
+async def _prepare_grade(
+    question: QuizQuestion,
+    user_answer: Any,
+    settings: Settings,
+    completion: Completion | None,
+) -> _PreparedGrade:
     evaluation_status = "graded"
     feedback: Any = None
     error_reason: str | None = None
@@ -511,7 +644,7 @@ async def _submit_question(
     score: float | None
     max_score: float
     if question.question_type in OBJECTIVE_TYPES:
-        result = grade_objective(question.question_type, question.answer_payload, payload.answer)
+        result = grade_objective(question.question_type, question.answer_payload, user_answer)
         is_correct = result.is_correct
         score = result.score
         max_score = result.max_score
@@ -519,7 +652,7 @@ async def _submit_question(
         error_reason = result.error_reason
     elif question.question_type in SUBJECTIVE_TYPES:
         try:
-            result = await evaluate_subjective(question, payload.answer, settings, completion)
+            result = await evaluate_subjective(question, user_answer, settings, completion)
         except AssessmentAIError as exc:
             evaluation_status = "grading_failed"
             is_correct = None
@@ -543,41 +676,132 @@ async def _submit_question(
             error_reason = result.error_reason
     else:
         raise AssessmentValidationError("Unsupported assessment question type")
+    return _PreparedGrade(
+        user_answer=user_answer,
+        evaluation_status=evaluation_status,
+        is_correct=is_correct,
+        score=score,
+        max_score=max_score,
+        feedback=feedback,
+        error_reason=error_reason,
+    )
 
+
+@asynccontextmanager
+async def _submission_locks(
+    db: AsyncSession,
+    run_id: str,
+    questions: Sequence[QuizQuestion],
+):
+    lock_targets = [
+        ("run", run_id),
+        *(("question", question.id) for question in sorted(questions, key=lambda row: row.id)),
+        *(("point", point_id) for point_id in sorted({
+            question.knowledge_point_id
+            for question in questions
+            if question.knowledge_point_id is not None
+        })),
+    ]
+    async with AsyncExitStack() as stack:
+        for namespace, entity_id in lock_targets:
+            await stack.enter_async_context(_process_lock(db, namespace, entity_id))
+        yield
+
+
+async def _locked_run(db: AsyncSession, run_id: str) -> QuizRun:
+    run = (
+        await db.execute(
+            select(QuizRun)
+            .where(QuizRun.id == run_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if run is None:
+        raise AssessmentNotFoundError("Quiz run not found")
+    return run
+
+
+async def _locked_question(db: AsyncSession, question_id: str) -> QuizQuestion:
+    question = (
+        await db.execute(
+            select(QuizQuestion)
+            .where(QuizQuestion.id == question_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if question is None:
+        raise AssessmentNotFoundError("Quiz question not found")
+    return question
+
+
+async def _question_duration(
+    db: AsyncSession,
+    run: QuizRun,
+    quiz_set: QuizSet,
+    submitted_at: datetime,
+    claimed_duration: int,
+) -> int:
+    server_elapsed = _run_elapsed(run, submitted_at, quiz_set.duration_limit_seconds)
+    recorded_duration = await db.scalar(
+        select(func.coalesce(func.sum(QuizAttempt.duration_seconds), 0)).where(
+            QuizAttempt.quiz_run_id == run.id
+        )
+    )
+    available = max(0, server_elapsed - int(recorded_duration or 0))
+    return min(max(0, int(claimed_duration)), available)
+
+
+async def _persist_prepared_attempt(
+    db: AsyncSession,
+    run: QuizRun,
+    question: QuizQuestion,
+    grade: _PreparedGrade,
+    *,
+    duration: int,
+    submitted_at: datetime,
+    is_redo: bool,
+    record_activity: bool,
+) -> QuizAttempt:
     attempt = QuizAttempt(
         quiz_set_id=run.quiz_set_id,
         quiz_run_id=run.id,
         question_id=question.id,
-        attempt_number=attempt_number,
-        user_answer=payload.answer,
-        is_correct=is_correct,
-        score=score,
-        max_score=max_score,
-        evaluation_status=evaluation_status,
-        feedback=feedback,
-        error_reason=error_reason,
+        attempt_number=1,
+        user_answer=grade.user_answer,
+        is_correct=grade.is_correct,
+        score=grade.score,
+        max_score=grade.max_score,
+        evaluation_status=grade.evaluation_status,
+        feedback=grade.feedback,
+        error_reason=grade.error_reason,
         duration_seconds=duration,
         submitted_at=submitted_at,
     )
     db.add(attempt)
     await db.flush()
 
-    if evaluation_status == "graded":
+    question.last_answer = _legacy_text(grade.user_answer)
+    if grade.evaluation_status == "graded":
         question.attempts += 1
-        question.correct_attempts += int(is_correct is True)
-        question.last_answer = _legacy_text(payload.answer)
-        question.last_correct = is_correct
+        question.correct_attempts += int(grade.is_correct is True)
+        question.last_correct = grade.is_correct
         await _update_mistake(
             db,
             question,
             attempt,
-            correct=bool(is_correct),
+            correct=bool(grade.is_correct),
             is_redo=is_redo,
             submitted_at=submitted_at,
         )
-        await _update_point_mastery(db, question.knowledge_point_id, correct=bool(is_correct))
+        await _update_point_mastery(
+            db,
+            question.knowledge_point_id,
+            correct=bool(grade.is_correct),
+        )
 
-    if _record_activity:
+    if record_activity:
         db.add(StudyActivity(
             workspace_id=question.workspace_id,
             activity_type="quiz",
@@ -588,19 +812,28 @@ async def _submit_question(
                 "quiz_run_id": run.id,
                 "question_id": question.id,
                 "attempt_id": attempt.id,
-                "evaluation_status": evaluation_status,
-                "correct": is_correct,
+                "evaluation_status": grade.evaluation_status,
+                "correct": grade.is_correct,
             },
             created_at=submitted_at,
         ))
-
-    await db.flush()
-    await _recompute_run(db, run)
-    run.elapsed_seconds = _run_elapsed(run, submitted_at, quiz_set.duration_limit_seconds)
-    if _finish_run:
-        await _finish_if_complete(db, run, quiz_set, submitted_at)
     await db.flush()
     return attempt
+
+
+async def _ensure_unsubmitted_question(
+    db: AsyncSession,
+    run_id: str,
+    question_id: str,
+) -> None:
+    existing = await db.scalar(
+        select(func.count(QuizAttempt.id)).where(
+            QuizAttempt.quiz_run_id == run_id,
+            QuizAttempt.question_id == question_id,
+        )
+    )
+    if int(existing or 0):
+        raise AssessmentStateError("This question has already been submitted in this quiz run")
 
 
 async def submit_question(
@@ -613,20 +846,62 @@ async def submit_question(
     now: datetime | None = None,
     is_redo: bool = False,
 ) -> QuizAttempt:
-    """Persist one public per-question submission."""
-    run = await _quiz_run(db, run_id)
+    """Grade without a transaction, then atomically persist one question submission."""
+    submitted_at = now or _now()
+    run, _, question = await _submission_context(db, run_id, question_id)
     if run.answer_mode != "sequential":
         raise AssessmentStateError("Full-paper runs require a paper submission")
-    return await _submit_question(
-        db,
-        run_id,
-        question_id,
-        payload,
-        settings,
-        completion,
-        now,
-        is_redo,
-    )
+    await _clean_transaction(db)
+    grade = await _prepare_grade(question, payload.answer, settings, completion)
+
+    async with _submission_locks(db, run_id, [question]):
+        try:
+            run = await _locked_run(db, run_id)
+            if run.status != "in_progress" or run.started_at is None:
+                raise AssessmentStateError("Quiz run must be started before submission")
+            if run.answer_mode != "sequential":
+                raise AssessmentStateError("Full-paper runs require a paper submission")
+            quiz_set = await _quiz_set(db, run.quiz_set_id)
+            question = await _locked_question(db, question_id)
+            if question.quiz_set_id != run.quiz_set_id:
+                raise AssessmentScopeError("Question does not belong to this quiz run")
+            await _ensure_unsubmitted_question(db, run.id, question.id)
+            duration = await _question_duration(
+                db,
+                run,
+                quiz_set,
+                submitted_at,
+                payload.duration_seconds,
+            )
+            attempt = await _persist_prepared_attempt(
+                db,
+                run,
+                question,
+                grade,
+                duration=duration,
+                submitted_at=submitted_at,
+                is_redo=is_redo,
+                record_activity=True,
+            )
+            await _recompute_run(db, run)
+            run.elapsed_seconds = _run_elapsed(run, submitted_at, quiz_set.duration_limit_seconds)
+            await _finish_if_complete(db, run, quiz_set, submitted_at)
+            await db.commit()
+            return attempt
+        except AssessmentServiceError:
+            await db.rollback()
+            raise
+        except IntegrityError as exc:
+            await db.rollback()
+            raise AssessmentStateError(
+                "This question was submitted concurrently; reload the quiz run"
+            ) from exc
+        except SQLAlchemyError as exc:
+            await db.rollback()
+            raise AssessmentServiceError("Could not persist assessment submission") from exc
+        except Exception:
+            await db.rollback()
+            raise
 
 
 async def submit_paper(
@@ -637,7 +912,7 @@ async def submit_paper(
     completion: Completion | None = None,
     now: datetime | None = None,
 ) -> QuizRun:
-    """Grade every supplied full-paper answer and finalize from graded attempts only."""
+    """Grade a full paper without a write transaction, then persist it atomically."""
     submitted_at = now or _now()
     run = await _quiz_run(db, run_id)
     if run.status != "in_progress" or run.started_at is None:
@@ -645,7 +920,7 @@ async def submit_paper(
     if run.answer_mode != "full_paper":
         raise AssessmentStateError("Only full-paper runs accept paper submissions")
     quiz_set = await _quiz_set(db, run.quiz_set_id)
-    answer_map = answers.answers if isinstance(answers, PaperSubmitRequest) else answers
+    answer_map = dict(answers.answers if isinstance(answers, PaperSubmitRequest) else answers)
     questions = (
         await db.execute(
             select(QuizQuestion)
@@ -657,41 +932,101 @@ async def submit_paper(
     unknown_ids = set(answer_map) - set(questions_by_id)
     if unknown_ids:
         raise AssessmentScopeError("Paper contains answers for questions outside this quiz run")
+    supplied_questions = [question for question in questions if question.id in answer_map]
+    if supplied_questions:
+        existing = await db.scalar(
+            select(func.count(QuizAttempt.id)).where(
+                QuizAttempt.quiz_run_id == run.id,
+                QuizAttempt.question_id.in_([question.id for question in supplied_questions]),
+            )
+        )
+        if int(existing or 0):
+            raise AssessmentStateError("This quiz paper contains an already submitted question")
 
-    for question in questions:
-        if question.id not in answer_map:
-            continue
-        await _submit_question(
-            db,
-            run.id,
-            question.id,
-            QuestionSubmitRequest(answer=answer_map[question.id], duration_seconds=0),
+    await _clean_transaction(db)
+    prepared_grades = {
+        question.id: await _prepare_grade(
+            question,
+            answer_map[question.id],
             settings,
             completion,
-            now=submitted_at,
-            _record_activity=False,
-            _finish_run=False,
         )
+        for question in supplied_questions
+    }
 
-    await _recompute_run(db, run)
-    run.status = "submitted"
-    run.submitted_at = submitted_at
-    run.elapsed_seconds = _run_elapsed(run, submitted_at, quiz_set.duration_limit_seconds)
-    db.add(StudyActivity(
-        workspace_id=quiz_set.workspace_id,
-        activity_type="quiz",
-        title="Completed an assessment paper",
-        duration_seconds=run.elapsed_seconds,
-        payload={
-            "quiz_set_id": quiz_set.id,
-            "quiz_run_id": run.id,
-            "graded_count": run.graded_count,
-            "correct_count": run.correct_count,
-        },
-        created_at=submitted_at,
-    ))
-    await db.flush()
-    return run
+    async with _submission_locks(db, run_id, supplied_questions):
+        try:
+            run = await _locked_run(db, run_id)
+            if run.status != "in_progress" or run.started_at is None:
+                raise AssessmentStateError("Quiz run must be started before paper submission")
+            if run.answer_mode != "full_paper":
+                raise AssessmentStateError("Only full-paper runs accept paper submissions")
+            quiz_set = await _quiz_set(db, run.quiz_set_id)
+            persisted_questions = (
+                await db.execute(
+                    select(QuizQuestion)
+                    .where(QuizQuestion.quiz_set_id == run.quiz_set_id)
+                    .order_by(QuizQuestion.position, QuizQuestion.id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+            ).scalars().all()
+            persisted_by_id = {question.id: question for question in persisted_questions}
+            if set(answer_map) - set(persisted_by_id):
+                raise AssessmentScopeError(
+                    "Paper contains answers for questions outside this quiz run"
+                )
+            for question_id in prepared_grades:
+                await _ensure_unsubmitted_question(db, run.id, question_id)
+            for question_id, grade in prepared_grades.items():
+                await _persist_prepared_attempt(
+                    db,
+                    run,
+                    persisted_by_id[question_id],
+                    grade,
+                    duration=0,
+                    submitted_at=submitted_at,
+                    is_redo=False,
+                    record_activity=False,
+                )
+
+            await _recompute_run(db, run)
+            run.status = "submitted"
+            run.submitted_at = submitted_at
+            run.elapsed_seconds = _run_elapsed(
+                run,
+                submitted_at,
+                quiz_set.duration_limit_seconds,
+            )
+            db.add(StudyActivity(
+                workspace_id=quiz_set.workspace_id,
+                activity_type="quiz",
+                title="Completed an assessment paper",
+                duration_seconds=run.elapsed_seconds,
+                payload={
+                    "quiz_set_id": quiz_set.id,
+                    "quiz_run_id": run.id,
+                    "graded_count": run.graded_count,
+                    "correct_count": run.correct_count,
+                },
+                created_at=submitted_at,
+            ))
+            await db.commit()
+            return run
+        except AssessmentServiceError:
+            await db.rollback()
+            raise
+        except IntegrityError as exc:
+            await db.rollback()
+            raise AssessmentStateError(
+                "This quiz paper was submitted concurrently; reload the quiz run"
+            ) from exc
+        except SQLAlchemyError as exc:
+            await db.rollback()
+            raise AssessmentServiceError("Could not persist assessment paper") from exc
+        except Exception:
+            await db.rollback()
+            raise
 
 
 def serialize_attempt(attempt: QuizAttempt) -> dict[str, Any]:
@@ -719,6 +1054,11 @@ def serialize_question(
     reveal: bool = False,
     attempt: QuizAttempt | None = None,
 ) -> dict[str, Any]:
+    if attempt is not None and (
+        attempt.question_id != question.id
+        or attempt.quiz_set_id != question.quiz_set_id
+    ):
+        raise AssessmentScopeError("Attempt does not belong to this quiz question")
     payload: dict[str, Any] = {
         "id": question.id,
         "quiz_set_id": question.quiz_set_id,
@@ -730,8 +1070,7 @@ def serialize_question(
         "options": question.options,
         "difficulty": question.difficulty_level,
         "position": question.position,
-        "explanation": question.explanation,
-        "source_snapshot": list(question.source_snapshot or []),
+        "source_snapshot": _safe_source_metadata(question.source_snapshot or []),
         "strict_sources": question.strict_sources,
         "generation_model": question.generation_model,
     }
@@ -741,9 +1080,20 @@ def serialize_question(
         payload.update({
             "answer": question.answer,
             "answer_payload": question.answer_payload,
+            "explanation": question.explanation,
             "grading_rubric": question.grading_rubric,
+            "source_snapshot": list(question.source_snapshot or []),
         })
     return payload
+
+
+def _safe_source_metadata(snapshots: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    safe_keys = ("chunk_id", "document_id", "source_file", "page")
+    return [
+        {key: snapshot[key] for key in safe_keys if key in snapshot}
+        for snapshot in snapshots
+        if isinstance(snapshot, dict)
+    ]
 
 
 def _latest_attempts(attempts: Sequence[QuizAttempt]) -> dict[str, QuizAttempt]:
@@ -763,9 +1113,20 @@ def serialize_quiz_set(
     attempts: Sequence[QuizAttempt] | None = None,
 ) -> dict[str, Any]:
     question_rows = list(questions if questions is not None else quiz_set.__dict__.get("questions", []))
+    if run is not None and run.quiz_set_id != quiz_set.id:
+        raise AssessmentScopeError("Quiz run does not belong to this quiz set")
+    question_ids: set[str] = set()
+    for question in question_rows:
+        if question.quiz_set_id != quiz_set.id or question.workspace_id != quiz_set.workspace_id:
+            raise AssessmentScopeError("Question does not belong to this quiz set workspace")
+        question_ids.add(question.id)
+    supplied_attempts = list(attempts or [])
+    for attempt in supplied_attempts:
+        if attempt.quiz_set_id != quiz_set.id or attempt.question_id not in question_ids:
+            raise AssessmentScopeError("Attempt does not belong to this quiz set")
     attempt_rows = [
         attempt
-        for attempt in (attempts or [])
+        for attempt in supplied_attempts
         if run is None or attempt.quiz_run_id == run.id
     ]
     latest_attempts = _latest_attempts(attempt_rows)
@@ -811,6 +1172,24 @@ def serialize_quiz_run(
     questions: Sequence[QuizQuestion] | None = None,
     attempts: Sequence[QuizAttempt] | None = None,
 ) -> dict[str, Any]:
+    supplied_attempts = list(attempts or [])
+    question_rows = list(questions or [])
+    question_ids = {question.id for question in question_rows}
+    for attempt in supplied_attempts:
+        if attempt.quiz_set_id != run.quiz_set_id:
+            raise AssessmentScopeError("Attempt does not belong to this quiz run's set")
+        if questions is not None and attempt.question_id not in question_ids:
+            raise AssessmentScopeError("Attempt does not belong to this quiz run's questions")
+    attempt_rows = [attempt for attempt in supplied_attempts if attempt.quiz_run_id == run.id]
+    for question in question_rows:
+        if question.quiz_set_id != run.quiz_set_id:
+            raise AssessmentScopeError("Question does not belong to this quiz run")
+    if quiz_set is not None and quiz_set.id != run.quiz_set_id:
+        raise AssessmentScopeError("Quiz run does not belong to this quiz set")
+    if quiz_set is not None:
+        for question in question_rows:
+            if question.workspace_id != quiz_set.workspace_id:
+                raise AssessmentScopeError("Question does not belong to this quiz set workspace")
     payload: dict[str, Any] = {
         "id": run.id,
         "quiz_set_id": run.quiz_set_id,
@@ -826,13 +1205,13 @@ def serialize_quiz_run(
         "graded_count": run.graded_count,
         "created_at": _iso(run.created_at),
         "updated_at": _iso(run.updated_at),
-        "attempts": [serialize_attempt(attempt) for attempt in (attempts or [])],
+        "attempts": [serialize_attempt(attempt) for attempt in attempt_rows],
     }
     if quiz_set is not None:
         payload["quiz_set"] = serialize_quiz_set(
             quiz_set,
             questions=questions,
             run=run,
-            attempts=attempts,
+            attempts=attempt_rows,
         )
     return payload
