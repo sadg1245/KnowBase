@@ -15,7 +15,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.models.assessment import MistakeRecord, QuizAttempt, QuizRun, QuizSet
+from app.models.assessment import MistakeRecord, QuizAttempt, QuizRun, QuizSet, WeakKnowledgeState
 from app.models.chat import DocumentChunk
 from app.models.document import Document
 from app.models.learning import KnowledgePoint, QuizQuestion, StudyActivity
@@ -35,6 +35,7 @@ from app.services.assessment_scoring import (
     grade_objective,
     next_mistake_state,
 )
+from app.services.weakness_service import recalculate_knowledge_point, upsert_weak_learning_tasks
 
 
 class AssessmentServiceError(RuntimeError):
@@ -200,6 +201,20 @@ def _chunk_matches_sections(chunk: DocumentChunk, section_filters: Sequence[str]
     return bool(filters & sections)
 
 
+def _chunk_matches_point_evidence(chunk: DocumentChunk, point: KnowledgePoint) -> bool:
+    """Require a default weak point to have an unambiguous source slice."""
+    if point.document_id and chunk.document_id != point.document_id:
+        return False
+    if point.source_page is not None and chunk.page_num == point.source_page:
+        return True
+    if point.source_heading:
+        heading = point.source_heading.strip().casefold()
+        return heading == (chunk.heading or "").strip().casefold() or heading in {
+            value.strip().casefold() for value in (chunk.section_path or []) if isinstance(value, str)
+        }
+    return False
+
+
 async def _generation_scope(
     db: AsyncSession,
     request: QuizSetGenerateRequest,
@@ -251,6 +266,32 @@ async def _generation_scope(
     chunks = [chunk for chunk in chunks if _chunk_matches_sections(chunk, request.section_filters)]
     if not chunks:
         raise AssessmentValidationError("No source chunks match the selected assessment scope")
+    if not points:
+        candidates = (await db.execute(
+            select(KnowledgePoint)
+            .join(
+                WeakKnowledgeState,
+                WeakKnowledgeState.knowledge_point_id == KnowledgePoint.id,
+            )
+            .where(
+                KnowledgePoint.workspace_id == request.workspace_id,
+                KnowledgePoint.document_id.in_(document_ids),
+                WeakKnowledgeState.weakness_score > 0,
+            )
+            .order_by(
+                WeakKnowledgeState.weakness_score.desc(),
+                KnowledgePoint.importance.desc(),
+                KnowledgePoint.id,
+            )
+        )).scalars().all()
+        for candidate in candidates:
+            point_chunks = [
+                chunk for chunk in chunks if _chunk_matches_point_evidence(chunk, candidate)
+            ]
+            if point_chunks:
+                points = [candidate]
+                chunks = point_chunks
+                break
     return documents, points, chunks
 
 
@@ -833,6 +874,9 @@ async def _persist_prepared_attempt(
             created_at=submitted_at,
         ))
     await db.flush()
+    if question.knowledge_point_id:
+        state = await recalculate_knowledge_point(db, question.knowledge_point_id, submitted_at)
+        await upsert_weak_learning_tasks(db, state, submitted_at)
     return attempt
 
 

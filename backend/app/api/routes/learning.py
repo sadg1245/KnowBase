@@ -12,12 +12,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, get_settings
 from app.config import Settings
+from app.models.assessment import LearningTask
 from app.models.document import Document
 from app.models.chat import DocumentChunk
 from app.models.learning import Flashcard, KnowledgePoint, QuizQuestion, ReviewLog, StudyActivity, UserProfile
 from app.models.workspace import Workspace
 from app.services.learning_content import LearningGenerationError, generate_document_learning_content
 from app.services.review_service import apply_card_review, build_review_summary, schedule_review
+from app.services.weakness_service import weakness_priority_subquery
 from app.schemas.learning import (
     ActivityCreate, AnalyzeRequest, FlashcardCreate, FlashcardGenerateRequest,
     FlashcardSelectionCreate, FlashcardUpdate, KnowledgePointCreate,
@@ -140,6 +142,15 @@ async def dashboard(db: AsyncSession = Depends(get_db)) -> dict:
     week_seconds = await scalar(select(func.coalesce(func.sum(StudyActivity.duration_seconds), 0)).where(StudyActivity.created_at >= week_start))
 
     activity_rows = (await db.execute(select(StudyActivity).order_by(StudyActivity.created_at.desc()).limit(8))).scalars().all()
+    due_task_rows = (await db.execute(
+        select(LearningTask)
+        .where(
+            LearningTask.status == "pending",
+            LearningTask.due_at.is_not(None),
+            LearningTask.due_at <= now,
+        )
+        .order_by(LearningTask.priority.desc(), LearningTask.due_at.asc(), LearningTask.id)
+    )).scalars().all()
     weak_rows = (await db.execute(select(KnowledgePoint).order_by(KnowledgePoint.mastery.asc(), KnowledgePoint.importance.desc()).limit(5))).scalars().all()
     recent_workspaces = (await db.execute(select(Workspace).where(Workspace.archived.is_(False)).order_by(Workspace.updated_at.desc()).limit(4))).scalars().all()
 
@@ -160,6 +171,19 @@ async def dashboard(db: AsyncSession = Depends(get_db)) -> dict:
         "today_tasks": [
             {"type": "review", "title": "完成今日复习", "count": due_count, "path": "/review"},
             {"type": "mistake", "title": "重做薄弱题目", "count": wrong_count, "path": "/practice?wrong=1"},
+            *[
+                {
+                    "id": task.id,
+                    "type": task.task_type,
+                    "title": task.title,
+                    "path": task.path,
+                    "knowledge_point_id": task.knowledge_point_id,
+                    "workspace_id": task.workspace_id,
+                    "due_at": _iso(task.due_at),
+                    "priority": task.priority,
+                }
+                for task in due_task_rows
+            ],
         ],
         "weak_points": [_point(row) for row in weak_rows],
         "recent_activities": [{"id": row.id, "type": row.activity_type, "title": row.title, "duration_seconds": row.duration_seconds, "created_at": _iso(row.created_at)} for row in activity_rows],
@@ -492,7 +516,11 @@ async def list_cards(
     if query:
         pattern = f"%{query.strip()}%"
         stmt = stmt.where(or_(Flashcard.front.ilike(pattern), Flashcard.back.ilike(pattern)))
-    rows = (await db.execute(stmt.order_by(Flashcard.due_at.asc()))).scalars().all()
+    order_by = (
+        (weakness_priority_subquery().desc().nullslast(), Flashcard.due_at.asc())
+        if due_only else (Flashcard.due_at.asc(),)
+    )
+    rows = (await db.execute(stmt.order_by(*order_by))).scalars().all()
     if tag:
         rows = [row for row in rows if tag in (row.tags or [])]
     safe_limit = max(1, min(500, limit))

@@ -311,7 +311,7 @@ async def test_recalculation_keeps_one_pending_task_per_point_and_type(self):
     await upsert_weak_learning_tasks(self.db, state, NOW)
     await upsert_weak_learning_tasks(self.db, state, NOW)
     rows = (await self.db.execute(select(LearningTask))).scalars().all()
-    self.assertEqual(len(rows), 5)
+    self.assertEqual(len(rows), 2)
 ```
 
 - [ ] **Step 2: Run weakness tests and verify RED**

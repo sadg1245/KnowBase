@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import app.models  # noqa: F401 - register complete SQLAlchemy metadata
 from app.services import assessment_service
 from app.config import Settings
-from app.models.assessment import MistakeRecord, QuizAttempt, QuizRun, QuizSet
+from app.models.assessment import MistakeRecord, QuizAttempt, QuizRun, QuizSet, WeakKnowledgeState
 from app.models.base import Base
 from app.models.chat import DocumentChunk
 from app.models.document import Document
@@ -136,6 +136,49 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
         }
         values.update(overrides)
         return QuizSetGenerateRequest(**values)
+
+    async def test_default_generation_selects_the_weakest_point_with_matching_evidence(self):
+        # Without the weak-point default, generation keeps an empty point scope and
+        # newly generated questions cannot be linked back to this weak point.
+        weak_point = KnowledgePoint(
+            workspace_id=self.workspace.id,
+            document_id=self.document.id,
+            title="Weak triangles",
+            summary="Use the triangle source",
+            source_page=3,
+            source_heading="Foundations",
+        )
+        self.db.add(weak_point)
+        await self.db.flush()
+        self.db.add(WeakKnowledgeState(
+            workspace_id=self.workspace.id,
+            knowledge_point_id=weak_point.id,
+            weakness_score=91,
+        ))
+        await self.db.flush()
+
+        _, points, chunks = await assessment_service._generation_scope(
+            self.db,
+            self.request(knowledge_point_ids=[]),
+        )
+
+        self.assertEqual([point.id for point in points], [weak_point.id])
+        self.assertEqual([chunk.id for chunk in chunks], [self.chunk.id])
+
+    async def test_submission_recalculates_the_affected_weakness_in_its_write_transaction(self):
+        quiz_set, question = await self.make_set()
+        run = await create_quiz_run(self.db, quiz_set.id)
+        await start_quiz_run(self.db, run.id, now=NOW)
+
+        await submit_question(
+            self.db, run.id, question.id,
+            QuestionSubmitRequest(answer="Two", duration_seconds=8),
+            SETTINGS, now=NOW + timedelta(seconds=8),
+        )
+
+        state = (await self.db.execute(select(WeakKnowledgeState))).scalar_one()
+        self.assertEqual(state.knowledge_point_id, self.point.id)
+        self.assertGreater(state.accuracy_component, 90)
 
     async def make_set(self, *, answer_mode="sequential") -> tuple[QuizSet, QuizQuestion]:
         quiz_set = QuizSet(
