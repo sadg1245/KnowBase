@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -91,6 +91,12 @@ async def _process_lock(db: AsyncSession, namespace: str, entity_id: str):
 async def _clean_transaction(db: AsyncSession) -> None:
     if db.in_transaction():
         await db.commit()
+
+
+async def _begin_write_transaction(db: AsyncSession) -> None:
+    """Lock SQLite writers across engines/processes before reading mutable state."""
+    if db.get_bind().dialect.name == "sqlite":
+        await db.execute(text("BEGIN IMMEDIATE"))
 
 
 @dataclass(frozen=True)
@@ -302,6 +308,7 @@ async def generate_quiz_set(
     )
     db.add(quiz_set)
     await db.commit()
+    quiz_set_id = quiz_set.id
 
     try:
         paper = await build_generated_paper(evidence_payload, request, settings, completion)
@@ -309,7 +316,7 @@ async def generate_quiz_set(
         try:
             persisted_set = (
                 await db.execute(
-                    select(QuizSet).where(QuizSet.id == quiz_set.id).with_for_update()
+                    select(QuizSet).where(QuizSet.id == quiz_set_id).with_for_update()
                 )
             ).scalar_one()
             persisted_set.status = "failed"
@@ -324,7 +331,7 @@ async def generate_quiz_set(
     try:
         persisted_set = (
             await db.execute(
-                select(QuizSet).where(QuizSet.id == quiz_set.id).with_for_update()
+                select(QuizSet).where(QuizSet.id == quiz_set_id).with_for_update()
             )
         ).scalar_one()
         if persisted_set.status != "generating":
@@ -371,11 +378,17 @@ async def generate_quiz_set(
         raise
     except SQLAlchemyError as exc:
         await db.rollback()
-        failed_set = await db.get(QuizSet, quiz_set.id)
-        if failed_set is not None:
-            failed_set.status = "failed"
-            failed_set.generation_error = "Could not persist generated assessment"
-            await db.commit()
+        try:
+            failed_set = await db.get(QuizSet, quiz_set_id)
+            if failed_set is not None:
+                failed_set.status = "failed"
+                failed_set.generation_error = "Could not persist generated assessment"
+                await db.commit()
+        except SQLAlchemyError as persistence_error:
+            await db.rollback()
+            raise AssessmentServiceError(
+                "Could not persist failed assessment generation"
+            ) from persistence_error
         raise AssessmentServiceError("Could not persist generated assessment") from exc
     except Exception:
         await db.rollback()
@@ -406,6 +419,7 @@ async def create_quiz_run(
     async with _process_lock(db, "round", quiz_set_id):
         await _clean_transaction(db)
         try:
+            await _begin_write_transaction(db)
             quiz_set = (
                 await db.execute(
                     select(QuizSet).where(QuizSet.id == quiz_set_id).with_for_update()
@@ -458,6 +472,7 @@ async def start_quiz_run(
     async with _process_lock(db, "run", run_id):
         await _clean_transaction(db)
         try:
+            await _begin_write_transaction(db)
             run = (
                 await db.execute(
                     select(QuizRun).where(QuizRun.id == run_id).with_for_update()
@@ -856,6 +871,7 @@ async def submit_question(
 
     async with _submission_locks(db, run_id, [question]):
         try:
+            await _begin_write_transaction(db)
             run = await _locked_run(db, run_id)
             if run.status != "in_progress" or run.started_at is None:
                 raise AssessmentStateError("Quiz run must be started before submission")
@@ -956,6 +972,7 @@ async def submit_paper(
 
     async with _submission_locks(db, run_id, supplied_questions):
         try:
+            await _begin_write_transaction(db)
             run = await _locked_run(db, run_id)
             if run.status != "in_progress" or run.started_at is None:
                 raise AssessmentStateError("Quiz run must be started before paper submission")

@@ -6,11 +6,16 @@ import asyncio
 import json
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.models  # noqa: F401 - register complete SQLAlchemy metadata
+from app.services import assessment_service
 from app.config import Settings
 from app.models.assessment import MistakeRecord, QuizAttempt, QuizRun, QuizSet
 from app.models.base import Base
@@ -21,6 +26,7 @@ from app.models.workspace import Workspace
 from app.schemas.assessment import PaperSubmitRequest, QuestionSubmitRequest, QuizSetGenerateRequest
 from app.services.assessment_service import (
     AssessmentScopeError,
+    AssessmentServiceError,
     AssessmentStateError,
     create_quiz_run,
     generate_quiz_set,
@@ -273,6 +279,33 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(generated.status, "ready")
+
+    async def test_question_insert_failure_marks_generation_failed_after_rollback(self):
+        failed_once = False
+
+        def fail_question_insert(_connection, _cursor, statement, parameters, _context, _many):
+            nonlocal failed_once
+            if not failed_once and statement.lstrip().startswith("INSERT INTO quiz_questions"):
+                failed_once = True
+                raise IntegrityError(statement, parameters, RuntimeError("injected insert failure"))
+
+        event.listen(self.engine.sync_engine, "before_cursor_execute", fail_question_insert)
+        try:
+            with self.assertRaises(AssessmentServiceError):
+                await generate_quiz_set(
+                    self.db,
+                    self.request(),
+                    SETTINGS,
+                    _completion({"questions": [_generated_question()]}),
+                )
+        finally:
+            event.remove(self.engine.sync_engine, "before_cursor_execute", fail_question_insert)
+
+        async with self.sessions() as verifier:
+            failed_set = (await verifier.execute(select(QuizSet))).scalar_one()
+            self.assertEqual(failed_set.status, "failed")
+            self.assertTrue(failed_set.generation_error)
+            self.assertEqual(await verifier.scalar(select(func.count(QuizQuestion.id))), 0)
 
     async def test_failed_generation_persists_failed_set_without_partial_questions(self):
         async def unavailable(**_kwargs):
@@ -591,6 +624,111 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(persisted_question.correct_attempts, 0)
             self.assertEqual(persisted_point.mastery, 0.34)
             self.assertEqual(await verifier.scalar(select(func.count(StudyActivity.id))), 2)
+
+    async def test_independent_sqlite_engines_preserve_shared_submission_state(self):
+        with TemporaryDirectory() as directory:
+            url = f"sqlite+aiosqlite:///{Path(directory) / 'shared.db'}"
+            first_engine = create_async_engine(url, connect_args={"timeout": 10})
+            second_engine = create_async_engine(url, connect_args={"timeout": 10})
+            first_sessions = async_sessionmaker(first_engine, expire_on_commit=False)
+            second_sessions = async_sessionmaker(second_engine, expire_on_commit=False)
+            tasks = []
+            first_read = asyncio.Event()
+            second_read = asyncio.Event()
+            release_first = asyncio.Event()
+            first_finished = asyncio.Event()
+            try:
+                async with first_engine.begin() as connection:
+                    await connection.run_sync(Base.metadata.create_all)
+                async with first_sessions() as setup:
+                    setup.add_all([
+                        Workspace(id="shared-workspace", name="Shared", slug="shared"),
+                        KnowledgePoint(
+                            id="shared-point", workspace_id="shared-workspace",
+                            title="Shared point", mastery=0.5, mastery_status="learning",
+                        ),
+                        QuizSet(
+                            id="shared-set", workspace_id="shared-workspace",
+                            question_count=1, status="ready", answer_mode="sequential",
+                        ),
+                        QuizQuestion(
+                            id="shared-question", workspace_id="shared-workspace",
+                            quiz_set_id="shared-set", knowledge_point_id="shared-point",
+                            prompt="How many sides?", question_type="single_choice",
+                            answer="Three", answer_payload="Three", options=["Two", "Three"],
+                        ),
+                        *[
+                            QuizRun(
+                                id=f"shared-run-{number}", quiz_set_id="shared-set",
+                                round_number=number, status="in_progress", started_at=NOW,
+                                answer_mode="sequential",
+                            )
+                            for number in (1, 2)
+                        ],
+                    ])
+                    await setup.commit()
+
+                original_locked_question = assessment_service._locked_question
+
+                async def pause_after_question_read(db, question_id):
+                    question = await original_locked_question(db, question_id)
+                    if db.get_bind() is first_engine.sync_engine:
+                        first_read.set()
+                        await release_first.wait()
+                    else:
+                        second_read.set()
+                        await first_finished.wait()
+                    return question
+
+                async def submit_on_engine(sessions, number):
+                    try:
+                        async with sessions() as session:
+                            return await submit_question(
+                                session,
+                                f"shared-run-{number}",
+                                "shared-question",
+                                QuestionSubmitRequest(answer="Two", duration_seconds=1),
+                                SETTINGS,
+                                now=NOW + timedelta(seconds=1),
+                            )
+                    finally:
+                        if number == 1:
+                            first_finished.set()
+
+                with patch.object(assessment_service, "_locked_question", pause_after_question_read):
+                    tasks.append(asyncio.create_task(submit_on_engine(first_sessions, 1)))
+                    await asyncio.wait_for(first_read.wait(), timeout=5)
+                    tasks.append(asyncio.create_task(submit_on_engine(second_sessions, 2)))
+                    try:
+                        # Old code reaches this second read with stale counters. Database-level
+                        # serialization instead blocks it until the first transaction finishes.
+                        await asyncio.wait_for(second_read.wait(), timeout=1)
+                    except TimeoutError:
+                        pass
+                    finally:
+                        release_first.set()
+                    results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=15)
+
+                self.assertTrue(all(isinstance(result, QuizAttempt) for result in results))
+                async with first_sessions() as verifier:
+                    question = await verifier.get(QuizQuestion, "shared-question")
+                    point = await verifier.get(KnowledgePoint, "shared-point")
+                    mistake = (await verifier.execute(select(MistakeRecord))).scalar_one()
+                    self.assertEqual(question.attempts, 2)
+                    self.assertEqual(question.correct_attempts, 0)
+                    self.assertEqual(point.mastery, 0.34)
+                    self.assertEqual(mistake.wrong_count, 2)
+                    self.assertEqual(await verifier.scalar(select(func.count(QuizAttempt.id))), 2)
+                    self.assertEqual(await verifier.scalar(select(func.count(StudyActivity.id))), 2)
+            finally:
+                release_first.set()
+                first_finished.set()
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                await first_engine.dispose()
+                await second_engine.dispose()
 
     async def test_question_duration_cannot_exceed_server_elapsed_or_remaining_time(self):
         quiz_set, first = await self.make_set()
