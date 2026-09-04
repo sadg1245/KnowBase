@@ -93,6 +93,10 @@ class AssessmentAPITests(unittest.IsolatedAsyncioTestCase):
         for key in ["answer", "answer_payload", "grading_rubric", "explanation", "last_answer"]:
             self.assertNotIn(key, response.json()["questions"][0])
             self.assertNotIn(key, (await self.request("GET", "/quizzes")).json()[0])
+        await self.started(paper)
+        active = await self.request("GET", "/quizzes")
+        for key in ["answer", "answer_payload", "grading_rubric", "explanation", "last_answer", "last_correct"]:
+            self.assertNotIn(key, active.json()[0])
 
     async def test_sequential_submit_resume_retry_and_answer_hiding(self):
         paper, question = await self.paper()
@@ -179,6 +183,52 @@ class AssessmentAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.db.scalar(select(func.count(QuizAttempt.id))), 1)
         self.assertEqual(await self.db.scalar(select(func.count(MistakeRecord.id))), 1)
         self.assertEqual(response.json()["question"]["id"], question.id)
+
+    async def test_bridged_legacy_history_remains_visible_without_ordinary_run(self):
+        question = QuizQuestion(workspace_id=self.workspace.id, question_type="choice", prompt="Pick",
+            answer="A", options=["A", "B"], explanation="Legacy explanation", last_answer="B", last_correct=False)
+        self.db.add(question)
+        await self.db.commit()
+        before = (await self.request("GET", "/quizzes", params={"wrong_only": True})).json()[0]
+        self.assertEqual(before["explanation"], "Legacy explanation")
+        self.assertEqual(before["last_answer"], "B")
+        self.assertIs(before["last_correct"], False)
+        response = await self.request("POST", f"/quizzes/{question.id}/submit", json={"answer": "B"})
+        self.assertEqual(response.status_code, 200, response.text)
+        history = (await self.request("GET", "/quizzes", params={"wrong_only": True})).json()[0]
+        self.assertEqual(history.get("explanation"), "Legacy explanation")
+        self.assertEqual(history.get("last_answer"), "B")
+        self.assertIs(history.get("last_correct"), False)
+        self.assertNotIn("answer", history)  # Preserve the old list contract, not a new answer reveal.
+        # An explicit ordinary round must still govern visibility, including for
+        # an attached legacy set, rather than exempting its questions forever.
+        run = await self.request("POST", f"/quiz-sets/{question.quiz_set_id}/runs", json={"answer_mode": "full_paper"})
+        self.assertEqual(run.status_code, 200, run.text)
+        hidden = (await self.request("GET", "/quizzes")).json()[0]
+        for key in ("explanation", "last_answer", "last_correct", "answer"):
+            self.assertNotIn(key, hidden)
+
+    async def test_task_due_filters_normalize_offset_bounds_and_remain_inclusive(self):
+        self.db.add(LearningTask(workspace_id=self.workspace.id, task_type="review", title="Noon UTC",
+            due_at=datetime(2026, 9, 1, 12, tzinfo=timezone.utc)))
+        await self.db.commit()
+        cases = [
+            ("due_before", "2026-09-01T08:00:00Z", 0),
+            ("due_before", "2026-09-01T16:00:00+08:00", 0),
+            ("due_after", "2026-09-01T16:00:00Z", 0),
+            ("due_after", "2026-09-02T00:00:00+08:00", 0),
+            ("due_before", "2026-09-01T12:00:00Z", 1),
+            ("due_before", "2026-09-01T20:00:00+08:00", 1),
+            ("due_after", "2026-09-01T12:00:00Z", 1),
+            ("due_after", "2026-09-01T20:00:00+08:00", 1),
+            ("due_after", "2026-09-01T08:00:00Z", 1),
+            ("due_after", "2026-09-01T16:00:00+08:00", 1),
+        ]
+        for parameter, bound, expected in cases:
+            with self.subTest(parameter=parameter, bound=bound):
+                response = await self.request("GET", "/tasks", params={parameter: bound})
+                self.assertEqual(response.status_code, 200, response.text)
+                self.assertEqual(response.json()["total"], expected)
 
     async def test_retry_grading_preserves_answer_and_applies_side_effects_once(self):
         paper, question = await self.paper(kind="short_answer")

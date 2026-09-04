@@ -82,7 +82,7 @@ async def _document_in_workspace(db: AsyncSession, document_id: str, workspace_i
     return document
 
 
-def _quiz(row: QuizQuestion, reveal: bool = False) -> dict:
+def _quiz(row: QuizQuestion, reveal: bool = False, *, preserve_legacy_history: bool = False) -> dict:
     data = {
         "id": row.id, "workspace_id": row.workspace_id,
         "knowledge_point_id": row.knowledge_point_id,
@@ -94,7 +94,7 @@ def _quiz(row: QuizQuestion, reveal: bool = False) -> dict:
     }
     if reveal:
         data["answer"] = row.answer
-    elif row.quiz_set_id:
+    elif row.quiz_set_id and not preserve_legacy_history:
         for key in ("explanation", "last_answer", "last_correct"):
             data.pop(key, None)
     return data
@@ -653,10 +653,16 @@ async def list_quizzes(workspace_id: str | None = None, wrong_only: bool = False
     if wrong_only: stmt = stmt.where(QuizQuestion.last_correct.is_(False))
     rows = (await db.execute(stmt.order_by(QuizQuestion.created_at.desc()))).scalars().all()
     views = {}
+    legacy_history_sets = set()
     for set_id in {row.quiz_set_id for row in rows if row.quiz_set_id}:
         view = await assessment_workflows.set_view(db, set_id)
+        # Standalone legacy attempts have scoped rounds only. Keep their old
+        # history fields unless an ordinary round actually governs visibility.
+        if view["generation_model"] == "legacy" and view["latest_run"] is None:
+            legacy_history_sets.add(set_id)
         views.update({question["id"]: question for question in view["questions"]})
-    return [_quiz(row, reveal="answer_payload" in views.get(row.id, {})) for row in rows]
+    return [_quiz(row, reveal="answer_payload" in views.get(row.id, {}),
+                  preserve_legacy_history=row.quiz_set_id in legacy_history_sets) for row in rows]
 
 
 @router.post("/quizzes/{quiz_id}/submit")

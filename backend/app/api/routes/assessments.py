@@ -187,9 +187,9 @@ async def list_tasks(db: DB, scope: Scope, status: LearningTaskStatus | None = N
     if status:
         query = query.where(LearningTask.status == status)
     if due_before:
-        query = query.where(LearningTask.due_at <= due_before)
+        query = query.where(LearningTask.due_at <= service._as_utc(due_before))
     if due_after:
-        query = query.where(LearningTask.due_at >= due_after)
+        query = query.where(LearningTask.due_at >= service._as_utc(due_after))
     return await _page(db, query.order_by(LearningTask.priority.desc(), LearningTask.due_at, LearningTask.id), scope, _point_record)
 
 
