@@ -39,3 +39,10 @@ Scores at least 60 expose five actions, but only idempotent `review` and `target
 ## Self-audit
 
 Due flashcards are outer-joined to weakness state for review summaries; `list_cards(due_only=True)` uses weakness-first order without changing `due_at`. Dashboard retains legacy tasks and appends due pending learning tasks. SQLite-naive timestamps are treated as UTC. One limitation is full-suite summary-line capture as noted above; focused Task 5, review, and summary tests have an explicit 11-test green result.
+
+## Fix round 1
+
+- RED: `E:\anything_llm\.venv\Scripts\python.exe -m unittest tests.test_weakness_service -v` ran six tests and failed four as expected: 20 newer failed subjective attempts hid the sole graded error (`graded_attempt_count` became 0), recency decreased rather than increased with idle time, cross-point task activity leaked, and the real current-activity score was 99 rather than 84.
+- GREEN: `E:\anything_llm\.venv\Scripts\python.exe -m unittest tests.test_weakness_service tests.test_review_service tests.test_assessment_service -v` emitted passing `ok` results for the updated weakness tests and existing review/assessment hook tests, with no failure/error emitted by the command runner.
+- The most-recent-20 SQL window now filters to `evaluation_status == "graded"` and non-null correctness before ordering/limiting. Accuracy and response-time ratios use this effective window; all answer/review/task activity timestamps are read independently for recency.
+- Recency is now `clamp(100 * max(0, age_days) / 30)`: a current (or future) activity is 0, 30+ idle days is 100, and missing activity is neutral 50. Correct answers, every card-review rating, completed point tasks, and point-tagged `StudyActivity` rows reset activity time; completed tasks and activities for other points do not.

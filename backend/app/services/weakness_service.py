@@ -13,12 +13,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.assessment import LearningTask, MistakeRecord, QuizAttempt, WeakKnowledgeState
-from app.models.learning import Flashcard, KnowledgePoint, QuizQuestion, ReviewLog
+from app.models.learning import Flashcard, KnowledgePoint, QuizQuestion, ReviewLog, StudyActivity
 
 
 ATTEMPT_LIMIT = 20
 ATTEMPT_RECENCY_DAYS = 14
-NEGATIVE_ACTIVITY_HALF_LIFE_DAYS = 14
+RECENCY_STALE_DAYS = 30
 TASK_SCORE_THRESHOLD = 60
 
 
@@ -83,10 +83,10 @@ def calculate_weakness(metrics: WeaknessMetrics, now: datetime) -> WeaknessScore
         if metrics.duration_ratios else 0.0
     )
     if metrics.last_relevant_activity_at is None:
-        recency = 0.0
+        recency = 50.0
     else:
         age_days = max(0.0, (current - _utc(metrics.last_relevant_activity_at)).total_seconds() / 86400)
-        recency = _clamp(100 * (0.5 ** (age_days / NEGATIVE_ACTIVITY_HALF_LIFE_DAYS)))
+        recency = _clamp(100 * age_days / RECENCY_STALE_DAYS)
 
     components = {
         "accuracy": round(accuracy, 3),
@@ -166,13 +166,17 @@ async def recalculate_knowledge_point(
     attempt_rows = (await db.execute(
         select(QuizAttempt, QuizQuestion)
         .join(QuizQuestion, QuizAttempt.question_id == QuizQuestion.id)
-        .where(QuizQuestion.knowledge_point_id == point.id)
+        .where(
+            QuizQuestion.knowledge_point_id == point.id,
+            QuizAttempt.evaluation_status == "graded",
+            QuizAttempt.is_correct.is_not(None),
+        )
         .order_by(QuizAttempt.submitted_at.desc(), QuizAttempt.id.desc())
         .limit(ATTEMPT_LIMIT)
     )).all()
     attempts = tuple(
         AttemptEvidence(
-            is_correct=attempt.is_correct if attempt.evaluation_status == "graded" else None,
+            is_correct=attempt.is_correct,
             submitted_at=attempt.submitted_at,
             duration_seconds=max(0, attempt.duration_seconds),
         )
@@ -212,13 +216,34 @@ async def recalculate_knowledge_point(
         if attempt.evaluation_status == "graded" and attempt.duration_seconds > 0
         and baselines.get((question.question_type, question.difficulty_level))
     )
-    negative_times = [row.last_wrong_at for row in unresolved if row.last_wrong_at]
-    negative_times.extend(
-        attempt.submitted_at for attempt, _ in attempt_rows
-        if attempt.evaluation_status == "graded" and attempt.is_correct is False
+    attempt_times = list((await db.execute(
+        select(QuizAttempt.submitted_at)
+        .join(QuizQuestion, QuizAttempt.question_id == QuizQuestion.id)
+        .where(QuizQuestion.knowledge_point_id == point.id)
+    )).scalars().all())
+    review_times = list((await db.execute(
+        select(ReviewLog.reviewed_at)
+        .join(Flashcard, ReviewLog.card_id == Flashcard.id)
+        .where(Flashcard.knowledge_point_id == point.id)
+    )).scalars().all())
+    completed_task_times = list((await db.execute(
+        select(LearningTask.completed_at).where(
+            LearningTask.knowledge_point_id == point.id,
+            LearningTask.status == "completed",
+            LearningTask.completed_at.is_not(None),
+        )
+    )).scalars().all())
+    activity_rows = (await db.execute(
+        select(StudyActivity).where(StudyActivity.workspace_id == point.workspace_id)
+    )).scalars().all()
+    activity_times = [
+        row.created_at for row in activity_rows
+        if isinstance(row.payload, dict) and row.payload.get("knowledge_point_id") == point.id
+    ]
+    last_activity = max(
+        (_utc(value) for value in [*attempt_times, *review_times, *completed_task_times, *activity_times] if value),
+        default=None,
     )
-    negative_times.extend(row.reviewed_at for row in review_rows if row.rating <= 2)
-    last_negative = max((_utc(value) for value in negative_times), default=None)
     latest_unresolved_at = max(
         (_utc(row.last_wrong_at) for row in unresolved if row.last_wrong_at),
         default=None,
@@ -228,17 +253,15 @@ async def recalculate_knowledge_point(
         unresolved_mistake_count=unresolved_count,
         review_ratings=tuple(row.rating for row in review_rows),
         duration_ratios=duration_ratios,
-        last_relevant_activity_at=last_negative,
+        last_relevant_activity_at=last_activity,
     )
     score = calculate_weakness(metrics, current)
     evidence = dict(score.evidence)
     evidence.update({
         "attempt_recency_days": ATTEMPT_RECENCY_DAYS,
-        "negative_activity_half_life_days": NEGATIVE_ACTIVITY_HALF_LIFE_DAYS,
+        "recency_stale_days": RECENCY_STALE_DAYS,
         "timing_baseline": "median graded duration by question type and difficulty",
-        "latest_attempt_at": (
-            _utc(attempt_rows[0][0].submitted_at).isoformat() if attempt_rows else None
-        ),
+        "latest_attempt_at": max((_utc(value) for value in attempt_times), default=None).isoformat() if attempt_times else None,
         "latest_review_at": (
             _utc(review_rows[0].reviewed_at).isoformat() if review_rows else None
         ),

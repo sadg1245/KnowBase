@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import app.models  # noqa: F401
 from app.models.assessment import LearningTask, MistakeRecord, QuizAttempt
 from app.models.base import Base
-from app.models.learning import Flashcard, KnowledgePoint, QuizQuestion, ReviewLog
+from app.models.learning import Flashcard, KnowledgePoint, QuizQuestion, ReviewLog, StudyActivity
 from app.models.workspace import Workspace
 from app.services.weakness_service import (
     AttemptEvidence,
@@ -24,19 +24,19 @@ NOW = datetime(2026, 9, 4, 12, 0, tzinfo=timezone.utc)
 METRICS = WeaknessMetrics(
     attempts=(AttemptEvidence(is_correct=False, submitted_at=NOW, duration_seconds=20),),
     unresolved_mistake_count=4,
-    review_ratings=(1, 2, 2, 2, 1),
-    duration_ratios=(),
-    last_relevant_activity_at=None,
+    review_ratings=(1,),
+    duration_ratios=(1.9,),
+    last_relevant_activity_at=NOW,
 )
 
 
 class WeaknessRuleTests(unittest.TestCase):
     def test_weakness_score_exposes_all_weighted_components(self):
         # A change that removes a weight, treats an ungraded answer as wrong, or
-        # renames a component makes this hand-checked 72-point fixture fail.
+        # reverses recency makes this hand-checked current-activity fixture fail.
         score = calculate_weakness(METRICS, NOW)
 
-        self.assertEqual(score.total, 72)
+        self.assertEqual(score.total, 84)
         self.assertEqual(
             set(score.components),
             {"accuracy", "repeat_error", "review_feedback", "response_time", "recency"},
@@ -56,6 +56,17 @@ class WeaknessRuleTests(unittest.TestCase):
 
         self.assertEqual(score.components["accuracy"], 0)
 
+    def test_recency_grows_with_time_and_missing_evidence_is_neutral(self):
+        def metrics(activity_at):
+            return WeaknessMetrics((), 0, (), (), activity_at)
+
+        self.assertEqual(calculate_weakness(metrics(NOW), NOW).components["recency"], 0)
+        self.assertEqual(
+            calculate_weakness(metrics(NOW - timedelta(days=30)), NOW).components["recency"],
+            100,
+        )
+        self.assertEqual(calculate_weakness(metrics(None), NOW).components["recency"], 50)
+
 
 class WeaknessPersistenceTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -64,19 +75,19 @@ class WeaknessPersistenceTests(unittest.IsolatedAsyncioTestCase):
             await connection.run_sync(Base.metadata.create_all)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         self.db = self.sessions()
-        workspace = Workspace(name="Weakness", slug="weakness")
-        self.db.add(workspace)
+        self.workspace = Workspace(name="Weakness", slug="weakness")
+        self.db.add(self.workspace)
         await self.db.flush()
         self.point = KnowledgePoint(
-            workspace_id=workspace.id,
+            workspace_id=self.workspace.id,
             title="Fractions",
             summary="Parts of a whole",
             source_page=7,
         )
         self.db.add(self.point)
         await self.db.flush()
-        question = QuizQuestion(
-            workspace_id=workspace.id,
+        self.question = QuizQuestion(
+            workspace_id=self.workspace.id,
             knowledge_point_id=self.point.id,
             question_type="single_choice",
             difficulty_level="medium",
@@ -84,22 +95,22 @@ class WeaknessPersistenceTests(unittest.IsolatedAsyncioTestCase):
             answer="A",
         )
         card = Flashcard(
-            workspace_id=workspace.id,
+            workspace_id=self.workspace.id,
             knowledge_point_id=self.point.id,
             front="F",
             back="B",
         )
-        self.db.add_all([question, card])
+        self.db.add_all([self.question, card])
         await self.db.flush()
         self.db.add_all([
             QuizAttempt(
-                quiz_set_id="set", quiz_run_id="run", question_id=question.id,
+                quiz_set_id="set", quiz_run_id="run", question_id=self.question.id,
                 attempt_number=1, is_correct=False, evaluation_status="graded",
-                duration_seconds=80, submitted_at=NOW - timedelta(hours=1),
+                duration_seconds=190, submitted_at=NOW - timedelta(hours=1),
             ),
             MistakeRecord(
-                question_id=question.id, knowledge_point_id=self.point.id,
-                workspace_id=workspace.id, wrong_count=3, mastery_status="unresolved",
+                question_id=self.question.id, knowledge_point_id=self.point.id,
+                workspace_id=self.workspace.id, wrong_count=4, mastery_status="unresolved",
                 last_wrong_at=NOW - timedelta(hours=1),
             ),
             ReviewLog(card_id=card.id, rating=1, reviewed_at=NOW - timedelta(hours=2)),
@@ -125,6 +136,89 @@ class WeaknessPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(row.due_at <= NOW + timedelta(days=3) for row in rows))
         self.assertEqual(len(state.recommended_actions), 5)
         self.assertTrue(all("?" in action["path"] for action in state.recommended_actions))
+
+    async def test_failed_attempts_after_graded_attempt_do_not_evict_scoring_window(self):
+        # The pre-fix LIMIT selected these 20 failures before filtering, making the
+        # one scored error disappear from accuracy and duration evidence.
+        baseline_point = KnowledgePoint(
+            workspace_id=self.workspace.id, title="Baseline", summary="B",
+        )
+        self.db.add(baseline_point)
+        await self.db.flush()
+        for index in range(3):
+            question = QuizQuestion(
+                workspace_id=self.workspace.id, knowledge_point_id=baseline_point.id,
+                question_type="single_choice", difficulty_level="medium",
+                prompt=f"Baseline {index}", answer="A",
+            )
+            self.db.add(question)
+            await self.db.flush()
+            self.db.add(QuizAttempt(
+                quiz_set_id=f"baseline-set-{index}", quiz_run_id=f"baseline-run-{index}",
+                question_id=question.id, attempt_number=1, is_correct=True,
+                evaluation_status="graded", duration_seconds=100,
+                submitted_at=NOW - timedelta(days=1),
+            ))
+        for index in range(20):
+            question = QuizQuestion(
+                workspace_id=self.workspace.id, knowledge_point_id=self.point.id,
+                question_type="short_answer", difficulty_level="medium",
+                prompt=f"Failed {index}", answer="A",
+            )
+            self.db.add(question)
+            await self.db.flush()
+            self.db.add(QuizAttempt(
+                quiz_set_id=f"failed-set-{index}", quiz_run_id=f"failed-run-{index}",
+                question_id=question.id, attempt_number=1, is_correct=None,
+                evaluation_status="failed", duration_seconds=999,
+                submitted_at=NOW - timedelta(minutes=index),
+            ))
+        await self.db.flush()
+
+        state = await recalculate_knowledge_point(self.db, self.point.id, NOW)
+
+        self.assertEqual(state.evidence["graded_attempt_count"], 1)
+        self.assertEqual(state.accuracy_component, 100)
+        self.assertEqual(state.response_time_component, 90)
+        self.assertEqual(state.weakness_score, 84)
+
+    async def test_recent_completed_task_and_activity_are_point_scoped(self):
+        target = KnowledgePoint(workspace_id=self.workspace.id, title="Target", summary="T")
+        other = KnowledgePoint(workspace_id=self.workspace.id, title="Other", summary="O")
+        self.db.add_all([target, other])
+        await self.db.flush()
+        self.db.add_all([
+            LearningTask(
+                workspace_id=self.workspace.id, knowledge_point_id=target.id,
+                task_type="review", title="Old target", status="completed",
+                completed_at=NOW - timedelta(days=20),
+            ),
+            LearningTask(
+                workspace_id=self.workspace.id, knowledge_point_id=other.id,
+                task_type="review", title="Recent other", status="completed", completed_at=NOW,
+            ),
+            StudyActivity(
+                workspace_id=self.workspace.id, activity_type="task_completed", title="Other activity",
+                payload={"knowledge_point_id": other.id}, created_at=NOW,
+            ),
+        ])
+        await self.db.flush()
+
+        stale = await recalculate_knowledge_point(self.db, target.id, NOW)
+        stale_recency = stale.recency_component
+        self.db.add(LearningTask(
+            workspace_id=self.workspace.id, knowledge_point_id=target.id,
+            task_type="targeted_practice", title="Recent target", status="completed", completed_at=NOW,
+        ))
+        self.db.add(StudyActivity(
+            workspace_id=self.workspace.id, activity_type="task_completed", title="Target activity",
+            payload={"knowledge_point_id": target.id}, created_at=NOW,
+        ))
+        await self.db.flush()
+        recent = await recalculate_knowledge_point(self.db, target.id, NOW)
+
+        self.assertGreater(stale_recency, 60)
+        self.assertEqual(recent.recency_component, 0)
 
 
 if __name__ == "__main__":
