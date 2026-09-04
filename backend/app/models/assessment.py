@@ -50,6 +50,8 @@ class QuizRun(Base):
     quiz_set_id = Column(String(36), ForeignKey("quiz_sets.id", ondelete="CASCADE"), nullable=False, index=True)
     round_number = Column(Integer, nullable=False)
     answer_mode = Column(String(20), nullable=False, default="sequential")
+    # SQL NULL is a complete paper; a non-empty immutable list scopes a redo.
+    question_ids = Column(JSON(none_as_null=True), nullable=True)
     status = Column(String(20), nullable=False, default="not_started")
     started_at = Column(DateTime(timezone=True), nullable=True)
     submitted_at = Column(DateTime(timezone=True), nullable=True)

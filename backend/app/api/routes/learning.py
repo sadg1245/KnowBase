@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, get_settings
 from app.config import Settings
-from app.models.assessment import LearningTask
+from app.models.assessment import LearningTask, MistakeRecord, QuizAttempt, QuizRun, QuizSet, WeakKnowledgeState
 from app.models.document import Document
 from app.models.chat import DocumentChunk
 from app.models.learning import Flashcard, KnowledgePoint, QuizQuestion, ReviewLog, StudyActivity, UserProfile
@@ -20,6 +20,9 @@ from app.models.workspace import Workspace
 from app.services.learning_content import LearningGenerationError, generate_document_learning_content
 from app.services.review_service import apply_card_review, build_review_summary, schedule_review
 from app.services.weakness_service import weakness_priority_subquery
+from app.services import assessment_service, assessment_workflows
+from app.services.assessment_ai import AssessmentAIError
+from app.schemas.assessment import QuestionSubmitRequest
 from app.schemas.learning import (
     ActivityCreate, AnalyzeRequest, FlashcardCreate, FlashcardGenerateRequest,
     FlashcardSelectionCreate, FlashcardUpdate, KnowledgePointCreate,
@@ -31,7 +34,7 @@ router = APIRouter(prefix="/learning", tags=["learning"])
 
 
 def _iso(value):
-    return value.isoformat() if value else None
+    return assessment_service._iso(value)
 
 
 def _point(row: KnowledgePoint) -> dict:
@@ -82,7 +85,8 @@ async def _document_in_workspace(db: AsyncSession, document_id: str, workspace_i
 def _quiz(row: QuizQuestion, reveal: bool = False) -> dict:
     data = {
         "id": row.id, "workspace_id": row.workspace_id,
-        "knowledge_point_id": row.knowledge_point_id, "question_type": row.question_type,
+        "knowledge_point_id": row.knowledge_point_id,
+        "question_type": {"single_choice": "choice", "short_answer": "short"}.get(row.question_type, row.question_type),
         "prompt": row.prompt, "options": row.options,
         "explanation": row.explanation, "source_label": row.source_label,
         "attempts": row.attempts, "correct_attempts": row.correct_attempts,
@@ -90,6 +94,9 @@ def _quiz(row: QuizQuestion, reveal: bool = False) -> dict:
     }
     if reveal:
         data["answer"] = row.answer
+    elif row.quiz_set_id:
+        for key in ("explanation", "last_answer", "last_correct"):
+            data.pop(key, None)
     return data
 
 
@@ -394,6 +401,10 @@ async def point_to_quiz(point_id: str, db: AsyncSession = Depends(get_db)) -> di
         workspace_id=point.workspace_id,
         knowledge_point_id=point.id,
         question_type="short",
+        document_id=point.document_id,
+        answer_payload=point.explanation or point.summary,
+        grading_rubric={"key_points": [point.explanation or point.summary]},
+        source_snapshot=[{"document_id": point.document_id, "page": point.source_page, "heading": point.source_heading}],
         prompt=f"请解释：{point.title}",
         answer=point.explanation or point.summary,
         explanation=point.explanation or point.summary,
@@ -624,6 +635,10 @@ async def generate_quiz(payload: QuizGenerateRequest, db: AsyncSession = Depends
             options = None
             prompt, answer = f"请用自己的话解释：{point.title}", point.explanation or point.summary
         row = QuizQuestion(workspace_id=payload.workspace_id, knowledge_point_id=point.id, question_type=kind, prompt=prompt, options=options, answer=answer, explanation=point.summary, source_label=point.source_heading or (f"第 {point.source_page} 页" if point.source_page else None))
+        row.document_id = point.document_id
+        row.answer_payload = answer
+        row.grading_rubric = {"key_points": [answer]} if kind == "short" else {}
+        row.source_snapshot = [{"document_id": point.document_id, "page": point.source_page, "heading": point.source_heading}]
         db.add(row); rows.append(row)
     await db.flush()
     return [_quiz(row) for row in rows]
@@ -637,23 +652,24 @@ async def list_quizzes(workspace_id: str | None = None, wrong_only: bool = False
         stmt = stmt.join(KnowledgePoint, QuizQuestion.knowledge_point_id == KnowledgePoint.id).where(KnowledgePoint.document_id.in_(document_ids))
     if wrong_only: stmt = stmt.where(QuizQuestion.last_correct.is_(False))
     rows = (await db.execute(stmt.order_by(QuizQuestion.created_at.desc()))).scalars().all()
-    return [_quiz(row) for row in rows]
+    views = {}
+    for set_id in {row.quiz_set_id for row in rows if row.quiz_set_id}:
+        view = await assessment_workflows.set_view(db, set_id)
+        views.update({question["id"]: question for question in view["questions"]})
+    return [_quiz(row, reveal="answer_payload" in views.get(row.id, {})) for row in rows]
 
 
 @router.post("/quizzes/{quiz_id}/submit")
-async def submit_quiz(quiz_id: str, payload: QuizSubmitRequest, db: AsyncSession = Depends(get_db)) -> dict:
+async def submit_quiz(quiz_id: str, payload: QuizSubmitRequest, db: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)) -> dict:
     row = (await db.execute(select(QuizQuestion).where(QuizQuestion.id == quiz_id))).scalar_one_or_none()
     if not row: raise HTTPException(404, "Question not found")
-    expected = re.sub(r"\s", "", row.answer.lower())
-    actual = re.sub(r"\s", "", payload.answer.lower())
-    correct = actual == expected if row.question_type in {"choice", "true_false"} else _short_answer_matches(actual, expected)
-    row.attempts += 1; row.correct_attempts += int(correct); row.last_answer = payload.answer; row.last_correct = correct
-    if row.knowledge_point_id:
-        point = (await db.execute(select(KnowledgePoint).where(KnowledgePoint.id == row.knowledge_point_id))).scalar_one_or_none()
-        if point: point.mastery = max(0, min(1, point.mastery + (.12 if correct else -.08)))
-    db.add(StudyActivity(workspace_id=row.workspace_id, activity_type="quiz", title="完成了一道练习", duration_seconds=60, payload={"correct": correct}))
-    await db.flush()
-    return {"correct": correct, "reference_answer": row.answer, "explanation": row.explanation, "source_label": row.source_label, "question": _quiz(row, reveal=True)}
+    try:
+        attempt = await assessment_workflows.legacy_submission(db, quiz_id, QuestionSubmitRequest(answer=payload.answer), settings)
+    except (assessment_service.AssessmentServiceError, AssessmentAIError) as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    return {"correct": attempt.is_correct, "reference_answer": row.answer, "explanation": row.explanation,
+            "source_label": row.source_label, "question": _quiz(row, reveal=True),
+            "attempt": assessment_service.serialize_attempt(attempt)}
 
 
 @router.post("/activities", status_code=201)
@@ -682,19 +698,27 @@ async def learning_report(days: int = Query(7, ge=1, le=365), db: AsyncSession =
 @router.get("/export")
 async def export_learning_data(db: AsyncSession = Depends(get_db)) -> dict:
     """Portable JSON export of learning metadata; original files remain downloadable separately."""
-    profile = await _profile(db)
+    profile = (await db.execute(select(UserProfile).limit(1))).scalar_one_or_none()
+    profile_data = {"display_name": "学习者", "daily_goal_minutes": 25, "daily_review_target": 10, "preferred_mode": "explain", "reminder_time": "20:00"}
+    if profile is not None:
+        profile_data = {key: getattr(profile, key) for key in profile_data}
     workspaces = (await db.execute(select(Workspace))).scalars().all()
     documents = (await db.execute(select(Document))).scalars().all()
     points = (await db.execute(select(KnowledgePoint))).scalars().all()
     cards = (await db.execute(select(Flashcard))).scalars().all()
     quizzes = (await db.execute(select(QuizQuestion))).scalars().all()
     activities = (await db.execute(select(StudyActivity))).scalars().all()
+    assessment_data = {}
+    for key, model in (("quiz_sets", QuizSet), ("quiz_runs", QuizRun), ("quiz_attempts", QuizAttempt),
+                       ("mistakes", MistakeRecord), ("weak_knowledge", WeakKnowledgeState), ("learning_tasks", LearningTask)):
+        assessment_data[key] = [assessment_workflows.serialize_row(row) for row in (await db.execute(select(model))).scalars()]
     return {
         "exported_at": _iso(datetime.now(timezone.utc)), "format_version": 1,
-        "profile": {"display_name": profile.display_name, "daily_goal_minutes": profile.daily_goal_minutes, "daily_review_target": profile.daily_review_target, "preferred_mode": profile.preferred_mode, "reminder_time": profile.reminder_time},
+        "profile": profile_data,
         "knowledge_bases": [{"id": w.id, "name": w.name, "description": w.description, "learning_goal": w.learning_goal, "domain": w.domain, "created_at": _iso(w.created_at)} for w in workspaces],
         "documents": [{"id": d.id, "workspace_id": d.workspace_id, "filename": d.filename, "file_type": d.file_type, "summary": d.summary, "outline": d.outline, "created_at": _iso(d.created_at)} for d in documents],
         "knowledge_points": [_point(p) for p in points], "flashcards": [_card(c) for c in cards],
-        "quizzes": [_quiz(q, reveal=True) for q in quizzes],
+        "quizzes": [{**_quiz(q, reveal=True), **assessment_workflows.serialize_row(q)} for q in quizzes],
+        **assessment_data,
         "activities": [{"id": a.id, "workspace_id": a.workspace_id, "type": a.activity_type, "title": a.title, "duration_seconds": a.duration_seconds, "payload": a.payload, "created_at": _iso(a.created_at)} for a in activities],
     }

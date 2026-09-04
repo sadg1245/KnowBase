@@ -119,6 +119,10 @@ async def run_compat_migrations(conn) -> None:
     ))
     rows = await conn.execute(text("SELECT name FROM sqlite_master WHERE type = 'table'"))
     tables = {row[0] for row in rows.fetchall()}
+    if "quiz_runs" in tables:
+        columns = {row[1] for row in (await conn.execute(text("PRAGMA table_info(quiz_runs)"))).fetchall()}
+        if "question_ids" not in columns:
+            await conn.execute(text("ALTER TABLE quiz_runs ADD COLUMN question_ids JSON"))
     assessment_indexes = {
         "quiz_questions": (
             "CREATE INDEX IF NOT EXISTS ix_quiz_questions_quiz_set_id ON quiz_questions(quiz_set_id)",
