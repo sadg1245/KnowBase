@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { App, Button, Drawer, Space, Typography } from 'antd';
+import { App, Button, Drawer, Space, Tag, Typography } from 'antd';
 import { FileTextOutlined, MenuOutlined } from '@ant-design/icons';
 
 import {
@@ -12,6 +12,7 @@ import {
   createSessionSummaryNote,
   Document,
   getDocuments,
+  getKnowledgeBaseDetail,
   getLearningProfile,
   getWorkspaces,
   LearningMode,
@@ -33,6 +34,7 @@ import { LearningModePanel } from '../components/learning/LearningModePanel';
 import { MobileLearningControls } from '../components/learning/MobileLearningControls';
 import { SessionSidebar } from '../components/learning/SessionSidebar';
 import { sourceDetailTarget } from '../features/learning/sourceNavigation';
+import { applyLearningRecommendationPreset, requestedLearningPreset, type RequestedLearningPreset } from './learningChatPresets';
 
 
 const { Text, Title } = Typography;
@@ -52,15 +54,18 @@ const LearningChat: React.FC = () => {
   const { message } = App.useApp();
   const navigate = useNavigate();
   const [params] = useSearchParams();
+  const presetQuery = params.toString();
+  const initialPreset = requestedLearningPreset(params);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspacesLoading, setWorkspacesLoading] = useState(true);
-  const [workspaceId, setWorkspaceId] = useState<string | undefined>(params.get('workspace') || undefined);
+  const [workspaceId, setWorkspaceId] = useState<string | undefined>(initialPreset.workspaceId);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [documentIds, setDocumentIds] = useState<string[]>([]);
   const [documentsLoading, setDocumentsLoading] = useState(false);
   const [mode, setMode] = useState<LearningMode>('simple');
   const [strict, setStrict] = useState(true);
   const [question, setQuestion] = useState('');
+  const [presetPointTitle, setPresetPointTitle] = useState<string>();
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [source, setSource] = useState<SourceItem | null>(null);
   const [currentEvidence, setCurrentEvidence] = useState<{ status?: string; degradationReason?: string }>({});
@@ -71,6 +76,7 @@ const LearningChat: React.FC = () => {
   const draftRef = useRef<AssistantDraft>(createAssistantDraft());
   const restoredRef = useRef(false);
   const pendingDocumentIdsRef = useRef<string[] | undefined>();
+  const pendingPresetRef = useRef<{ query: string; preset: RequestedLearningPreset }>({ query: presetQuery, preset: initialPreset });
 
   const sessionState = useChatSessions();
   const openSource = useCallback((item: SourceItem) => {
@@ -102,13 +108,26 @@ const LearningChat: React.FC = () => {
   const streaming = useStreamingChat(handleChatEvent);
 
   useEffect(() => {
+    const preset = requestedLearningPreset(new URLSearchParams(presetQuery));
+    pendingPresetRef.current = { query: presetQuery, preset };
+    setQuestion('');
+    setPresetPointTitle(undefined);
+    if (preset.workspaceId && workspaces.some(item => item.id === preset.workspaceId)) {
+      streaming.cancel();
+      pendingDocumentIdsRef.current = undefined;
+      setWorkspaceId(preset.workspaceId);
+      setDocumentIds([]);
+    }
+  }, [presetQuery, streaming.cancel, workspaces]);
+
+  useEffect(() => {
     let active = true;
     setWorkspacesLoading(true);
     Promise.all([getWorkspaces(), getLearningProfile()])
       .then(([workspaceItems, profile]) => {
         if (!active) return;
         setWorkspaces(workspaceItems);
-        setWorkspaceId((current) => resolveWorkspaceSelection(workspaceItems, current));
+        setWorkspaceId((current) => resolveWorkspaceSelection(workspaceItems, initialPreset.workspaceId || current));
         const preferred = profile.preferred_mode as LearningMode;
         if (['direct', 'simple', 'deep', 'socratic', 'feynman', 'quiz'].includes(preferred)) setMode(preferred);
       })
@@ -124,12 +143,27 @@ const LearningChat: React.FC = () => {
     if (!workspaceId) return;
     let active = true;
     setDocumentsLoading(true);
-    getDocuments(workspaceId)
-      .then((items) => { if (active) setDocuments(items); })
+    const pendingAtStart = pendingPresetRef.current;
+    const needsPointValidation = pendingAtStart.preset.workspaceId === workspaceId && Boolean(pendingAtStart.preset.knowledgePointId);
+    Promise.all([getDocuments(workspaceId), needsPointValidation ? getKnowledgeBaseDetail(workspaceId) : Promise.resolve(null)])
+      .then(([items, detail]) => {
+        if (!active) return;
+        setDocuments(items);
+        const pending = pendingPresetRef.current;
+        if (pending.preset.workspaceId !== workspaceId) return;
+        const readyIds = items.filter(item => item.status === 'ready').map(item => item.id);
+        const applied = applyLearningRecommendationPreset(pending.preset, workspaces, detail?.knowledge_points ?? [], readyIds);
+        if (pending.query !== presetQuery) return;
+        pendingPresetRef.current = { query: '', preset: {} };
+        setPresetPointTitle(applied.knowledgePointTitle);
+        setDocumentIds(applied.documentIds);
+        setQuestion(applied.draft);
+        if (applied.mode) setMode(applied.mode);
+      })
       .catch(() => { if (active) message.error('资料列表加载失败'); })
       .finally(() => { if (active) setDocumentsLoading(false); });
     return () => { active = false; };
-  }, [message, workspaceId]);
+  }, [message, presetQuery, workspaceId, workspaces]);
 
   useEffect(() => { scrollMessagesIntoView(endRef.current); }, [messages]);
 
@@ -154,7 +188,10 @@ const LearningChat: React.FC = () => {
   useEffect(() => {
     if (restoredRef.current || sessionState.loading) return;
     restoredRef.current = true;
-    const requested = params.get('session') || localStorage.getItem('knowbase_learning_session');
+    const explicitSession = params.get('session');
+    const preset = requestedLearningPreset(params);
+    const hasRecommendationPreset = Boolean(preset.workspaceId || preset.knowledgePointId || preset.prompt || preset.mode);
+    const requested = explicitSession || (hasRecommendationPreset ? null : localStorage.getItem('knowbase_learning_session'));
     if (requested && sessionState.sessions.some((item) => item.id === requested)) void openSession(requested);
   }, [openSession, params, sessionState.loading, sessionState.sessions]);
 
@@ -216,6 +253,8 @@ const LearningChat: React.FC = () => {
   const handleWorkspace = (value?: string) => {
     streaming.cancel();
     pendingDocumentIdsRef.current = undefined;
+    pendingPresetRef.current = { query: '', preset: {} };
+    setPresetPointTitle(undefined);
     setWorkspaceId(value);
     setDocumentIds([]);
     patchScope({ workspace_id: value, document_ids: [] });
@@ -286,6 +325,7 @@ const LearningChat: React.FC = () => {
           <div>
             <Title level={2}>{sessionState.activeSession?.title || '新学习会话'}</Title>
             <Text>{workspaceName ? `${workspaceName} · ${documentIds.length ? `${documentIds.length} 个文件` : '全部文件'}` : '选择资料后开始学习'}</Text>
+            {presetPointTitle ? <Tag className="learning-preset-context">当前建议：{presetPointTitle}</Tag> : null}
           </div>
           <Space>
             <Button className="learning-tablet-session-button" icon={<MenuOutlined />} onClick={() => setSessionsDrawer(true)}>会话</Button>

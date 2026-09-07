@@ -1,11 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { App, Alert, Button, Empty, Input, Progress, Radio, Select, Space, Tag } from 'antd';
 import { ArrowLeftOutlined, CheckCircleOutlined, CloseCircleOutlined, HistoryOutlined } from '@ant-design/icons';
 
 import { PracticeBuilder, type PracticeSection } from '../components/practice/PracticeBuilder';
 import { QuizRunner } from '../components/practice/QuizRunner';
-import type { PracticeAnswer, PracticeSessionState, QuizSetGenerateRequest, QuizRunView } from '../features/practice/types';
+import { MistakeNotebook } from '../components/practice/MistakeNotebook';
+import { WeakKnowledgePanel } from '../components/practice/WeakKnowledgePanel';
+import type { AssessmentListScope, MistakeFilters, MistakeRecord, PracticeAnswer, PracticeSessionState, QuizAttempt, QuizSetGenerateRequest, QuizRunView, WeakKnowledgeState } from '../features/practice/types';
 import {
   clearPracticeSessionDraft,
   createPracticeSession,
@@ -19,12 +21,16 @@ import {
   generateQuizSet,
   getDocuments,
   getKnowledgeBaseDetail,
+  getMistakes,
   getQuizzes,
   getQuizSet,
+  getWeakKnowledge,
   getWorkspaces,
   KnowledgePoint,
   QuizQuestion,
   retryAttemptGrading,
+  recalculateWeakKnowledge,
+  redoMistake,
   retryQuizRun,
   startQuizRun,
   submitQuiz,
@@ -32,6 +38,7 @@ import {
   submitQuizQuestion,
   Workspace,
 } from '../services/api';
+import { mistakeListFilters, replaceMistakeFromRedo, weakKnowledgeListFilters, weakKnowledgeRecalculationScope } from '../features/practice/learningLoop';
 import { documentSelectionOption, resetDocumentScope } from './documentScope';
 import {
   createPracticeRequestGuard,
@@ -183,10 +190,23 @@ export const LegacyPracticeView: React.FC<LegacyPracticeViewProps> = ({
   </div>;
 };
 
+export const PracticeHistoryActions: React.FC<{ workspaceId?: string }> = ({ workspaceId }) => {
+  const history = new URLSearchParams({ wrong: '1', history: '1' });
+  if (workspaceId) history.set('workspace', workspaceId);
+  const notebook = new URLSearchParams({ wrong: '1' });
+  if (workspaceId) notebook.set('workspace', workspaceId);
+  return <Space wrap className="practice-history-actions">
+    <Button href={`/practice?${notebook.toString()}`}>耐久错题笔记</Button>
+    <Button href={`/practice?${history.toString()}`} icon={<HistoryOutlined />}>历史错题（兼容记录）</Button>
+  </Space>;
+};
+
 const Practice: React.FC = () => {
   const { message } = App.useApp();
+  const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const wrongOnly = params.get('wrong') === '1';
+  const historyOnly = wrongOnly && params.get('history') === '1';
   const quizSetId = params.get('quiz_set')?.trim() || undefined;
   const requestedScope = requestedPracticeScope(params);
   const requestedWorkspaceId = requestedScope.workspaceId;
@@ -212,16 +232,34 @@ const Practice: React.FC = () => {
   const [legacyIndex, setLegacyIndex] = useState(0);
   const [legacyAnswer, setLegacyAnswer] = useState('');
   const [legacyResult, setLegacyResult] = useState<LegacySubmissionResult | null>(null);
+  const [mistakes, setMistakes] = useState<MistakeRecord[]>([]);
+  const [mistakeTotal, setMistakeTotal] = useState(0);
+  const [mistakeFilters, setMistakeFilters] = useState<MistakeFilters>({ limit: 20, offset: 0 });
+  const [mistakesLoading, setMistakesLoading] = useState(false);
+  const [redoOperation, setRedoOperation] = useState<{ token: number; mistakeId: string }>();
+  const [redoAttempts, setRedoAttempts] = useState<Record<string, QuizAttempt>>({});
+  const [weakItems, setWeakItems] = useState<WeakKnowledgeState[]>([]);
+  const [weakTotal, setWeakTotal] = useState(0);
+  const [weakFilters, setWeakFilters] = useState<AssessmentListScope>({ limit: 20, offset: 0 });
+  const [weakLoading, setWeakLoading] = useState(false);
+  const [weakRecalculating, setWeakRecalculating] = useState(false);
 
   const scopeRequestGuard = useRef(createPracticeRequestGuard());
   const sessionRequestGuard = useRef(createPracticeRequestGuard());
   const legacyRequestGuard = useRef(createPracticeRequestGuard());
   const legacyQuestionIdRef = useRef<string>();
+  const mistakeRequestGuard = useRef(createPracticeRequestGuard());
+  const redoRequestGuard = useRef(createPracticeRequestGuard());
+  const weakRequestGuard = useRef(createPracticeRequestGuard());
   const readyDocuments = readyPracticeDocuments(documents);
   const effectiveDocumentIds = resolvePracticeDocumentIds(documents, documentIds);
   const effectiveDocumentScopeKey = effectiveDocumentIds.join('\u0000');
   const working = Boolean(sessionOperation || legacyOperation);
   const retryingAttemptId = gradingOperation?.attemptId;
+  const visibleMistakeFilters = { ...mistakeFilters, workspace_id: workspaceId };
+  const mistakeFilterKey = JSON.stringify(visibleMistakeFilters);
+  const visibleWeakFilters = { ...weakFilters, workspace_id: workspaceId };
+  const weakFilterKey = JSON.stringify(visibleWeakFilters);
 
   useEffect(() => {
     let active = true;
@@ -332,7 +370,7 @@ const Practice: React.FC = () => {
     setLegacyIndex(0);
     setLegacyAnswer('');
     setLegacyResult(null);
-    if (!wrongOnly || !workspaceId || scopeLoading || effectiveDocumentIds.length === 0) {
+    if (!historyOnly || !workspaceId || scopeLoading || effectiveDocumentIds.length === 0) {
       return () => { legacyRequestGuard.current.invalidate(); };
     }
     const token = legacyRequestGuard.current.start();
@@ -348,21 +386,77 @@ const Practice: React.FC = () => {
         setLegacyOperation(current => finishMatchingPracticeOperation(current, token));
       });
     return () => { legacyRequestGuard.current.invalidate(); };
-  }, [wrongOnly, workspaceId, scopeLoading, effectiveDocumentScopeKey]);
+  }, [historyOnly, workspaceId, scopeLoading, effectiveDocumentScopeKey]);
+
+  useEffect(() => {
+    mistakeRequestGuard.current.invalidate();
+    redoRequestGuard.current.invalidate();
+    setRedoOperation(undefined);
+    if (!wrongOnly || historyOnly || !workspaceId || scopeLoading) {
+      setMistakes([]);
+      setMistakeTotal(0);
+      setMistakesLoading(false);
+      return () => { mistakeRequestGuard.current.invalidate(); };
+    }
+    const token = mistakeRequestGuard.current.start();
+    setMistakesLoading(true);
+    getMistakes(visibleMistakeFilters)
+      .then(page => {
+        if (!mistakeRequestGuard.current.isCurrent(token)) return;
+        setMistakes(page.items);
+        setMistakeTotal(page.total);
+      })
+      .catch(() => {
+        if (mistakeRequestGuard.current.isCurrent(token)) setPageError('错题笔记加载失败，请稍后重试。');
+      })
+      .finally(() => { if (mistakeRequestGuard.current.isCurrent(token)) setMistakesLoading(false); });
+    return () => { mistakeRequestGuard.current.invalidate(); };
+  }, [wrongOnly, historyOnly, workspaceId, scopeLoading, mistakeFilterKey]);
+
+  useEffect(() => {
+    weakRequestGuard.current.invalidate();
+    setWeakRecalculating(false);
+    if (wrongOnly || session || !workspaceId || scopeLoading) {
+      setWeakItems([]);
+      setWeakTotal(0);
+      setWeakLoading(false);
+      return () => { weakRequestGuard.current.invalidate(); };
+    }
+    const token = weakRequestGuard.current.start();
+    setWeakLoading(true);
+    getWeakKnowledge(visibleWeakFilters)
+      .then(page => {
+        if (!weakRequestGuard.current.isCurrent(token)) return;
+        setWeakItems(page.items);
+        setWeakTotal(page.total);
+      })
+      .catch(() => {
+        if (weakRequestGuard.current.isCurrent(token)) setPageError('薄弱知识诊断加载失败，请稍后重试。');
+      })
+      .finally(() => { if (weakRequestGuard.current.isCurrent(token)) setWeakLoading(false); });
+    return () => { weakRequestGuard.current.invalidate(); };
+  }, [wrongOnly, session?.run.id, workspaceId, scopeLoading, weakFilterKey]);
 
   useEffect(() => () => {
     scopeRequestGuard.current.invalidate();
     sessionRequestGuard.current.invalidate();
     legacyRequestGuard.current.invalidate();
+    mistakeRequestGuard.current.invalidate();
+    redoRequestGuard.current.invalidate();
+    weakRequestGuard.current.invalidate();
   }, []);
 
   const changeWorkspace = (nextWorkspaceId?: string) => {
     scopeRequestGuard.current.invalidate();
     sessionRequestGuard.current.invalidate();
     legacyRequestGuard.current.invalidate();
+    mistakeRequestGuard.current.invalidate();
+    redoRequestGuard.current.invalidate();
+    weakRequestGuard.current.invalidate();
     setSessionOperation(undefined);
     setLegacyOperation(undefined);
     setGradingOperation(undefined);
+    setRedoOperation(undefined);
     setWorkspaceId(nextWorkspaceId);
     setDocumentIds(resetDocumentScope());
     setKnowledgePointIds([]);
@@ -571,7 +665,50 @@ const Practice: React.FC = () => {
     setLegacyResult(null);
   };
 
-  if (wrongOnly) {
+  const changeMistakeFilters = (next: MistakeFilters) => {
+    if (next.workspace_id !== workspaceId) changeWorkspace(next.workspace_id);
+    setMistakeFilters({ ...next, workspace_id: undefined });
+    setRedoAttempts({});
+    setPageError(undefined);
+  };
+
+  const redo = async (mistakeId: string, answer: PracticeAnswer) => {
+    const token = redoRequestGuard.current.start();
+    setRedoOperation({ token, mistakeId });
+    setPageError(undefined);
+    try {
+      const result = await redoMistake(mistakeId, { answer });
+      if (!redoRequestGuard.current.isCurrent(token)) return;
+      const reconciled = replaceMistakeFromRedo(mistakes, result);
+      setMistakes(reconciled.mistakes);
+      setRedoAttempts(current => ({ ...current, ...reconciled.attemptsByMistakeId }));
+    } catch (error) {
+      if (redoRequestGuard.current.isCurrent(token)) setPageError(errorDetail(error, '重做提交失败，答案仍保留在页面上，可以再次尝试。'));
+    } finally {
+      setRedoOperation(current => finishMatchingPracticeOperation(current, token));
+    }
+  };
+
+  const recalculateWeakness = async () => {
+    const token = weakRequestGuard.current.start();
+    setWeakRecalculating(true);
+    setPageError(undefined);
+    try {
+      await recalculateWeakKnowledge(weakKnowledgeRecalculationScope({ workspaceId, documentId: weakFilters.document_id, knowledgePointId: weakFilters.knowledge_point_id }));
+      if (!weakRequestGuard.current.isCurrent(token)) return;
+      const page = await getWeakKnowledge(visibleWeakFilters);
+      if (!weakRequestGuard.current.isCurrent(token)) return;
+      setWeakItems(page.items);
+      setWeakTotal(page.total);
+      message.success('薄弱知识诊断已更新');
+    } catch (error) {
+      if (weakRequestGuard.current.isCurrent(token)) setPageError(errorDetail(error, '薄弱知识重新计算失败，请稍后重试。'));
+    } finally {
+      if (weakRequestGuard.current.isCurrent(token)) setWeakRecalculating(false);
+    }
+  };
+
+  if (historyOnly) {
     return <LegacyPracticeView
       workspaces={workspaces}
       workspaceId={workspaceId}
@@ -594,6 +731,28 @@ const Practice: React.FC = () => {
     />;
   }
 
+  if (wrongOnly) return <div className="practice-page">
+    <header className="practice-page-heading">
+      <div><div className="page-eyebrow">ERROR LEDGER · 可追踪的错题复盘</div><h1 className="page-title">错题笔记</h1><p className="page-lead">保留每次错误、重做与掌握变化；旧版历史题也仍然可以打开。</p></div>
+      <PracticeHistoryActions workspaceId={workspaceId} />
+    </header>
+    {pageError ? <Alert className="practice-page-alert" type="error" showIcon message={pageError} closable onClose={() => setPageError(undefined)} /> : null}
+    <MistakeNotebook
+      mistakes={mistakes}
+      total={mistakeTotal}
+      filters={visibleMistakeFilters}
+      workspaceOptions={workspaces.map(practiceWorkspaceOption)}
+      documentOptions={readyDocuments.map(documentSelectionOption)}
+      knowledgePointOptions={knowledgePoints.map(point => ({ label: point.title, value: point.id }))}
+      loading={mistakesLoading || workspacesLoading}
+      redoingId={redoOperation?.mistakeId}
+      redoAttempts={redoAttempts}
+      onFiltersChange={changeMistakeFilters}
+      onRedo={redo}
+      onSource={path => navigate(path)}
+    />
+  </div>;
+
   return <div className="practice-page">
     <header className="practice-page-heading">
       <div>
@@ -601,7 +760,7 @@ const Practice: React.FC = () => {
         <h1 className="page-title">练习与测验</h1>
         <p className="page-lead">像批阅一份学习手稿那样，找到“以为会了”和“真的会了”之间的距离。</p>
       </div>
-      {session ? <Button onClick={() => {
+      <Space wrap>{!session ? <Button href="/practice?wrong=1" icon={<HistoryOutlined />}>打开错题笔记</Button> : null}{session ? <Button onClick={() => {
         sessionRequestGuard.current.invalidate();
         setSessionOperation(undefined);
         setGradingOperation(undefined);
@@ -611,7 +770,7 @@ const Practice: React.FC = () => {
           next.delete('quiz_set');
           return next;
         }, { replace: true });
-      }}>重新配置</Button> : null}
+      }}>重新配置</Button> : null}</Space>
     </header>
     {pageError ? <Alert className="practice-page-alert" type="error" showIcon message={pageError} closable onClose={() => setPageError(undefined)} /> : null}
     {session ? <QuizRunner
@@ -624,7 +783,7 @@ const Practice: React.FC = () => {
       onSubmitPaper={submitPaper}
       onRetry={retryRun}
       onRetryGrading={retryGrading}
-    /> : <PracticeBuilder
+    /> : <><PracticeBuilder
       workspaces={workspaces}
       documents={documents}
       knowledgePoints={knowledgePoints}
@@ -641,7 +800,18 @@ const Practice: React.FC = () => {
       onKnowledgePointChange={changeKnowledgePoints}
       onSectionChange={changeSections}
       onGenerate={generate}
-    />}
+    /><WeakKnowledgePanel
+      items={weakItems}
+      total={weakTotal}
+      filters={visibleWeakFilters}
+      documentOptions={readyDocuments.map(documentSelectionOption)}
+      knowledgePointOptions={knowledgePoints.map(point => ({ label: point.title, value: point.id }))}
+      loading={weakLoading}
+      recalculating={weakRecalculating}
+      onFiltersChange={filters => { setWeakFilters({ ...filters, workspace_id: undefined }); setPageError(undefined); }}
+      onAction={path => navigate(path)}
+      onRecalculate={recalculateWeakness}
+    /></>}
   </div>;
 };
 

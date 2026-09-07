@@ -161,6 +161,11 @@ export interface AssessmentListScope {
   offset?: number;
 }
 
+export type WeakKnowledgeRecalculationScope = Pick<
+  AssessmentListScope,
+  'workspace_id' | 'document_id' | 'knowledge_point_id'
+>;
+
 export interface MistakeRecord {
   id: string;
   question_id: string;
