@@ -20,6 +20,16 @@ const pendingPracticeScope = practiceScopeModule as typeof practiceScopeModule &
     documents: { id: string; status: string }[],
     selectedIds: string[],
   ) => string[];
+  requestedPracticeScope?: (params: URLSearchParams) => {
+    workspaceId?: string;
+    knowledgePointId?: string;
+  };
+  resolveRequestedKnowledgePointId?: (
+    points: Array<{ id: string; workspace_id: string; document_id?: string | null }>,
+    requestedId: string | undefined,
+    workspaceId: string,
+    effectiveDocumentIds: string[],
+  ) => string | undefined;
 };
 
 
@@ -90,4 +100,27 @@ test('练习页只在唯一知识库有文件时自动选择', () => {
   assert.equal(resolvePracticeWorkspaceSelection([empty, ready]), undefined);
   assert.equal(resolvePracticeWorkspaceSelection([empty, ready], 'ready'), 'ready');
   assert.equal(resolvePracticeWorkspaceSelection([empty, ready], 'empty'), 'empty');
+});
+
+test('推荐链接兼容两种知识库参数并安全读取知识点范围', () => {
+  assert.deepEqual(
+    pendingPracticeScope.requestedPracticeScope?.(new URLSearchParams('workspace_id=workspace-1&knowledge_point_id=point-1')),
+    { workspaceId: 'workspace-1', knowledgePointId: 'point-1' },
+  );
+  assert.deepEqual(
+    pendingPracticeScope.requestedPracticeScope?.(new URLSearchParams('workspace=preferred&workspace_id=legacy&knowledge_point_id=%20')),
+    { workspaceId: 'preferred', knowledgePointId: undefined },
+  );
+});
+
+test('推荐知识点只在当前知识库和可用资料范围内生效', () => {
+  const points = [
+    { id: 'valid', workspace_id: 'workspace-1', document_id: 'ready-document' },
+    { id: 'wrong-workspace', workspace_id: 'workspace-2', document_id: 'ready-document' },
+    { id: 'pending-document', workspace_id: 'workspace-1', document_id: 'pending-document' },
+  ];
+
+  assert.equal(pendingPracticeScope.resolveRequestedKnowledgePointId?.(points, 'valid', 'workspace-1', ['ready-document']), 'valid');
+  assert.equal(pendingPracticeScope.resolveRequestedKnowledgePointId?.(points, 'wrong-workspace', 'workspace-1', ['ready-document']), undefined);
+  assert.equal(pendingPracticeScope.resolveRequestedKnowledgePointId?.(points, 'pending-document', 'workspace-1', ['ready-document']), undefined);
 });

@@ -5,6 +5,34 @@ interface PracticeWorkspace {
 }
 
 
+const nonBlankParam = (value: string | null): string | undefined => {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
+};
+
+
+export const requestedPracticeScope = (params: URLSearchParams): {
+  workspaceId?: string;
+  knowledgePointId?: string;
+} => ({
+  workspaceId: nonBlankParam(params.get('workspace')) ?? nonBlankParam(params.get('workspace_id')),
+  knowledgePointId: nonBlankParam(params.get('knowledge_point_id')),
+});
+
+
+export const resolveRequestedKnowledgePointId = (
+  points: Array<{ id: string; workspace_id: string; document_id?: string | null }>,
+  requestedId: string | undefined,
+  workspaceId: string,
+  effectiveDocumentIds: string[],
+): string | undefined => {
+  if (!requestedId) return undefined;
+  const effectiveDocuments = new Set(effectiveDocumentIds);
+  const point = points.find(item => item.id === requestedId && item.workspace_id === workspaceId);
+  return point && (!point.document_id || effectiveDocuments.has(point.document_id)) ? point.id : undefined;
+};
+
+
 export const practiceWorkspaceOption = (workspace: PracticeWorkspace) => ({
   label: `${workspace.name} · ${workspace.document_count} 个文件`,
   value: workspace.id,
