@@ -3,9 +3,10 @@ import test from 'node:test';
 
 import {
   applyLearningRecommendationPreset,
-  commitLearningRecommendationPreset,
+  executeLearningRecommendationCommands,
+  planLearningRecommendationPresetCommit,
+  planLearningRecommendationPresetReset,
   requestedLearningPreset,
-  resetLearningRecommendationPreset,
 } from '../src/pages/learningChatPresets';
 
 const workspaces = [{ id: 'workspace-1' }, { id: 'workspace-2' }];
@@ -34,15 +35,11 @@ test('invalid workspace or cross-workspace point resets the recommendation draft
   });
 });
 
-test('production preset orchestration resets URL state and detaches an unrelated session without sending', () => {
+test('production preset command plan resets and commits context without a send or stream-start command', () => {
   const state = { workspaceId: 'old-workspace' as string | undefined, documentIds: ['old-document'], mode: 'deep', draft: 'old', title: '旧知识点' as string | undefined, active: true, messages: 2, evidence: true };
   let cancelled = 0;
-  let sends = 0;
   const actions = {
     cancelStream: () => { cancelled += 1; },
-    resetDraft: () => { state.draft = ''; },
-    resetPointTitle: () => { state.title = undefined; },
-    resetDocuments: () => { state.documentIds = []; },
     detachSession: () => { state.active = false; state.messages = 0; state.evidence = false; },
     setWorkspace: (value?: string) => { state.workspaceId = value; },
     setDocuments: (value: string[]) => { state.documentIds = value; },
@@ -51,22 +48,38 @@ test('production preset orchestration resets URL state and detaches an unrelated
     setPointTitle: (value?: string) => { state.title = value; },
   };
 
-  resetLearningRecommendationPreset(actions);
+  const resetCommands = planLearningRecommendationPresetReset();
+  assert.deepEqual(resetCommands, [
+    { type: 'cancel-stream' },
+    { type: 'detach-session' },
+    { type: 'set-draft', value: '' },
+    { type: 'set-point-title', value: undefined },
+    { type: 'set-documents', value: [] },
+  ]);
+  executeLearningRecommendationCommands(resetCommands, actions);
   assert.equal(state.active, false);
   const applied = applyLearningRecommendationPreset(
     requestedLearningPreset(new URLSearchParams('workspace=workspace-1&knowledge_point_id=point-1&mode=simple&prompt=first')),
     workspaces, points, ['document-1'],
   );
-  const committed = commitLearningRecommendationPreset(applied, { workspace_id: 'old-workspace', document_ids: ['old-document'], mode: 'deep' }, actions);
-  assert.equal(committed, true);
+  const commitCommands = planLearningRecommendationPresetCommit(applied);
+  assert.deepEqual(commitCommands, [
+    { type: 'set-workspace', value: 'workspace-1' },
+    { type: 'set-documents', value: ['document-1'] },
+    { type: 'set-mode', value: 'simple' },
+    { type: 'set-draft', value: 'first' },
+    { type: 'set-point-title', value: '勾股定理' },
+  ]);
+  assert.deepEqual([...resetCommands, ...commitCommands].map(command => command.type), [
+    'cancel-stream', 'detach-session', 'set-draft', 'set-point-title', 'set-documents',
+    'set-workspace', 'set-documents', 'set-mode', 'set-draft', 'set-point-title',
+  ]);
+  executeLearningRecommendationCommands(commitCommands, actions);
   assert.deepEqual(state, { workspaceId: 'workspace-1', documentIds: ['document-1'], mode: 'simple', draft: 'first', title: '勾股定理', active: false, messages: 0, evidence: false });
   assert.equal(cancelled, 1);
-  assert.equal(sends, 0);
 
-  sends += 0;
-  resetLearningRecommendationPreset(actions);
+  executeLearningRecommendationCommands(planLearningRecommendationPresetReset(), actions);
   assert.equal(state.draft, '');
   assert.deepEqual(state.documentIds, []);
   assert.equal(state.title, undefined);
-  assert.equal(sends, 0);
 });

@@ -36,9 +36,10 @@ import { SessionSidebar } from '../components/learning/SessionSidebar';
 import { sourceDetailTarget } from '../features/learning/sourceNavigation';
 import {
   applyLearningRecommendationPreset,
-  commitLearningRecommendationPreset,
+  executeLearningRecommendationCommands,
+  planLearningRecommendationPresetCommit,
+  planLearningRecommendationPresetReset,
   requestedLearningPreset,
-  resetLearningRecommendationPreset,
   type RequestedLearningPreset,
 } from './learningChatPresets';
 
@@ -130,12 +131,14 @@ const LearningChat: React.FC = () => {
   useEffect(() => {
     const preset = requestedLearningPreset(new URLSearchParams(presetQuery));
     pendingPresetRef.current = { query: presetQuery, preset };
-    resetLearningRecommendationPreset({
+    executeLearningRecommendationCommands(planLearningRecommendationPresetReset(), {
       cancelStream: streaming.cancel,
       detachSession: detachActiveSession,
-      resetDraft: () => setQuestion(''),
-      resetPointTitle: () => setPresetPointTitle(undefined),
-      resetDocuments: () => setDocumentIds([]),
+      setWorkspace: setWorkspaceId,
+      setDocuments: setDocumentIds,
+      setMode,
+      setDraft: setQuestion,
+      setPointTitle: setPresetPointTitle,
     });
     pendingDocumentIdsRef.current = undefined;
     if (preset.workspaceId && workspacesRef.current.some(item => item.id === preset.workspaceId)) {
@@ -178,7 +181,8 @@ const LearningChat: React.FC = () => {
         const applied = applyLearningRecommendationPreset(pending.preset, workspaces, detail?.knowledge_points ?? [], readyIds);
         if (pending.query !== presetQuery) return;
         pendingPresetRef.current = { query: '', preset: {} };
-        commitLearningRecommendationPreset(applied, activeSessionRef.current, {
+        executeLearningRecommendationCommands(planLearningRecommendationPresetCommit(applied), {
+          cancelStream: streaming.cancel,
           detachSession: detachActiveSession,
           setWorkspace: setWorkspaceId,
           setDocuments: setDocumentIds,
@@ -190,7 +194,7 @@ const LearningChat: React.FC = () => {
       .catch(() => { if (active) message.error('资料列表加载失败'); })
       .finally(() => { if (active) setDocumentsLoading(false); });
     return () => { active = false; };
-  }, [detachActiveSession, message, presetQuery, workspaceId, workspaces, workspacesLoading]);
+  }, [detachActiveSession, message, presetQuery, streaming.cancel, workspaceId, workspaces, workspacesLoading]);
 
   useEffect(() => { scrollMessagesIntoView(endRef.current); }, [messages]);
 

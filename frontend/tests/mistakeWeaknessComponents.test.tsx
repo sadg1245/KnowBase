@@ -172,6 +172,25 @@ test('grading retry refreshes the durable mistake and rejects stale responses', 
   assert.equal(loads, 1);
 });
 
+test('grading retry still returns the authoritative filtered page when mastery removes the record', async () => {
+  const retryResult = {
+    attempt: { id: 'attempt-mastered', quiz_set_id: 'set-1', quiz_run_id: 'redo-run', question_id: 'question-1', attempt_number: 4, user_answer: '5', is_correct: true, score: 1, max_score: 1, evaluation_status: 'graded' as const, feedback: null, error_reason: null, duration_seconds: 6, submitted_at: '2026-09-07T10:00:00Z' },
+    run: {} as MistakeRedoResult['run'],
+  };
+  const refreshed = await retryMistakeGradingAndRefresh({
+    token: 3,
+    isCurrent: token => token === 3,
+    attemptId: 'attempt-failed',
+    retryGrading: async () => retryResult,
+    loadMistakes: async () => ({ items: [], total: 0, limit: 20, offset: 0 }),
+  });
+
+  assert.notEqual(refreshed, null);
+  assert.deepEqual(refreshed?.page, { items: [], total: 0, limit: 20, offset: 0 });
+  assert.equal(refreshed?.mistake, undefined);
+  assert.equal(refreshed?.attempt.id, 'attempt-mastered');
+});
+
 test('wrong notebook keeps explicit compatibility history access', () => {
   const html = renderToStaticMarkup(<PracticeHistoryActions workspaceId="workspace-1" />);
   assert.match(html, /历史错题/);

@@ -16,17 +16,8 @@ export interface AppliedLearningPreset {
   draft: string;
 }
 
-interface ActiveLearningSessionScope {
-  workspace_id?: string | null;
-  document_ids: string[];
-  mode: string;
-}
-
 export interface LearningPresetUiActions {
   cancelStream: () => void;
-  resetDraft: () => void;
-  resetPointTitle: () => void;
-  resetDocuments: () => void;
   detachSession: () => void;
   setWorkspace: (workspaceId?: string) => void;
   setDocuments: (documentIds: string[]) => void;
@@ -71,35 +62,54 @@ export const applyLearningRecommendationPreset = (
   };
 };
 
-export const resetLearningRecommendationPreset = (
-  actions: Pick<LearningPresetUiActions, 'cancelStream' | 'resetDraft' | 'resetPointTitle' | 'resetDocuments' | 'detachSession'>,
-) => {
-  actions.cancelStream();
-  actions.detachSession();
-  actions.resetDraft();
-  actions.resetPointTitle();
-  actions.resetDocuments();
+export type LearningRecommendationCommand =
+  | { type: 'cancel-stream' }
+  | { type: 'detach-session' }
+  | { type: 'set-workspace'; value: string }
+  | { type: 'set-documents'; value: string[] }
+  | { type: 'set-mode'; value: 'simple' }
+  | { type: 'set-draft'; value: string }
+  | { type: 'set-point-title'; value?: string };
+
+export const planLearningRecommendationPresetReset = (): LearningRecommendationCommand[] => [
+  { type: 'cancel-stream' },
+  { type: 'detach-session' },
+  { type: 'set-draft', value: '' },
+  { type: 'set-point-title', value: undefined },
+  { type: 'set-documents', value: [] },
+];
+
+export const planLearningRecommendationPresetCommit = (
+  preset: AppliedLearningPreset,
+): LearningRecommendationCommand[] => {
+  if (!preset.workspaceId || preset.mode !== 'simple') return [];
+  return [
+    { type: 'set-workspace', value: preset.workspaceId },
+    { type: 'set-documents', value: preset.documentIds },
+    { type: 'set-mode', value: preset.mode },
+    { type: 'set-draft', value: preset.draft },
+    { type: 'set-point-title', value: preset.knowledgePointTitle },
+  ];
 };
 
-const sameDocuments = (left: string[], right: string[]) => (
-  left.length === right.length && left.every(id => right.includes(id))
-);
+const unreachableCommand = (command: never): never => {
+  throw new Error(`Unsupported learning recommendation command: ${JSON.stringify(command)}`);
+};
 
-export const commitLearningRecommendationPreset = (
-  preset: AppliedLearningPreset,
-  activeSession: ActiveLearningSessionScope | null,
-  actions: Pick<LearningPresetUiActions, 'detachSession' | 'setWorkspace' | 'setDocuments' | 'setMode' | 'setDraft' | 'setPointTitle'>,
-): boolean => {
-  if (!preset.workspaceId || preset.mode !== 'simple') return false;
-  if (activeSession && (
-    activeSession.workspace_id !== preset.workspaceId
-    || activeSession.mode !== preset.mode
-    || !sameDocuments(activeSession.document_ids || [], preset.documentIds)
-  )) actions.detachSession();
-  actions.setWorkspace(preset.workspaceId);
-  actions.setDocuments(preset.documentIds);
-  actions.setMode(preset.mode);
-  actions.setDraft(preset.draft);
-  actions.setPointTitle(preset.knowledgePointTitle);
-  return true;
+export const executeLearningRecommendationCommands = (
+  commands: LearningRecommendationCommand[],
+  actions: LearningPresetUiActions,
+) => {
+  commands.forEach(command => {
+    switch (command.type) {
+      case 'cancel-stream': actions.cancelStream(); break;
+      case 'detach-session': actions.detachSession(); break;
+      case 'set-workspace': actions.setWorkspace(command.value); break;
+      case 'set-documents': actions.setDocuments(command.value); break;
+      case 'set-mode': actions.setMode(command.value); break;
+      case 'set-draft': actions.setDraft(command.value); break;
+      case 'set-point-title': actions.setPointTitle(command.value); break;
+      default: unreachableCommand(command);
+    }
+  });
 };

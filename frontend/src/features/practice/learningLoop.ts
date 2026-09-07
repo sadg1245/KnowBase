@@ -77,13 +77,13 @@ interface RetryMistakeGradingOptions {
 
 export const retryMistakeGradingAndRefresh = async ({
   token, isCurrent, attemptId, retryGrading, loadMistakes,
-}: RetryMistakeGradingOptions): Promise<{ mistake: MistakeRecord; attempt: QuizAttempt; page: AssessmentPage<MistakeRecord> } | null> => {
+}: RetryMistakeGradingOptions): Promise<{ mistake?: MistakeRecord; attempt: QuizAttempt; page: AssessmentPage<MistakeRecord> } | null> => {
   const result = await retryGrading(attemptId);
   if (!isCurrent(token)) return null;
   const page = await loadMistakes();
   if (!isCurrent(token)) return null;
   const mistake = page.items.find(item => item.question_id === result.attempt.question_id);
-  return mistake ? { mistake, attempt: result.attempt, page } : null;
+  return { mistake, attempt: result.attempt, page };
 };
 
 export interface TaskCompletionCoordinator {
