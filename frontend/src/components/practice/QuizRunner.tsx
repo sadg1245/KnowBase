@@ -25,6 +25,12 @@ export const shouldAutoSubmitPaper = (run: QuizRunView, secondsRemaining: number
   run.status === 'in_progress' && run.answer_mode === 'full_paper' && secondsRemaining === 0
 );
 
+export const activeQuestionIndexForRun = (
+  activeIndex: number,
+  activeRunId: string,
+  nextRunId: string,
+): number => activeRunId === nextRunId ? activeIndex : 0;
+
 const formatTimer = (seconds: number | null): string => {
   if (seconds === null) return '不限时';
   return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
@@ -77,6 +83,13 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
   const durationLimit = session.run.quiz_set.duration_limit_seconds;
   const timeRemaining = remainingSeconds(session.run, now);
   const timeoutReached = runStatus === 'in_progress' && answerMode === 'full_paper' && timeRemaining === 0;
+  const activeRunId = useRef(runId);
+
+  useEffect(() => {
+    if (activeRunId.current === runId) return;
+    activeRunId.current = runId;
+    setActiveIndex(0);
+  }, [runId]);
 
   useEffect(() => {
     if (runStatus !== 'in_progress' || durationLimit === null || startedAt === null) return;
@@ -103,7 +116,8 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
 
   const questions = session.questions;
   if (questions.length === 0) return <div className="paper-card empty-guide">这份测验还没有题目。</div>;
-  const safeIndex = Math.min(activeIndex, questions.length - 1);
+  const runAwareIndex = activeQuestionIndexForRun(activeIndex, activeRunId.current, runId);
+  const safeIndex = Math.min(runAwareIndex, questions.length - 1);
   const current = questions[safeIndex];
   const answer = session.answers[current.id];
   const attempt = session.attemptsByQuestionId[current.id];

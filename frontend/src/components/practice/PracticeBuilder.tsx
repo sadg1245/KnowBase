@@ -34,6 +34,7 @@ export interface QuizSetRequestValues {
   documents: Pick<Document, 'id' | 'status'>[];
   selectedDocumentIds: string[];
   selectedKnowledgePointIds: string[];
+  selectedSectionFilters: string[];
   count: number;
   difficulty: AssessmentDifficulty;
   questionTypes: AssessmentQuestionType[];
@@ -50,7 +51,7 @@ export const buildQuizSetGenerateRequest = (values: QuizSetRequestValues): QuizS
     workspace_id: values.workspaceId,
     document_ids: resolvePracticeDocumentIds(values.documents, values.selectedDocumentIds),
     knowledge_point_ids: [...values.selectedKnowledgePointIds],
-    section_filters: [],
+    section_filters: [...values.selectedSectionFilters],
     count: values.count,
     difficulty: values.difficulty,
     question_types: [...values.questionTypes],
@@ -60,19 +61,29 @@ export const buildQuizSetGenerateRequest = (values: QuizSetRequestValues): QuizS
   };
 };
 
+export interface PracticeSection {
+  documentId: string;
+  sourceFile: string;
+  heading?: string | null;
+  sectionPath: string[];
+}
+
 interface PracticeBuilderProps {
   workspaces: Workspace[];
   documents: Document[];
   knowledgePoints: KnowledgePoint[];
+  sections: PracticeSection[];
   workspaceId?: string;
   selectedDocumentIds: string[];
   selectedKnowledgePointIds: string[];
+  selectedSectionFilters: string[];
   workspacesLoading?: boolean;
   scopeLoading?: boolean;
   generating?: boolean;
   onWorkspaceChange: (workspaceId?: string) => void;
   onDocumentChange: (documentIds: string[]) => void;
   onKnowledgePointChange: (knowledgePointIds: string[]) => void;
+  onSectionChange: (sectionFilters: string[]) => void;
   onGenerate: (request: QuizSetGenerateRequest) => void | Promise<void>;
 }
 
@@ -80,15 +91,18 @@ export const PracticeBuilder: React.FC<PracticeBuilderProps> = ({
   workspaces,
   documents,
   knowledgePoints,
+  sections,
   workspaceId,
   selectedDocumentIds,
   selectedKnowledgePointIds,
+  selectedSectionFilters,
   workspacesLoading = false,
   scopeLoading = false,
   generating = false,
   onWorkspaceChange,
   onDocumentChange,
   onKnowledgePointChange,
+  onSectionChange,
   onGenerate,
 }) => {
   const [count, setCount] = useState(5);
@@ -104,6 +118,18 @@ export const PracticeBuilder: React.FC<PracticeBuilderProps> = ({
   const pointOptions = knowledgePoints
     .filter(point => !point.document_id || effectiveDocumentSet.has(point.document_id))
     .map(point => ({ label: point.source_heading ? `${point.title} · ${point.source_heading}` : point.title, value: point.id }));
+  const seenSectionValues = new Set<string>();
+  const sectionOptions = sections
+    .filter(section => effectiveDocumentSet.has(section.documentId))
+    .flatMap(section => [...section.sectionPath, ...(section.heading ? [section.heading] : [])])
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
+    .flatMap(value => {
+      const trimmed = value.trim();
+      const normalized = trimmed.toLocaleLowerCase();
+      if (seenSectionValues.has(normalized)) return [];
+      seenSectionValues.add(normalized);
+      return [{ label: trimmed, value: trimmed }];
+    });
   const canGenerate = Boolean(workspaceId)
     && !scopeLoading
     && effectiveDocumentIds.length > 0
@@ -116,6 +142,7 @@ export const PracticeBuilder: React.FC<PracticeBuilderProps> = ({
       documents,
       selectedDocumentIds,
       selectedKnowledgePointIds,
+      selectedSectionFilters,
       count,
       difficulty,
       questionTypes,
@@ -168,23 +195,45 @@ export const PracticeBuilder: React.FC<PracticeBuilderProps> = ({
         />
         <small>{selectedDocumentIds.length === 0 && readyDocuments.length > 0 ? `默认使用全部 ${readyDocuments.length} 份已解析资料` : '只会从已解析资料中出题'}</small>
       </label>
-      <label className="practice-field practice-field-wide">
-        <span>章节或知识点</span>
-        <Select
-          mode="multiple"
-          showSearch
-          allowClear
-          maxTagCount="responsive"
-          aria-label="章节或知识点"
-          placeholder="全部章节与知识点"
-          value={selectedKnowledgePointIds}
-          disabled={!workspaceId || scopeLoading}
-          loading={scopeLoading}
-          onChange={onKnowledgePointChange}
-          options={pointOptions}
-          optionFilterProp="label"
-        />
-      </label>
+      <fieldset className="practice-field practice-field-full">
+        <legend>章节或知识点</legend>
+        <div className="practice-scope-pair">
+          <label>
+            <span>章节</span>
+            <Select
+              mode="multiple"
+              showSearch
+              allowClear
+              maxTagCount="responsive"
+              aria-label="章节"
+              placeholder="全部章节"
+              value={selectedSectionFilters}
+              disabled={!workspaceId || scopeLoading || sectionOptions.length === 0}
+              loading={scopeLoading}
+              onChange={onSectionChange}
+              options={sectionOptions}
+              optionFilterProp="label"
+            />
+          </label>
+          <label>
+            <span>知识点</span>
+            <Select
+              mode="multiple"
+              showSearch
+              allowClear
+              maxTagCount="responsive"
+              aria-label="知识点"
+              placeholder="全部知识点"
+              value={selectedKnowledgePointIds}
+              disabled={!workspaceId || scopeLoading}
+              loading={scopeLoading}
+              onChange={onKnowledgePointChange}
+              options={pointOptions}
+              optionFilterProp="label"
+            />
+          </label>
+        </div>
+      </fieldset>
       <label className="practice-field">
         <span>题目数量</span>
         <InputNumber min={1} max={50} value={count} onChange={value => setCount(value ?? 5)} />

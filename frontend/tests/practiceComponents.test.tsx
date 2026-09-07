@@ -16,6 +16,7 @@ import {
   QuizRunner,
   shouldAutoSubmitPaper,
 } from '../src/components/practice/QuizRunner';
+import * as quizRunnerModule from '../src/components/practice/QuizRunner';
 import {
   assessmentSourceHref,
   QuizResults,
@@ -74,18 +75,28 @@ test('builder exposes every phase five configuration control and legacy history 
     workspaces={[workspace]}
     documents={[readyDocument, pendingDocument]}
     knowledgePoints={[knowledgePoint]}
+    sections={[{
+      documentId: readyDocument.id,
+      sourceFile: readyDocument.filename,
+      heading: '基础章节',
+      sectionPath: ['几何', '基础章节'],
+    }]}
     workspaceId={workspace.id}
     selectedDocumentIds={[]}
     selectedKnowledgePointIds={[]}
+    selectedSectionFilters={['基础章节']}
     onWorkspaceChange={() => undefined}
     onDocumentChange={() => undefined}
     onKnowledgePointChange={() => undefined}
+    onSectionChange={() => undefined}
     onGenerate={() => undefined}
   />);
 
   for (const label of ['知识库', '章节或知识点', '题目数量', '难度', '单项选择题', '多项选择题', '判断题', '填空题', '简答题', '解释概念题', '严格依据资料', '逐题答题', '整卷答题', '限时', '历史错题']) {
     assert.match(html, new RegExp(label));
   }
+  assert.match(html, /aria-label="章节"/);
+  assert.match(html, /aria-label="知识点"/);
   assert.match(html, /href="\/practice\?wrong=1"/);
 });
 
@@ -95,6 +106,7 @@ test('builder emits ready documents instead of the empty all-documents sentinel'
     documents: [readyDocument, pendingDocument],
     selectedDocumentIds: [],
     selectedKnowledgePointIds: [knowledgePoint.id],
+    selectedSectionFilters: ['基础章节'],
     count: 12,
     difficulty: 'hard',
     questionTypes: ['multiple_choice', 'fill_blank'],
@@ -105,7 +117,7 @@ test('builder emits ready documents instead of the empty all-documents sentinel'
     workspace_id: workspace.id,
     document_ids: [readyDocument.id],
     knowledge_point_ids: [knowledgePoint.id],
-    section_filters: [],
+    section_filters: ['基础章节'],
     count: 12,
     difficulty: 'hard',
     question_types: ['multiple_choice', 'fill_blank'],
@@ -149,6 +161,17 @@ test('only an expired active full paper auto-submits at the deadline', () => {
   assert.equal(shouldAutoSubmitPaper(makeRun({ answer_mode: 'sequential' }), 0), false);
   assert.equal(shouldAutoSubmitPaper(makeRun({ status: 'submitted' }), 0), false);
   assert.equal(shouldAutoSubmitPaper(makeRun(), 1), false);
+});
+
+test('a retry round starts navigation from its first question', () => {
+  const activeQuestionIndexForRun = (quizRunnerModule as Record<string, unknown>).activeQuestionIndexForRun as undefined | ((
+    activeIndex: number,
+    activeRunId: string,
+    nextRunId: string,
+  ) => number);
+  assert.ok(activeQuestionIndexForRun, '题目索引需要按运行轮次归零');
+  assert.equal(activeQuestionIndexForRun(4, 'run-first', 'run-retry'), 0);
+  assert.equal(activeQuestionIndexForRun(2, 'run-retry', 'run-retry'), 2);
 });
 
 test('runner conceals protected material until the run is submitted', () => {

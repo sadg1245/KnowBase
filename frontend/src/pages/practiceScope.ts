@@ -81,6 +81,67 @@ export const createPracticeRequestGuard = () => {
 };
 
 
+interface GuardedRunRestoration<TQuizSet, TRun extends { status: string }> {
+  token: number;
+  isCurrent: (token: number) => boolean;
+  loadQuizSet: () => Promise<TQuizSet>;
+  existingRun: (quizSet: TQuizSet) => TRun | null;
+  createRun: (quizSet: TQuizSet) => Promise<TRun>;
+  startRun: (run: TRun) => Promise<TRun>;
+}
+
+
+export const restoreGuardedPracticeRun = async <TQuizSet, TRun extends { status: string }>({
+  token,
+  isCurrent,
+  loadQuizSet,
+  existingRun,
+  createRun,
+  startRun,
+}: GuardedRunRestoration<TQuizSet, TRun>): Promise<TRun | null> => {
+  const quizSet = await loadQuizSet();
+  if (!isCurrent(token)) return null;
+
+  let run = existingRun(quizSet);
+  if (!run) {
+    run = await createRun(quizSet);
+    if (!isCurrent(token)) return null;
+  }
+  if (run.status === 'not_started') {
+    run = await startRun(run);
+    if (!isCurrent(token)) return null;
+  }
+  return run;
+};
+
+
+export const finishMatchingPracticeOperation = <T extends { token: number }>(
+  current: T | undefined,
+  completedToken: number,
+): T | undefined => current?.token === completedToken ? undefined : current;
+
+
+interface GuardedLegacySubmission<T> {
+  token: number;
+  questionId: string;
+  isCurrent: (token: number) => boolean;
+  currentQuestionId: () => string | undefined;
+  submit: () => Promise<T>;
+}
+
+
+export const submitGuardedLegacyAnswer = async <T>({
+  token,
+  questionId,
+  isCurrent,
+  currentQuestionId,
+  submit,
+}: GuardedLegacySubmission<T>): Promise<T | null> => {
+  const result = await submit();
+  return isCurrent(token) && currentQuestionId() === questionId ? result : null;
+};
+
+
 export const practiceDocumentPlaceholder = (
   workspaceId: string | undefined,
   documents: { status: string }[],

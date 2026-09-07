@@ -70,6 +70,9 @@ button, input, textarea { font: inherit; }
 .practice-field legend { margin-bottom:8px; }
 .practice-field > .ant-select,.practice-field > .ant-input-number { width:100%; }
 .practice-field small { color:#82969e; font-size:11px; }
+.practice-scope-pair { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+.practice-scope-pair label { min-width:0; display:flex; flex-direction:column; gap:8px; }
+.practice-scope-pair label > span { color:#607984; font-size:11px; }
 .practice-question-types { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
 .practice-question-types .ant-checkbox-wrapper { min-height:43px; margin:0; padding:10px 12px; border:1px solid #e0e9eb; border-radius:10px; background:#fbfdfd; }
 .practice-question-types .ant-checkbox-wrapper:has(.ant-checkbox-checked) { color:#116f7c; border-color:#9ecbca; background:#edf7f6; }
@@ -160,6 +163,7 @@ button, input, textarea { font: inherit; }
   .practice-builder-grid { grid-template-columns:1fr; gap:17px; }
   .practice-field,.practice-field-wide,.practice-field-full { grid-column:1; }
   .practice-question-types { grid-template-columns:1fr 1fr; }
+  .practice-scope-pair { grid-template-columns:1fr; }
   .practice-builder-footer { align-items:stretch; flex-direction:column; }
   .practice-builder-footer .ant-btn { width:100%; }
   .practice-paper-layout { grid-template-columns:1fr; }

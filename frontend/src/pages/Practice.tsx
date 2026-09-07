@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { App, Alert, Button, Empty, Input, Progress, Radio, Select, Space, Tag } from 'antd';
 import { ArrowLeftOutlined, CheckCircleOutlined, CloseCircleOutlined, HistoryOutlined } from '@ant-design/icons';
 
-import { PracticeBuilder } from '../components/practice/PracticeBuilder';
+import { PracticeBuilder, type PracticeSection } from '../components/practice/PracticeBuilder';
 import { QuizRunner } from '../components/practice/QuizRunner';
 import type { PracticeAnswer, PracticeSessionState, QuizSetGenerateRequest, QuizRunView } from '../features/practice/types';
 import {
@@ -35,13 +35,16 @@ import {
 import { documentSelectionOption, resetDocumentScope } from './documentScope';
 import {
   createPracticeRequestGuard,
+  finishMatchingPracticeOperation,
   practiceDocumentPlaceholder,
   practiceWorkspaceOption,
   readyPracticeDocuments,
   requestedPracticeScope,
+  restoreGuardedPracticeRun,
   resolvePracticeDocumentIds,
   resolveRequestedKnowledgePointId,
   resolvePracticeWorkspaceSelection,
+  submitGuardedLegacyAnswer,
 } from './practiceScope';
 
 
@@ -193,12 +196,15 @@ const Practice: React.FC = () => {
   const [workspaceId, setWorkspaceId] = useState<string>();
   const [documents, setDocuments] = useState<Document[]>([]);
   const [knowledgePoints, setKnowledgePoints] = useState<KnowledgePoint[]>([]);
+  const [sections, setSections] = useState<PracticeSection[]>([]);
   const [documentIds, setDocumentIds] = useState<string[]>([]);
   const [knowledgePointIds, setKnowledgePointIds] = useState<string[]>([]);
+  const [sectionFilters, setSectionFilters] = useState<string[]>([]);
   const [workspacesLoading, setWorkspacesLoading] = useState(true);
   const [scopeLoading, setScopeLoading] = useState(false);
-  const [working, setWorking] = useState(false);
-  const [retryingAttemptId, setRetryingAttemptId] = useState<string>();
+  const [sessionOperation, setSessionOperation] = useState<{ token: number }>();
+  const [legacyOperation, setLegacyOperation] = useState<{ token: number }>();
+  const [gradingOperation, setGradingOperation] = useState<{ token: number; attemptId: string }>();
   const [session, setSession] = useState<PracticeSessionState | null>(null);
   const [pageError, setPageError] = useState<string>();
 
@@ -210,9 +216,12 @@ const Practice: React.FC = () => {
   const scopeRequestGuard = useRef(createPracticeRequestGuard());
   const sessionRequestGuard = useRef(createPracticeRequestGuard());
   const legacyRequestGuard = useRef(createPracticeRequestGuard());
+  const legacyQuestionIdRef = useRef<string>();
   const readyDocuments = readyPracticeDocuments(documents);
   const effectiveDocumentIds = resolvePracticeDocumentIds(documents, documentIds);
   const effectiveDocumentScopeKey = effectiveDocumentIds.join('\u0000');
+  const working = Boolean(sessionOperation || legacyOperation);
+  const retryingAttemptId = gradingOperation?.attemptId;
 
   useEffect(() => {
     let active = true;
@@ -235,8 +244,10 @@ const Practice: React.FC = () => {
     const token = scopeRequestGuard.current.start();
     setDocumentIds(resetDocumentScope());
     setKnowledgePointIds([]);
+    setSectionFilters([]);
     setDocuments([]);
     setKnowledgePoints([]);
+    setSections([]);
     if (!workspaceId) {
       setScopeLoading(false);
       return;
@@ -248,6 +259,12 @@ const Practice: React.FC = () => {
         if (!scopeRequestGuard.current.isCurrent(token)) return;
         setDocuments(documentItems);
         setKnowledgePoints(detail.knowledge_points);
+        setSections(detail.documents.flatMap(document => (document.outline_items ?? []).map(item => ({
+          documentId: document.id,
+          sourceFile: document.filename,
+          heading: item.heading,
+          sectionPath: item.section_path,
+        }))));
         const requestedPoint = (!requestedWorkspaceId || requestedWorkspaceId === workspaceId)
           ? resolveRequestedKnowledgePointId(
             detail.knowledge_points,
@@ -267,18 +284,31 @@ const Practice: React.FC = () => {
   }, [workspaceId, requestedWorkspaceId, requestedKnowledgePointId]);
 
   useEffect(() => {
-    if (wrongOnly || !quizSetId) return;
+    sessionRequestGuard.current.invalidate();
+    setSessionOperation(undefined);
+    setGradingOperation(undefined);
+    setSession(current => (
+      !wrongOnly && quizSetId && current?.run.quiz_set_id === quizSetId ? current : null
+    ));
+    if (wrongOnly || !quizSetId) {
+      return () => { sessionRequestGuard.current.invalidate(); };
+    }
     const token = sessionRequestGuard.current.start();
-    setWorking(true);
+    setSessionOperation({ token });
     setPageError(undefined);
-    getQuizSet(quizSetId)
-      .then(async quizSet => {
-        if (!sessionRequestGuard.current.isCurrent(token)) return;
+    restoreGuardedPracticeRun({
+      token,
+      isCurrent: sessionRequestGuard.current.isCurrent,
+      loadQuizSet: () => getQuizSet(quizSetId),
+      existingRun: quizSet => {
         if (quizSet.status === 'failed') throw new Error(quizSet.generation_error || '测验生成失败');
-        let run = asRunView(quizSet);
-        if (!run) run = await createQuizRun(quizSet.id, { answer_mode: quizSet.answer_mode, resume_unsubmitted: true });
-        if (run.status === 'not_started') run = await startQuizRun(run.id);
-        if (!sessionRequestGuard.current.isCurrent(token)) return;
+        return asRunView(quizSet);
+      },
+      createRun: quizSet => createQuizRun(quizSet.id, { answer_mode: quizSet.answer_mode, resume_unsubmitted: true }),
+      startRun: run => startQuizRun(run.id),
+    })
+      .then(run => {
+        if (!run || !sessionRequestGuard.current.isCurrent(token)) return;
         const restored = createPracticeSession(run, run.quiz_set.questions, Date.now(), loadPracticeSessionDraft(run.id));
         setWorkspaceId(run.quiz_set.workspace_id);
         setSession(restored);
@@ -290,19 +320,23 @@ const Practice: React.FC = () => {
         }
       })
       .finally(() => {
-        if (sessionRequestGuard.current.isCurrent(token)) setWorking(false);
+        setSessionOperation(current => finishMatchingPracticeOperation(current, token));
       });
+    return () => { sessionRequestGuard.current.invalidate(); };
   }, [wrongOnly, quizSetId]);
 
   useEffect(() => {
     legacyRequestGuard.current.invalidate();
+    setLegacyOperation(undefined);
     setLegacyQuestions([]);
     setLegacyIndex(0);
     setLegacyAnswer('');
     setLegacyResult(null);
-    if (!wrongOnly || !workspaceId || scopeLoading || effectiveDocumentIds.length === 0) return;
+    if (!wrongOnly || !workspaceId || scopeLoading || effectiveDocumentIds.length === 0) {
+      return () => { legacyRequestGuard.current.invalidate(); };
+    }
     const token = legacyRequestGuard.current.start();
-    setWorking(true);
+    setLegacyOperation({ token });
     getQuizzes(true, workspaceId, effectiveDocumentIds)
       .then(items => {
         if (legacyRequestGuard.current.isCurrent(token)) setLegacyQuestions(items);
@@ -311,8 +345,9 @@ const Practice: React.FC = () => {
         if (legacyRequestGuard.current.isCurrent(token)) setPageError('历史错题加载失败，请稍后重试。');
       })
       .finally(() => {
-        if (legacyRequestGuard.current.isCurrent(token)) setWorking(false);
+        setLegacyOperation(current => finishMatchingPracticeOperation(current, token));
       });
+    return () => { legacyRequestGuard.current.invalidate(); };
   }, [wrongOnly, workspaceId, scopeLoading, effectiveDocumentScopeKey]);
 
   useEffect(() => () => {
@@ -325,9 +360,13 @@ const Practice: React.FC = () => {
     scopeRequestGuard.current.invalidate();
     sessionRequestGuard.current.invalidate();
     legacyRequestGuard.current.invalidate();
+    setSessionOperation(undefined);
+    setLegacyOperation(undefined);
+    setGradingOperation(undefined);
     setWorkspaceId(nextWorkspaceId);
     setDocumentIds(resetDocumentScope());
     setKnowledgePointIds([]);
+    setSectionFilters([]);
     setSession(null);
     setPageError(undefined);
     setParams(current => {
@@ -344,7 +383,11 @@ const Practice: React.FC = () => {
   const changeDocuments = (nextDocumentIds: string[]) => {
     sessionRequestGuard.current.invalidate();
     legacyRequestGuard.current.invalidate();
+    setSessionOperation(undefined);
+    setLegacyOperation(undefined);
+    setGradingOperation(undefined);
     setDocumentIds(nextDocumentIds);
+    setSectionFilters([]);
     const nextEffectiveDocumentIds = resolvePracticeDocumentIds(documents, nextDocumentIds);
     setKnowledgePointIds(current => current.filter(pointId => {
       const point = knowledgePoints.find(item => item.id === pointId);
@@ -354,9 +397,26 @@ const Practice: React.FC = () => {
     setPageError(undefined);
   };
 
+  const changeKnowledgePoints = (nextKnowledgePointIds: string[]) => {
+    sessionRequestGuard.current.invalidate();
+    setSessionOperation(undefined);
+    setGradingOperation(undefined);
+    setKnowledgePointIds(nextKnowledgePointIds);
+    setPageError(undefined);
+  };
+
+  const changeSections = (nextSectionFilters: string[]) => {
+    sessionRequestGuard.current.invalidate();
+    setSessionOperation(undefined);
+    setGradingOperation(undefined);
+    setSectionFilters(nextSectionFilters);
+    setPageError(undefined);
+  };
+
   const generate = async (request: QuizSetGenerateRequest) => {
     const token = sessionRequestGuard.current.start();
-    setWorking(true);
+    setSessionOperation({ token });
+    setGradingOperation(undefined);
     setPageError(undefined);
     try {
       const quizSet = await generateQuizSet(request);
@@ -380,7 +440,7 @@ const Practice: React.FC = () => {
     } catch (error) {
       if (sessionRequestGuard.current.isCurrent(token)) setPageError(errorDetail(error, error instanceof Error ? error.message : '测验生成失败，请稍后重试。'));
     } finally {
-      if (sessionRequestGuard.current.isCurrent(token)) setWorking(false);
+      setSessionOperation(current => finishMatchingPracticeOperation(current, token));
     }
   };
 
@@ -396,7 +456,8 @@ const Practice: React.FC = () => {
   const submitQuestion = async (questionId: string, answer: PracticeAnswer) => {
     if (!session) return;
     const token = sessionRequestGuard.current.start();
-    setWorking(true);
+    setSessionOperation({ token });
+    setGradingOperation(undefined);
     setPageError(undefined);
     try {
       const result = await submitQuizQuestion(session.run.id, questionId, {
@@ -411,14 +472,15 @@ const Practice: React.FC = () => {
     } catch (error) {
       if (sessionRequestGuard.current.isCurrent(token)) setPageError(errorDetail(error, '答案提交失败，你的草稿仍保存在本机。'));
     } finally {
-      if (sessionRequestGuard.current.isCurrent(token)) setWorking(false);
+      setSessionOperation(current => finishMatchingPracticeOperation(current, token));
     }
   };
 
   const submitPaper = async () => {
     if (!session) return;
     const token = sessionRequestGuard.current.start();
-    setWorking(true);
+    setSessionOperation({ token });
+    setGradingOperation(undefined);
     setPageError(undefined);
     try {
       const run = await submitQuizPaper(session.run.id, {
@@ -432,14 +494,15 @@ const Practice: React.FC = () => {
     } catch (error) {
       if (sessionRequestGuard.current.isCurrent(token)) setPageError(errorDetail(error, '交卷失败，你的答案仍保存在本机。'));
     } finally {
-      if (sessionRequestGuard.current.isCurrent(token)) setWorking(false);
+      setSessionOperation(current => finishMatchingPracticeOperation(current, token));
     }
   };
 
   const retryRun = async () => {
     if (!session) return;
     const token = sessionRequestGuard.current.start();
-    setWorking(true);
+    setSessionOperation({ token });
+    setGradingOperation(undefined);
     setPageError(undefined);
     try {
       const created = await retryQuizRun(session.run.id);
@@ -452,14 +515,15 @@ const Practice: React.FC = () => {
     } catch (error) {
       if (sessionRequestGuard.current.isCurrent(token)) setPageError(errorDetail(error, '无法开始新一轮，请稍后重试。'));
     } finally {
-      if (sessionRequestGuard.current.isCurrent(token)) setWorking(false);
+      setSessionOperation(current => finishMatchingPracticeOperation(current, token));
     }
   };
 
   const retryGrading = async (attemptId: string) => {
     if (!session || retryingAttemptId) return;
     const token = sessionRequestGuard.current.start();
-    setRetryingAttemptId(attemptId);
+    setSessionOperation(undefined);
+    setGradingOperation({ token, attemptId });
     setPageError(undefined);
     try {
       const result = await retryAttemptGrading(attemptId);
@@ -471,20 +535,33 @@ const Practice: React.FC = () => {
     } catch (error) {
       if (sessionRequestGuard.current.isCurrent(token)) setPageError(errorDetail(error, '评分重试失败，答案仍已保存。'));
     } finally {
-      if (sessionRequestGuard.current.isCurrent(token)) setRetryingAttemptId(undefined);
+      setGradingOperation(current => finishMatchingPracticeOperation(current, token));
     }
   };
 
   const currentLegacyQuestion = legacyQuestions[legacyIndex];
+  legacyQuestionIdRef.current = currentLegacyQuestion?.id;
   const submitLegacyAnswer = async () => {
     if (!currentLegacyQuestion || !legacyAnswer.trim()) return;
-    setWorking(true);
+    const token = legacyRequestGuard.current.start();
+    const questionId = currentLegacyQuestion.id;
+    const answer = legacyAnswer;
+    setLegacyOperation({ token });
     try {
-      setLegacyResult(await submitQuiz(currentLegacyQuestion.id, legacyAnswer));
+      const result = await submitGuardedLegacyAnswer({
+        token,
+        questionId,
+        isCurrent: legacyRequestGuard.current.isCurrent,
+        currentQuestionId: () => legacyQuestionIdRef.current,
+        submit: () => submitQuiz(questionId, answer),
+      });
+      if (result) setLegacyResult(result);
     } catch (error) {
-      setPageError(errorDetail(error, '答案提交失败，请稍后重试。'));
+      if (legacyRequestGuard.current.isCurrent(token) && legacyQuestionIdRef.current === questionId) {
+        setPageError(errorDetail(error, '答案提交失败，请稍后重试。'));
+      }
     } finally {
-      setWorking(false);
+      setLegacyOperation(current => finishMatchingPracticeOperation(current, token));
     }
   };
 
@@ -526,6 +603,8 @@ const Practice: React.FC = () => {
       </div>
       {session ? <Button onClick={() => {
         sessionRequestGuard.current.invalidate();
+        setSessionOperation(undefined);
+        setGradingOperation(undefined);
         setSession(null);
         setParams(current => {
           const next = new URLSearchParams(current);
@@ -549,15 +628,18 @@ const Practice: React.FC = () => {
       workspaces={workspaces}
       documents={documents}
       knowledgePoints={knowledgePoints}
+      sections={sections}
       workspaceId={workspaceId}
       selectedDocumentIds={documentIds}
       selectedKnowledgePointIds={knowledgePointIds}
+      selectedSectionFilters={sectionFilters}
       workspacesLoading={workspacesLoading}
       scopeLoading={scopeLoading}
       generating={working}
       onWorkspaceChange={changeWorkspace}
       onDocumentChange={changeDocuments}
-      onKnowledgePointChange={setKnowledgePointIds}
+      onKnowledgePointChange={changeKnowledgePoints}
+      onSectionChange={changeSections}
       onGenerate={generate}
     />}
   </div>;
