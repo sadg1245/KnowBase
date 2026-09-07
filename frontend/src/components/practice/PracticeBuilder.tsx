@@ -52,7 +52,7 @@ export const buildQuizSetGenerateRequest = (values: QuizSetRequestValues): QuizS
     document_ids: resolvePracticeDocumentIds(values.documents, values.selectedDocumentIds),
     knowledge_point_ids: [...values.selectedKnowledgePointIds],
     section_filters: [...values.selectedSectionFilters],
-    count: values.count,
+    count: Math.round(values.count),
     difficulty: values.difficulty,
     question_types: [...values.questionTypes],
     strict_sources: values.strictSources,
@@ -236,7 +236,7 @@ export const PracticeBuilder: React.FC<PracticeBuilderProps> = ({
       </fieldset>
       <label className="practice-field">
         <span>题目数量</span>
-        <InputNumber min={1} max={50} value={count} onChange={value => setCount(value ?? 5)} />
+        <InputNumber min={1} max={50} precision={0} value={count} onChange={value => setCount(value ?? 5)} />
       </label>
       <label className="practice-field">
         <span>难度</span>

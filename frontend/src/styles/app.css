@@ -50,6 +50,8 @@ button, input, textarea { font: inherit; }
     transition-duration: .01ms !important;
     transition-delay: 0ms !important;
   }
+  /* Popup alignment measures inset changes synchronously; do not animate them. */
+  .ant-select-dropdown { transition-property: none !important; }
 }
 
 /* Practice assessment: a calm, traceable study paper */

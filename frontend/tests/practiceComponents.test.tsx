@@ -127,6 +127,16 @@ test('builder emits ready documents instead of the empty all-documents sentinel'
   });
 });
 
+test('generation request normalizes a fractional question count to a whole question', () => {
+  const request = buildQuizSetGenerateRequest({
+    workspaceId: workspace.id, documents: [readyDocument], selectedDocumentIds: [],
+    selectedKnowledgePointIds: [], selectedSectionFilters: [], count: 6.4,
+    difficulty: 'medium', questionTypes: ['single_choice'], strictSources: true,
+    answerMode: 'sequential', durationMinutes: null,
+  });
+  assert.equal(request.count, 6);
+});
+
 test('question input renders the appropriate control for all six question types', () => {
   const cases = [
     ['single_choice', ['type="radio"']],
