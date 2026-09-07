@@ -4,17 +4,18 @@ import { App, Button, Col, Empty, Progress, Row, Skeleton, Space, Tag, Typograph
 import { ArrowRightOutlined, BookOutlined, ClockCircleOutlined, FireOutlined, ReadOutlined, TrophyOutlined } from '@ant-design/icons';
 import { completeLearningTask, getLearningDashboard } from '../services/api';
 import type { DashboardTask, LearningDashboard } from '../services/api';
+import { createTaskCompletionCoordinator, type TaskCompletionCoordinator } from '../features/practice/learningLoop';
 
 const { Title, Text } = Typography;
 
 interface TodayTaskListProps {
   tasks: DashboardTask[];
-  completingId?: string;
+  completingIds?: ReadonlySet<string>;
   onNavigate: (path: string) => void;
   onComplete: (taskId: string) => void;
 }
 
-export const TodayTaskList: React.FC<TodayTaskListProps> = ({ tasks, completingId, onNavigate, onComplete }) => <div className="learning-trail dashboard-task-list">
+export const TodayTaskList: React.FC<TodayTaskListProps> = ({ tasks, completingIds, onNavigate, onComplete }) => <div className="learning-trail dashboard-task-list">
   {tasks.map((task, index) => {
     const durable = Boolean(task.id);
     return <article key={task.id || `${task.type}-${task.path}-${index}`} className="dashboard-task-row">
@@ -25,7 +26,7 @@ export const TodayTaskList: React.FC<TodayTaskListProps> = ({ tasks, completingI
       </small></div>
       <div className="dashboard-task-actions">
         {task.path ? <Button type="link" href={task.path} onClick={event => { event.preventDefault(); onNavigate(task.path!); }}>前往 <ArrowRightOutlined /></Button> : null}
-        {durable && task.status !== 'completed' ? <Button size="small" loading={completingId === task.id} onClick={() => onComplete(task.id!)}>标记完成</Button> : null}
+        {durable && task.status !== 'completed' ? <Button size="small" loading={completingIds?.has(task.id!)} onClick={() => onComplete(task.id!)}>标记完成</Button> : null}
       </div>
     </article>;
   })}
@@ -36,9 +37,9 @@ const Dashboard: React.FC = () => {
   const navigate = useNavigate();
   const [data, setData] = useState<LearningDashboard | null>(null);
   const [loading, setLoading] = useState(true);
-  const [completingId, setCompletingId] = useState<string>();
+  const [completingIds, setCompletingIds] = useState<ReadonlySet<string>>(() => new Set());
   const requestVersion = useRef(0);
-  const completionVersion = useRef(0);
+  const completionCoordinator = useRef<TaskCompletionCoordinator | null>(null);
   const loadDashboard = useCallback(async () => {
     const version = ++requestVersion.current;
     setLoading(true);
@@ -52,23 +53,21 @@ const Dashboard: React.FC = () => {
     }
   }, [message]);
   useEffect(() => {
+    const coordinator = createTaskCompletionCoordinator(setCompletingIds);
+    completionCoordinator.current = coordinator;
     void loadDashboard();
-    return () => { requestVersion.current += 1; completionVersion.current += 1; };
+    return () => {
+      requestVersion.current += 1;
+      coordinator.dispose();
+      if (completionCoordinator.current === coordinator) completionCoordinator.current = null;
+    };
   }, [loadDashboard]);
-  const completeTask = async (taskId: string) => {
-    const version = ++completionVersion.current;
-    setCompletingId(taskId);
-    try {
-      await completeLearningTask(taskId);
-      if (version !== completionVersion.current) return;
-      message.success('学习任务已完成');
-      await loadDashboard();
-    } catch {
-      if (version === completionVersion.current) message.error('任务完成状态没有保存，请重试');
-    } finally {
-      if (version === completionVersion.current) setCompletingId(undefined);
-    }
-  };
+  const completeTask = (taskId: string) => completionCoordinator.current?.run(
+    taskId,
+    () => completeLearningTask(taskId),
+    async () => { message.success('学习任务已完成'); await loadDashboard(); },
+    async () => { message.error('任务完成状态没有保存，请重试'); },
+  );
   const greeting = useMemo(() => new Date().getHours() < 12 ? '早上好' : new Date().getHours() < 18 ? '下午好' : '晚上好', []);
   if (loading) return <Skeleton active paragraph={{ rows: 10 }} />;
   const stats = data?.stats;
@@ -89,7 +88,7 @@ const Dashboard: React.FC = () => {
             <div><Text type="secondary">今日节奏</Text><Title level={2} style={{ margin:'4px 0 0' }}><span className="metric-number">{stats?.today_minutes || 0}</span> <small style={{fontSize:15,fontWeight:400}}>分钟</small></Title></div>
             <div style={{ width:72 }}><Progress type="circle" size={72} percent={completion} strokeColor="#167d8d" trailColor="#dcebea" format={() => `${completion}%`} /></div>
           </Space>
-          <div style={{ marginTop:28 }}><TodayTaskList tasks={data?.today_tasks || []} completingId={completingId} onNavigate={path => navigate(path)} onComplete={taskId => void completeTask(taskId)} /></div>
+          <div style={{ marginTop:28 }}><TodayTaskList tasks={data?.today_tasks || []} completingIds={completingIds} onNavigate={path => navigate(path)} onComplete={taskId => void completeTask(taskId)} /></div>
           <Button className="dashboard-continue" type="link" onClick={() => navigate('/knowledge')}>继续最近的知识库 <ArrowRightOutlined /></Button>
         </section>
       </Col>

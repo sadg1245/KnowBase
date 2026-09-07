@@ -187,9 +187,10 @@ button, input, textarea { font: inherit; }
 .mistake-sources > .ant-btn { height:auto; padding:2px 5px; white-space:normal; text-align:left; }
 .mistake-redo { display:grid; gap:13px; margin-top:23px; padding-top:20px; border-top:2px solid #dbe8e9; }
 .mistake-redo > div:first-child { display:flex; justify-content:space-between; gap:12px; }
-.mistake-redo > div:first-child small { color:#78909b; }
+.mistake-redo > small { color:#78909b; }
 .mistake-redo > .ant-btn { justify-self:end; }
 .mistake-redo-result { border-radius:9px; }
+.mistake-open-redo { margin-top:23px; }
 .weak-knowledge-panel { width:min(1080px,100%); margin:30px auto 0; padding-top:28px; border-top:1px solid #d6e3e5; }
 .weak-knowledge-list { display:grid; gap:14px; }
 .weak-knowledge-card { min-width:0; padding:clamp(22px,4vw,34px); border-left:5px solid #167d8d; }

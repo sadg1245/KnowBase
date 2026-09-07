@@ -38,7 +38,13 @@ import {
   submitQuizQuestion,
   Workspace,
 } from '../services/api';
-import { mistakeListFilters, replaceMistakeFromRedo, weakKnowledgeListFilters, weakKnowledgeRecalculationScope } from '../features/practice/learningLoop';
+import {
+  mistakeListFilters,
+  replaceMistakeFromRedo,
+  retryMistakeGradingAndRefresh,
+  weakKnowledgeListFilters,
+  weakKnowledgeRecalculationScope,
+} from '../features/practice/learningLoop';
 import { documentSelectionOption, resetDocumentScope } from './documentScope';
 import {
   createPracticeRequestGuard,
@@ -237,6 +243,7 @@ const Practice: React.FC = () => {
   const [mistakeFilters, setMistakeFilters] = useState<MistakeFilters>({ limit: 20, offset: 0 });
   const [mistakesLoading, setMistakesLoading] = useState(false);
   const [redoOperation, setRedoOperation] = useState<{ token: number; mistakeId: string }>();
+  const [mistakeGradingOperation, setMistakeGradingOperation] = useState<{ token: number; attemptId: string }>();
   const [redoAttempts, setRedoAttempts] = useState<Record<string, QuizAttempt>>({});
   const [weakItems, setWeakItems] = useState<WeakKnowledgeState[]>([]);
   const [weakTotal, setWeakTotal] = useState(0);
@@ -392,6 +399,7 @@ const Practice: React.FC = () => {
     mistakeRequestGuard.current.invalidate();
     redoRequestGuard.current.invalidate();
     setRedoOperation(undefined);
+    setMistakeGradingOperation(undefined);
     if (!wrongOnly || historyOnly || !workspaceId || scopeLoading) {
       setMistakes([]);
       setMistakeTotal(0);
@@ -457,6 +465,7 @@ const Practice: React.FC = () => {
     setLegacyOperation(undefined);
     setGradingOperation(undefined);
     setRedoOperation(undefined);
+    setMistakeGradingOperation(undefined);
     setWorkspaceId(nextWorkspaceId);
     setDocumentIds(resetDocumentScope());
     setKnowledgePointIds([]);
@@ -666,6 +675,9 @@ const Practice: React.FC = () => {
   };
 
   const changeMistakeFilters = (next: MistakeFilters) => {
+    redoRequestGuard.current.invalidate();
+    setRedoOperation(undefined);
+    setMistakeGradingOperation(undefined);
     if (next.workspace_id !== workspaceId) changeWorkspace(next.workspace_id);
     setMistakeFilters({ ...next, workspace_id: undefined });
     setRedoAttempts({});
@@ -686,6 +698,31 @@ const Practice: React.FC = () => {
       if (redoRequestGuard.current.isCurrent(token)) setPageError(errorDetail(error, '重做提交失败，答案仍保留在页面上，可以再次尝试。'));
     } finally {
       setRedoOperation(current => finishMatchingPracticeOperation(current, token));
+    }
+  };
+
+  const retryMistakeGrading = async (mistakeId: string, attemptId: string) => {
+    if (mistakeGradingOperation) return;
+    const token = redoRequestGuard.current.start();
+    setRedoOperation(undefined);
+    setMistakeGradingOperation({ token, attemptId });
+    setPageError(undefined);
+    try {
+      const refreshed = await retryMistakeGradingAndRefresh({
+        token,
+        attemptId,
+        isCurrent: redoRequestGuard.current.isCurrent,
+        retryGrading: retryAttemptGrading,
+        loadMistakes: () => getMistakes(visibleMistakeFilters),
+      });
+      if (!refreshed) return;
+      setMistakes(refreshed.page.items);
+      setMistakeTotal(refreshed.page.total);
+      setRedoAttempts(current => ({ ...current, [mistakeId]: refreshed.attempt }));
+    } catch (error) {
+      if (redoRequestGuard.current.isCurrent(token)) setPageError(errorDetail(error, '评分重试失败，答案仍保留在页面上。'));
+    } finally {
+      setMistakeGradingOperation(current => finishMatchingPracticeOperation(current, token));
     }
   };
 
@@ -746,9 +783,11 @@ const Practice: React.FC = () => {
       knowledgePointOptions={knowledgePoints.map(point => ({ label: point.title, value: point.id }))}
       loading={mistakesLoading || workspacesLoading}
       redoingId={redoOperation?.mistakeId}
+      retryingAttemptId={mistakeGradingOperation?.attemptId}
       redoAttempts={redoAttempts}
       onFiltersChange={changeMistakeFilters}
       onRedo={redo}
+      onRetryGrading={retryMistakeGrading}
       onSource={path => navigate(path)}
     />
   </div>;

@@ -13,7 +13,7 @@ import {
   completeLearningTask, createCard, deleteCard, getCards, getLearningTasks, getReviewSummary, getWorkspaces,
   reviewCard, updateCard, type CardDraft, type Flashcard, type LearningTask, type ReviewSummary, type Workspace,
 } from '../services/api';
-import { dueLearningTaskFilters } from '../features/practice/learningLoop';
+import { createTaskCompletionCoordinator, dueLearningTaskFilters, type TaskCompletionCoordinator } from '../features/practice/learningLoop';
 
 type ReviewMode = 'overview' | 'library' | 'session' | 'results';
 
@@ -32,9 +32,9 @@ const ReviewCenter: React.FC = () => {
   const [submitting, setSubmitting] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
   const [editingCard, setEditingCard] = useState<Flashcard | null>(null);
-  const [completingTaskId, setCompletingTaskId] = useState<string>();
+  const [completingTaskIds, setCompletingTaskIds] = useState<ReadonlySet<string>>(() => new Set());
   const overviewVersion = useRef(0);
-  const taskVersion = useRef(0);
+  const taskCompletionCoordinator = useRef<TaskCompletionCoordinator | null>(null);
 
   const loadOverview = useCallback(async () => {
     const version = ++overviewVersion.current;
@@ -62,24 +62,22 @@ const ReviewCenter: React.FC = () => {
   }, [message]);
 
   useEffect(() => {
+    const coordinator = createTaskCompletionCoordinator(setCompletingTaskIds);
+    taskCompletionCoordinator.current = coordinator;
     void loadOverview();
-    return () => { overviewVersion.current += 1; taskVersion.current += 1; };
+    return () => {
+      overviewVersion.current += 1;
+      coordinator.dispose();
+      if (taskCompletionCoordinator.current === coordinator) taskCompletionCoordinator.current = null;
+    };
   }, [loadOverview]);
 
-  const completeTask = async (taskId: string) => {
-    const version = ++taskVersion.current;
-    setCompletingTaskId(taskId);
-    try {
-      await completeLearningTask(taskId);
-      if (version !== taskVersion.current) return;
-      message.success('学习任务已完成');
-      await loadOverview();
-    } catch (error: any) {
-      if (version === taskVersion.current) message.error(error?.response?.data?.detail || '任务完成状态没有保存，请重试');
-    } finally {
-      if (version === taskVersion.current) setCompletingTaskId(undefined);
-    }
-  };
+  const completeTask = (taskId: string) => taskCompletionCoordinator.current?.run(
+    taskId,
+    () => completeLearningTask(taskId),
+    async () => { message.success('学习任务已完成'); await loadOverview(); },
+    async (error: any) => { message.error(error?.response?.data?.detail || '任务完成状态没有保存，请重试'); },
+  );
 
   const loadWorkspaceOptions = async (): Promise<Workspace[]> => {
     if (workspaces.length) return workspaces;
@@ -157,7 +155,7 @@ const ReviewCenter: React.FC = () => {
 
   if (loading && mode === 'overview') return <div className="paper-card review-page-loading"><Skeleton active paragraph={{ rows: 9 }} /></div>;
   if (mode === 'overview') return summary
-    ? <ReviewOverview summary={summary} tasks={learningTasks} onStart={startReview} onManage={() => void openLibrary()} onTask={path => navigate(path)} onCompleteTask={taskId => void completeTask(taskId)} completingTaskId={completingTaskId} />
+    ? <ReviewOverview summary={summary} tasks={learningTasks} onStart={startReview} onManage={() => void openLibrary()} onTask={path => navigate(path)} onCompleteTask={taskId => void completeTask(taskId)} completingTaskIds={completingTaskIds} />
     : <div className="paper-card review-page-error"><Empty description="复习概览暂时不可用"><Button onClick={() => void loadOverview()}>重新加载</Button></Empty></div>;
   if (mode === 'session' && session) return <ReviewSessionPanel state={session} submitting={submitting} onFlip={() => setSession(flipCard(session))} onRate={rateCard} onExit={returnToOverview} />;
   if (mode === 'results' && session) return <ReviewResults results={reviewResults(session)} onOverview={returnToOverview} onCards={() => void openLibrary()} />;

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 
-import { MistakeNotebook } from '../src/components/practice/MistakeNotebook';
+import { MistakeNotebook, MistakeRedoPanel } from '../src/components/practice/MistakeNotebook';
 import { WeakKnowledgePanel, weaknessBand } from '../src/components/practice/WeakKnowledgePanel';
 import { PracticeHistoryActions } from '../src/pages/Practice';
 import { TodayTaskList } from '../src/pages/Dashboard';
@@ -11,6 +11,7 @@ import {
   dueLearningTaskFilters,
   mistakeListFilters,
   replaceMistakeFromRedo,
+  retryMistakeGradingAndRefresh,
   weakKnowledgeListFilters,
 } from '../src/features/practice/learningLoop';
 import type { LearningTask, MistakeRecord, MistakeRedoResult, WeakKnowledgeState } from '../src/features/practice/types';
@@ -43,22 +44,36 @@ const weak: WeakKnowledgeState = {
   calculated_at: '2026-09-07T08:00:00Z', knowledge_point_title: '勾股定理', document_id: 'document-1', source_page: 8, source_heading: '直角三角形',
 };
 
-test('mistake notebook exposes every durable field, source and question-appropriate redo', () => {
+test('mistake notebook exposes every durable field but keeps redo editors closed', () => {
   const html = renderToStaticMarkup(<MistakeNotebook
-    mistakes={[mistake]}
-    total={1}
+    mistakes={[mistake, { ...mistake, id: 'mistake-2', question_id: 'question-2', question: { ...mistake.question, id: 'question-2', prompt: '第二道错题' } }]}
+    total={2}
     filters={{ limit: 20, offset: 0 }}
     workspaceOptions={[{ label: '数学', value: 'workspace-1' }]}
     documentOptions={[{ label: '几何.pdf', value: 'document-1' }]}
     knowledgePointOptions={[{ label: '勾股定理', value: 'point-1' }]}
     onFiltersChange={() => undefined}
     onRedo={() => undefined}
+    onRetryGrading={() => undefined}
     onSource={() => undefined}
   />);
   for (const label of ['你的答案', '正确答案', '错误原因', '知识点', '来源资料', '错误次数', '重做次数', '当前掌握状态', '重新练习', '几何.pdf']) {
     assert.match(html, new RegExp(label));
   }
+  assert.doesNotMatch(html, /type="radio"/);
+  assert.equal((html.match(/打开重新练习/g) || []).length, 2);
+});
+
+test('focused redo panel renders exactly one question-appropriate editor and can close', () => {
+  const html = renderToStaticMarkup(<MistakeRedoPanel
+    mistake={mistake}
+    onAnswerChange={() => undefined}
+    onClose={() => undefined}
+    onRedo={() => undefined}
+    onRetryGrading={() => undefined}
+  />);
   assert.match(html, /type="radio"/);
+  assert.match(html, /收起重新练习/);
 });
 
 test('a failed redo grade stays neutral and explicitly retryable', () => {
@@ -67,12 +82,28 @@ test('a failed redo grade stays neutral and explicitly retryable', () => {
     user_answer: '5', is_correct: null, score: null, max_score: 1, evaluation_status: 'grading_failed' as const,
     feedback: { retryable: true }, error_reason: 'provider unavailable', duration_seconds: 5, submitted_at: '2026-09-07T09:00:00Z',
   };
-  const html = renderToStaticMarkup(<MistakeNotebook
-    mistakes={[mistake]} total={1} filters={{ limit: 20, offset: 0 }} workspaceOptions={[]} documentOptions={[]} knowledgePointOptions={[]}
-    redoAttempts={{ 'mistake-1': failedAttempt }} onFiltersChange={() => undefined} onRedo={() => undefined} onSource={() => undefined}
+  const html = renderToStaticMarkup(<MistakeRedoPanel
+    mistake={{ ...mistake, question: { ...mistake.question, question_type: 'short_answer' } }} attempt={failedAttempt} answer="5"
+    onAnswerChange={() => undefined} onClose={() => undefined} onRedo={() => undefined} onRetryGrading={() => undefined}
   />);
   assert.match(html, /评分暂未完成，可直接重试/);
+  assert.match(html, /重新评分/);
+  assert.doesNotMatch(html, /提交重做答案/);
   assert.doesNotMatch(html, /这次仍需巩固/);
+});
+
+test('only subjective pending or failed redo attempts expose grading retry', () => {
+  const failedAttempt = {
+    id: 'attempt-objective-failed', quiz_set_id: 'set-1', quiz_run_id: 'redo-run', question_id: 'question-1', attempt_number: 3,
+    user_answer: '5', is_correct: null, score: null, max_score: 1, evaluation_status: 'grading_failed' as const,
+    feedback: null, error_reason: 'unexpected failure', duration_seconds: 5, submitted_at: '2026-09-07T09:00:00Z',
+  };
+  const html = renderToStaticMarkup(<MistakeRedoPanel
+    mistake={mistake} attempt={failedAttempt} answer="5"
+    onAnswerChange={() => undefined} onClose={() => undefined} onRedo={() => undefined} onRetryGrading={() => undefined}
+  />);
+  assert.doesNotMatch(html, /重新评分/);
+  assert.match(html, /请刷新后再试/);
 });
 
 test('weak knowledge exposes component evidence and five exact server actions', () => {
@@ -116,6 +147,29 @@ test('redo reconciliation replaces the durable mistake with returned mastery and
   const reconciled = replaceMistakeFromRedo([mistake], result);
   assert.equal(reconciled.mistakes[0].mastery_status, 'mastered');
   assert.equal(reconciled.attemptsByMistakeId['mistake-1'].id, 'attempt-2');
+});
+
+test('grading retry refreshes the durable mistake and rejects stale responses', async () => {
+  const retryResult = {
+    attempt: { id: 'attempt-2', quiz_set_id: 'set-1', quiz_run_id: 'redo-run', question_id: 'question-1', attempt_number: 3, user_answer: '5', is_correct: true, score: 1, max_score: 1, evaluation_status: 'graded' as const, feedback: null, error_reason: null, duration_seconds: 8, submitted_at: '2026-09-07T09:00:00Z' },
+    run: {} as MistakeRedoResult['run'],
+  };
+  let loads = 0;
+  const refreshed = { ...mistake, mastery_status: 'improving' as const, consecutive_correct: 1 };
+  const accepted = await retryMistakeGradingAndRefresh({
+    token: 2, isCurrent: token => token === 2, attemptId: 'attempt-failed', retryGrading: async () => retryResult,
+    loadMistakes: async () => { loads += 1; return { items: [refreshed], total: 1, limit: 20, offset: 0 }; },
+  });
+  assert.equal(loads, 1);
+  assert.equal(accepted?.mistake.mastery_status, 'improving');
+  assert.equal(accepted?.attempt.id, 'attempt-2');
+
+  const stale = await retryMistakeGradingAndRefresh({
+    token: 1, isCurrent: () => false, attemptId: 'attempt-failed', retryGrading: async () => retryResult,
+    loadMistakes: async () => { loads += 1; return { items: [refreshed], total: 1, limit: 20, offset: 0 }; },
+  });
+  assert.equal(stale, null);
+  assert.equal(loads, 1);
 });
 
 test('wrong notebook keeps explicit compatibility history access', () => {

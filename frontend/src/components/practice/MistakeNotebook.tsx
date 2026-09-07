@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Alert, Button, Empty, Pagination, Select, Skeleton, Tag } from 'antd';
 import { BookOutlined, CheckCircleOutlined, HistoryOutlined, RedoOutlined } from '@ant-design/icons';
 
@@ -23,9 +23,11 @@ interface MistakeNotebookProps {
   knowledgePointOptions: SelectOption[];
   loading?: boolean;
   redoingId?: string;
+  retryingAttemptId?: string;
   redoAttempts?: Record<string, QuizAttempt>;
   onFiltersChange: (filters: MistakeFilters) => void;
   onRedo: (mistakeId: string, answer: PracticeAnswer) => void | Promise<void>;
+  onRetryGrading: (mistakeId: string, attemptId: string) => void | Promise<void>;
   onSource: (path: string) => void;
 }
 
@@ -51,6 +53,45 @@ export const mistakeSourcePath = (mistake: MistakeRecord, source: AssessmentSour
   return `/knowledge/${mistake.workspace_id}/documents/${documentId}${suffix ? `?${suffix}` : ''}`;
 };
 
+interface MistakeRedoPanelProps {
+  mistake: MistakeRecord;
+  answer?: PracticeAnswer;
+  attempt?: QuizAttempt;
+  redoing?: boolean;
+  retrying?: boolean;
+  onAnswerChange: (answer: PracticeAnswer) => void;
+  onClose: () => void;
+  onRedo: (answer: PracticeAnswer) => void | Promise<void>;
+  onRetryGrading: (attemptId: string) => void | Promise<void>;
+}
+
+export const MistakeRedoPanel: React.FC<MistakeRedoPanelProps> = ({
+  mistake, answer, attempt, redoing = false, retrying = false, onAnswerChange, onClose, onRedo, onRetryGrading,
+}) => {
+  const awaitingGrade = attempt?.evaluation_status === 'grading_failed' || attempt?.evaluation_status === 'pending_ai';
+  const subjective = mistake.question.question_type === 'short_answer' || mistake.question.question_type === 'concept_explanation';
+  const retryEligible = awaitingGrade && subjective;
+  return <div className="mistake-redo">
+    <div><strong><RedoOutlined /> 重新练习</strong><Button type="link" onClick={onClose}>收起重新练习</Button></div>
+    <small>按题型重新作答；提交后以服务端返回的掌握状态为准。</small>
+    <QuestionInput question={mistake.question} value={answer} disabled={redoing || retrying || awaitingGrade} onChange={onAnswerChange} />
+    {attempt ? <Alert
+      className="mistake-redo-result"
+      showIcon
+      type={attempt.evaluation_status === 'graded' && attempt.is_correct ? 'success' : attempt.evaluation_status === 'graded' ? 'warning' : 'info'}
+      icon={attempt.evaluation_status === 'graded' && attempt.is_correct ? <CheckCircleOutlined /> : <HistoryOutlined />}
+      message={attempt.evaluation_status === 'grading_failed'
+        ? subjective ? '评分暂未完成，可直接重试' : '评分状态异常，请刷新后再试'
+        : attempt.evaluation_status === 'pending_ai'
+          ? subjective ? '评分处理中，这次不会计为答错' : '评分状态异常，请刷新后再试'
+          : attempt.is_correct ? `回答正确 · ${masteryCopy[mistake.mastery_status]}` : '这次仍需巩固'}
+    /> : null}
+    {retryEligible && attempt ? <Button type="primary" loading={retrying} onClick={() => void onRetryGrading(attempt.id)}>重新评分</Button>
+      : awaitingGrade ? null
+      : <Button type="primary" loading={redoing} disabled={!answerIsPresent(answer)} onClick={() => void onRedo(answer!)}>提交重做答案</Button>}
+  </div>;
+};
+
 export const MistakeNotebook: React.FC<MistakeNotebookProps> = ({
   mistakes,
   total,
@@ -60,15 +101,33 @@ export const MistakeNotebook: React.FC<MistakeNotebookProps> = ({
   knowledgePointOptions,
   loading = false,
   redoingId,
+  retryingAttemptId,
   redoAttempts = {},
   onFiltersChange,
   onRedo,
+  onRetryGrading,
   onSource,
 }) => {
   const [answers, setAnswers] = useState<Record<string, PracticeAnswer>>({});
+  const [activeRedoId, setActiveRedoId] = useState<string>();
   const limit = filters.limit ?? 20;
   const offset = filters.offset ?? 0;
-  const patchFilters = (patch: Partial<MistakeFilters>) => onFiltersChange({ ...filters, ...patch, offset: patch.offset ?? 0 });
+  const resetRedo = () => { setActiveRedoId(undefined); setAnswers({}); };
+  const patchFilters = (patch: Partial<MistakeFilters>) => {
+    resetRedo();
+    onFiltersChange({ ...filters, ...patch, offset: patch.offset ?? 0 });
+  };
+  useEffect(() => {
+    resetRedo();
+  }, [filters.workspace_id, filters.document_id, filters.knowledge_point_id, filters.mastery_status, filters.limit, filters.offset]);
+  const closeRedo = (mistakeId: string) => {
+    setActiveRedoId(undefined);
+    setAnswers(current => {
+      const next = { ...current };
+      delete next[mistakeId];
+      return next;
+    });
+  };
 
   return <section className="mistake-notebook" aria-labelledby="mistake-notebook-title">
     <div className="practice-loop-heading">
@@ -112,21 +171,20 @@ export const MistakeNotebook: React.FC<MistakeNotebookProps> = ({
               const label = [source.source_file || mistake.source_label || `证据 ${sourceIndex + 1}`, typeof source.page === 'number' ? `第 ${source.page} 页` : null].filter(Boolean).join(' · ');
               return path ? <Button key={`${path}-${sourceIndex}`} type="link" href={path} onClick={event => { event.preventDefault(); onSource(path); }}>{label}</Button> : <span key={sourceIndex}>{label}</span>;
             }) : <span>{mistake.source_label || '来源位置未记录'}</span>}</div>
-            <div className="mistake-redo">
-              <div><strong><RedoOutlined /> 重新练习</strong><small>按题型重新作答；提交后以服务端返回的掌握状态为准。</small></div>
-              <QuestionInput question={mistake.question} value={answer} disabled={redoingId === mistake.id} onChange={value => setAnswers(current => ({ ...current, [mistake.id]: value }))} />
-              {latestRedo ? <Alert
-                className="mistake-redo-result"
-                showIcon
-                type={latestRedo.evaluation_status === 'graded' && latestRedo.is_correct ? 'success' : latestRedo.evaluation_status === 'graded' ? 'warning' : 'info'}
-                icon={latestRedo.evaluation_status === 'graded' && latestRedo.is_correct ? <CheckCircleOutlined /> : <HistoryOutlined />}
-                message={latestRedo.evaluation_status === 'grading_failed' ? '评分暂未完成，可直接重试' : latestRedo.evaluation_status === 'pending_ai' ? '评分处理中，这次不会计为答错' : latestRedo.is_correct ? `回答正确 · ${masteryCopy[mistake.mastery_status]}` : '这次仍需巩固'}
-              /> : null}
-              <Button type="primary" loading={redoingId === mistake.id} disabled={!answerIsPresent(answer)} onClick={() => void onRedo(mistake.id, answer!)}>提交重做答案</Button>
-            </div>
+            {activeRedoId === mistake.id ? <MistakeRedoPanel
+              mistake={mistake}
+              answer={answer}
+              attempt={latestRedo}
+              redoing={redoingId === mistake.id}
+              retrying={Boolean(latestRedo && retryingAttemptId === latestRedo.id)}
+              onAnswerChange={value => setAnswers(current => ({ ...current, [mistake.id]: value }))}
+              onClose={() => closeRedo(mistake.id)}
+              onRedo={value => onRedo(mistake.id, value)}
+              onRetryGrading={attemptId => onRetryGrading(mistake.id, attemptId)}
+            /> : <Button className="mistake-open-redo" icon={<RedoOutlined />} onClick={() => setActiveRedoId(mistake.id)}>打开重新练习</Button>}
           </div>
         </article>;
       })}</div>}
-    {total > limit ? <Pagination className="practice-loop-pagination" current={Math.floor(offset / limit) + 1} pageSize={limit} total={total} showSizeChanger pageSizeOptions={[10, 20, 50]} onChange={(page, pageSize) => onFiltersChange({ ...filters, limit: pageSize, offset: (page - 1) * pageSize })} /> : null}
+    {total > limit ? <Pagination className="practice-loop-pagination" current={Math.floor(offset / limit) + 1} pageSize={limit} total={total} showSizeChanger pageSizeOptions={[10, 20, 50]} onChange={(page, pageSize) => { resetRedo(); onFiltersChange({ ...filters, limit: pageSize, offset: (page - 1) * pageSize }); }} /> : null}
   </section>;
 };

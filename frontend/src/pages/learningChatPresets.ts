@@ -1,5 +1,3 @@
-import type { LearningMode } from '../services/api';
-
 const nonBlank = (value: string | null): string | undefined => value?.trim() || undefined;
 
 export interface RequestedLearningPreset {
@@ -14,9 +12,27 @@ export interface AppliedLearningPreset {
   knowledgePointId?: string;
   knowledgePointTitle?: string;
   documentIds: string[];
-  mode?: LearningMode;
+  mode?: 'simple';
   draft: string;
-  shouldAutoSend: false;
+}
+
+interface ActiveLearningSessionScope {
+  workspace_id?: string | null;
+  document_ids: string[];
+  mode: string;
+}
+
+export interface LearningPresetUiActions {
+  cancelStream: () => void;
+  resetDraft: () => void;
+  resetPointTitle: () => void;
+  resetDocuments: () => void;
+  detachSession: () => void;
+  setWorkspace: (workspaceId?: string) => void;
+  setDocuments: (documentIds: string[]) => void;
+  setMode: (mode: 'simple') => void;
+  setDraft: (draft: string) => void;
+  setPointTitle: (title?: string) => void;
 }
 
 export const requestedLearningPreset = (params: URLSearchParams): RequestedLearningPreset => ({
@@ -52,6 +68,38 @@ export const applyLearningRecommendationPreset = (
     documentIds: validPoint?.document_id ? [validPoint.document_id] : [],
     mode: validRecommendation ? requested.mode : undefined,
     draft: validRecommendation && requested.prompt ? requested.prompt : '',
-    shouldAutoSend: false,
   };
+};
+
+export const resetLearningRecommendationPreset = (
+  actions: Pick<LearningPresetUiActions, 'cancelStream' | 'resetDraft' | 'resetPointTitle' | 'resetDocuments' | 'detachSession'>,
+) => {
+  actions.cancelStream();
+  actions.detachSession();
+  actions.resetDraft();
+  actions.resetPointTitle();
+  actions.resetDocuments();
+};
+
+const sameDocuments = (left: string[], right: string[]) => (
+  left.length === right.length && left.every(id => right.includes(id))
+);
+
+export const commitLearningRecommendationPreset = (
+  preset: AppliedLearningPreset,
+  activeSession: ActiveLearningSessionScope | null,
+  actions: Pick<LearningPresetUiActions, 'detachSession' | 'setWorkspace' | 'setDocuments' | 'setMode' | 'setDraft' | 'setPointTitle'>,
+): boolean => {
+  if (!preset.workspaceId || preset.mode !== 'simple') return false;
+  if (activeSession && (
+    activeSession.workspace_id !== preset.workspaceId
+    || activeSession.mode !== preset.mode
+    || !sameDocuments(activeSession.document_ids || [], preset.documentIds)
+  )) actions.detachSession();
+  actions.setWorkspace(preset.workspaceId);
+  actions.setDocuments(preset.documentIds);
+  actions.setMode(preset.mode);
+  actions.setDraft(preset.draft);
+  actions.setPointTitle(preset.knowledgePointTitle);
+  return true;
 };
