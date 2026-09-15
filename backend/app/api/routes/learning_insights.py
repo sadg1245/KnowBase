@@ -1,19 +1,20 @@
 """Phase-six APIs for active study sessions and auditable learning insights."""
 
 import base64
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db
+from app.api.deps import get_db, get_settings
+from app.config import Settings
 from app.models.learning import StudyActivity, StudySession
 from app.schemas.insights import (
     GlobalGoalsUpdate, StudySessionFinish, StudySessionHeartbeat, StudySessionStart,
-    WorkspaceGoalUpdate,
+    WorkspaceGoalUpdate, PeriodType,
 )
-from app.services import goal_service, study_session_service
+from app.services import goal_service, report_ai_service, report_service, study_session_service
 
 
 router = APIRouter(prefix="/learning", tags=["learning-insights"])
@@ -66,6 +67,61 @@ def _goal_error(exc: Exception):
     if isinstance(exc, goal_service.GoalNotFoundError):
         raise HTTPException(404, "Learning goal not found") from exc
     raise HTTPException(422, str(exc)) from exc
+
+
+async def _anchor(db: AsyncSession, value: date | None) -> date:
+    if value is not None:
+        return value
+    profile = await goal_service.get_or_create_profile(db)
+    from zoneinfo import ZoneInfo
+    return datetime.now(timezone.utc).astimezone(ZoneInfo(profile.timezone_name)).date()
+
+
+@router.get("/reports/{period_type}")
+async def get_learning_report(
+    period_type: PeriodType,
+    anchor_date: date | None = None,
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    anchor = await _anchor(db, anchor_date)
+    report = await report_service.build_report(
+        db, period_type, anchor, now=datetime.now(timezone.utc)
+    )
+    report["suggestion"] = await report_ai_service.get_cached_suggestion(db, report)
+    return report
+
+
+@router.get("/reports/{period_type}/evidence")
+async def get_report_evidence(
+    period_type: PeriodType,
+    metric: str,
+    anchor_date: date | None = None,
+    cursor: str | None = None,
+    limit: int = Query(30, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    try:
+        return await report_service.get_metric_evidence(
+            db, period_type, await _anchor(db, anchor_date), metric,
+            cursor=cursor, limit=limit,
+        )
+    except (report_service.InvalidEvidenceCursor, ValueError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/reports/{period_type}/suggestion")
+async def create_report_suggestion(
+    period_type: PeriodType,
+    anchor_date: date | None = None,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    try:
+        return await report_ai_service.generate_suggestion(
+            db, settings, period_type, await _anchor(db, anchor_date)
+        )
+    except report_ai_service.ReportAIError as exc:
+        raise HTTPException(503, str(exc)) from exc
 
 
 @router.get("/goals")

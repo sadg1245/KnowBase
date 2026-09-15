@@ -22,7 +22,7 @@ from app.services.review_service import apply_card_review, build_review_summary,
 from app.services.weakness_service import weakness_priority_subquery
 from app.services import assessment_service, assessment_workflows
 from app.services.activity_service import append_card_created, append_mastery_change
-from app.services import dashboard_service, goal_service
+from app.services import dashboard_service, goal_service, report_service
 from app.services.assessment_ai import AssessmentAIError
 from app.schemas.assessment import QuestionSubmitRequest
 from app.schemas.learning import (
@@ -638,19 +638,9 @@ async def create_activity(payload: ActivityCreate, db: AsyncSession = Depends(ge
 
 @router.get("/report")
 async def learning_report(days: int = Query(7, ge=1, le=365), db: AsyncSession = Depends(get_db)) -> dict:
-    since = datetime.now(timezone.utc) - timedelta(days=days)
-    activities = (await db.execute(select(StudyActivity).where(StudyActivity.created_at >= since).order_by(StudyActivity.created_at.asc()))).scalars().all()
-    reviews = (await db.execute(select(ReviewLog).where(ReviewLog.reviewed_at >= since))).scalars().all()
-    quizzes = (await db.execute(select(QuizQuestion).where(QuizQuestion.attempts > 0))).scalars().all()
-    points = (await db.execute(select(KnowledgePoint))).scalars().all()
-    daily: dict[str, dict] = {}
-    for row in activities:
-        key = row.created_at.date().isoformat()
-        daily.setdefault(key, {"date": key, "minutes": 0, "activities": 0})
-        daily[key]["minutes"] += round(row.duration_seconds / 60, 1); daily[key]["activities"] += 1
-    accuracy = sum(q.correct_attempts for q in quizzes) / sum(q.attempts for q in quizzes) if sum(q.attempts for q in quizzes) else 0
-    mastered = sum(1 for p in points if p.mastery >= .8)
-    return {"days": days, "total_minutes": round(sum(a.duration_seconds for a in activities) / 60), "activity_count": len(activities), "review_count": len(reviews), "quiz_accuracy": round(accuracy * 100), "mastered_points": mastered, "total_points": len(points), "daily": list(daily.values()), "suggestion": "优先复习掌握度较低的知识点，并在复习后用自己的话复述一次。" if points else "先导入一份资料并生成知识点，开始第一轮学习。"}
+    return await report_service.build_legacy_report(
+        db, days=days, now=datetime.now(timezone.utc)
+    )
 
 
 @router.get("/export")

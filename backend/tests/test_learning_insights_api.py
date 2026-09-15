@@ -2,6 +2,7 @@
 
 import unittest
 from datetime import date
+from unittest.mock import AsyncMock, patch
 
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
@@ -179,6 +180,39 @@ class LearningInsightsAPITests(unittest.IsolatedAsyncioTestCase):
         derived = "derived:2099-01-01:review:global"
         response = await self.client.post(f"/api/assessments/tasks/{derived}/complete")
         self.assertIn(response.status_code, {400, 404})
+
+    async def test_natural_report_evidence_and_suggestion_routes(self):
+        report = await self.client.get(
+            "/api/learning/reports/week", params={"anchor_date": "2026-09-16"}
+        )
+        self.assertEqual(report.status_code, 200, report.text)
+        self.assertEqual(report.json()["period"]["local_start"], "2026-09-14")
+        self.assertIn("suggestion", report.json())
+
+        evidence = await self.client.get(
+            "/api/learning/reports/week/evidence",
+            params={"anchor_date": "2026-09-16", "metric": "learning_time"},
+        )
+        self.assertEqual(evidence.status_code, 200, evidence.text)
+        invalid = await self.client.get(
+            "/api/learning/reports/week/evidence",
+            params={"anchor_date": "2026-09-16", "metric": "unknown"},
+        )
+        self.assertEqual(invalid.status_code, 400)
+
+        generated = {
+            "id": "suggestion-1", "status": "ready", "suggestion": "保持节奏。",
+            "model": "test", "error_message": None, "stats_hash": "hash", "generated_at": None,
+        }
+        with patch(
+            "app.api.routes.learning_insights.report_ai_service.generate_suggestion",
+            new=AsyncMock(return_value=generated),
+        ):
+            suggestion = await self.client.post(
+                "/api/learning/reports/day/suggestion", params={"anchor_date": "2026-09-15"}
+            )
+        self.assertEqual(suggestion.status_code, 200, suggestion.text)
+        self.assertEqual(suggestion.json()["status"], "ready")
 
 
 if __name__ == "__main__":
