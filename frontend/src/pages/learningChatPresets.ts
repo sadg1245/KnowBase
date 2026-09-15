@@ -51,6 +51,9 @@ export const applyLearningRecommendationPreset = (
     && requested.mode === 'simple'
     && (!requested.knowledgePointId || validPoint),
   );
+  const prompt = validRecommendation ? requested.prompt ?? '' : '';
+  const pointContext = validPoint ? `知识点「${validPoint.title}」（ID: ${validPoint.id}）` : '';
+  const draft = prompt && pointContext && !prompt.includes(pointContext) ? `${pointContext}\n\n${prompt}` : prompt;
 
   return {
     workspaceId,
@@ -58,7 +61,7 @@ export const applyLearningRecommendationPreset = (
     knowledgePointTitle: validPoint?.title,
     documentIds: validPoint?.document_id ? [validPoint.document_id] : [],
     mode: validRecommendation ? requested.mode : undefined,
-    draft: validRecommendation && requested.prompt ? requested.prompt : '',
+    draft,
   };
 };
 

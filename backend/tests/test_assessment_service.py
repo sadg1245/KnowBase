@@ -100,6 +100,7 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
             workspace_id=self.workspace.id,
             document_id=self.document.id,
             title="Triangles",
+            source_page=3,
             mastery=0.5,
             mastery_status="learning",
         )

@@ -7,6 +7,7 @@ import type {
   MistakeRecord,
   MistakeRedoResult,
   QuizAttempt,
+  PracticeAnswer,
   WeakKnowledgeRecalculationScope,
 } from './types';
 
@@ -74,6 +75,23 @@ interface RetryMistakeGradingOptions {
   retryGrading: (attemptId: string) => Promise<AttemptResult>;
   loadMistakes: () => Promise<AssessmentPage<MistakeRecord>>;
 }
+
+export const redoMistakeAndRefresh = async ({
+  token, isCurrent, mistakeId, answer, redo, loadMistakes,
+}: {
+  token: number;
+  isCurrent: (token: number) => boolean;
+  mistakeId: string;
+  answer: PracticeAnswer;
+  redo: (mistakeId: string, payload: { answer: PracticeAnswer }) => Promise<MistakeRedoResult>;
+  loadMistakes: () => Promise<AssessmentPage<MistakeRecord>>;
+}): Promise<{ attempt: QuizAttempt; page: AssessmentPage<MistakeRecord> } | null> => {
+  const result = await redo(mistakeId, { answer });
+  if (!isCurrent(token)) return null;
+  const page = await loadMistakes();
+  if (!isCurrent(token)) return null;
+  return { attempt: result.attempt, page };
+};
 
 export const retryMistakeGradingAndRefresh = async ({
   token, isCurrent, attemptId, retryGrading, loadMistakes,

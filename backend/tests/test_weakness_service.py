@@ -135,7 +135,9 @@ class WeaknessPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({row.task_type for row in rows}, {"review", "targeted_practice"})
         self.assertTrue(all(row.due_at <= NOW + timedelta(days=3) for row in rows))
         self.assertEqual(len(state.recommended_actions), 5)
-        self.assertTrue(all("?" in action["path"] for action in state.recommended_actions))
+        paths = {action["type"]: action["path"] for action in state.recommended_actions}
+        self.assertEqual(paths["review"], "/review")
+        self.assertTrue(all("?" in path for kind, path in paths.items() if kind != "review"))
 
     async def test_failed_attempts_after_graded_attempt_do_not_evict_scoring_window(self):
         # The pre-fix LIMIT selected these 20 failures before filtering, making the

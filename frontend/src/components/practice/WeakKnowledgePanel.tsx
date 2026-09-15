@@ -20,9 +20,10 @@ interface WeakKnowledgePanelProps {
 }
 
 export const weaknessBand = (score: number): { label: string; className: string; color: string } => {
-  if (score >= 70) return { label: '优先巩固', className: 'is-high', color: '#a84f4f' };
-  if (score >= 40) return { label: '继续观察', className: 'is-medium', color: '#b27a3c' };
-  return { label: '状态平稳', className: 'is-low', color: '#167d8d' };
+  if (score >= 80) return { label: '优先处理', className: 'is-high', color: '#a84f4f' };
+  if (score >= 60) return { label: '薄弱', className: 'is-medium', color: '#b27a3c' };
+  if (score >= 30) return { label: '需要巩固', className: 'is-medium', color: '#b27a3c' };
+  return { label: '稳定', className: 'is-low', color: '#167d8d' };
 };
 
 const components: Array<{ key: keyof WeakKnowledgeState; label: string; weight: string }> = [

@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import re
-import string
 from copy import copy
 from dataclasses import dataclass
 from datetime import datetime
 
 
-_SURROUNDING_PUNCTUATION = string.punctuation + "，。！？；：、（）【】［］「」『』《》〈〉“”‘’"
+_SURROUNDING_PUNCTUATION = "，。！？；：、“”‘’"
 _WHITESPACE = re.compile(r"\s+", re.UNICODE)
 
 
@@ -39,6 +38,9 @@ def normalize_answer(value: object) -> object:
     if isinstance(value, str):
         text = _WHITESPACE.sub(" ", value).strip()
         text = text.strip(_SURROUNDING_PUNCTUATION).strip()
+        # Detached sentence punctuation is cosmetic; attached operators, signs,
+        # brackets, decimal points and identifier suffixes retain their meaning.
+        text = re.sub(r"\s+[!?,.;:]+$", "", text).strip()
         return "".join(chr(ord(char) + 32) if "A" <= char <= "Z" else char for char in text)
     if isinstance(value, list):
         return [normalize_answer(item) for item in value]
@@ -97,6 +99,9 @@ def next_mistake_state(
         return None if correct else MistakeState(first_wrong_at=now, last_wrong_at=now)
 
     state = copy(previous)
+    if is_redo:
+        state.redo_count += 1
+        state.last_redone_at = now
     if not correct:
         state.wrong_count += 1
         state.consecutive_correct = 0
@@ -108,9 +113,7 @@ def next_mistake_state(
     if not is_redo:
         return state
 
-    state.redo_count += 1
     state.consecutive_correct += 1
-    state.last_redone_at = now
     if state.consecutive_correct >= 2:
         state.mastery_status = "mastered"
         state.resolved_at = now

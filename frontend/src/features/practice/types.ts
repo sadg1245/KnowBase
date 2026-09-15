@@ -53,6 +53,7 @@ export interface AssessmentQuestion {
   document_id: string | null;
   knowledge_point_id: string | null;
   question_type: AssessmentQuestionType;
+  blank_count?: number;
   prompt: string;
   options: string[] | null;
   difficulty: AssessmentDifficulty;
@@ -172,6 +173,7 @@ export interface MistakeRecord {
   knowledge_point_id: string | null;
   workspace_id: string;
   latest_attempt_id: string | null;
+  recoverable_redo_attempt?: QuizAttempt | null;
   user_answer_snapshot: ReferenceAnswerPayload;
   correct_answer_snapshot: ReferenceAnswerPayload;
   error_reason: string | null;

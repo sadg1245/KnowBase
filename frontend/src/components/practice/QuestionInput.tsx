@@ -50,14 +50,17 @@ export const QuestionInput: React.FC<QuestionInputProps> = ({ question, value, d
   }
 
   if (question.question_type === 'fill_blank') {
-    return <Input
+    const blankCount = question.blank_count ?? 1;
+    const values = Array.from({ length: blankCount }, (_, index) => Array.isArray(value) ? value[index] ?? '' : index === 0 ? value ?? '' : '');
+    return <div className="practice-blank-fields">{values.map((blank, index) => <Input
+      key={index}
       className="practice-fill-blank"
-      aria-label="填空题答案"
+      aria-label={blankCount === 1 ? '填空题答案' : `第 ${index + 1} 空答案`}
       disabled={disabled}
-      value={typeof value === 'string' ? value : ''}
-      onChange={event => onChange(event.target.value)}
-      placeholder="填写缺失的关键词或短语"
-    />;
+      value={blank}
+      onChange={event => onChange(values.map((item, slot) => slot === index ? event.target.value : item))}
+      placeholder={blankCount === 1 ? '填写缺失的关键词或短语' : `填写第 ${index + 1} 空`}
+    />)}</div>;
   }
 
   return <Input.TextArea

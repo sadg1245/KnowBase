@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import * as sessions from '../src/features/practice/practiceSession';
 
 import {
   createPracticeSession,
@@ -36,6 +37,40 @@ const run = {
   attempts: [],
   quiz_set: { duration_limit_seconds: 60 },
 } as any;
+
+test('partial positional blanks survive editing, storage and restoration but remain unanswered', () => {
+  const blankQuestions = [{ ...questions[0], question_type: 'fill_blank', blank_count: 2 }];
+  const state = setAnswer(createPracticeSession(run, blankQuestions, 1_000), 'q1', ['Paris', '']);
+  assert.deepEqual(state.answers.q1, ['Paris', '']);
+  assert.deepEqual(unansweredQuestionIds(state), ['q1']);
+  const values = new Map<string, string>();
+  const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key) } as Storage;
+  savePracticeSessionDraft(state, storage);
+  const restored = createPracticeSession(run, blankQuestions, 2_000, loadPracticeSessionDraft(run.id, storage));
+  assert.deepEqual(restored.answers.q1, ['Paris', '']);
+  assert.deepEqual(unansweredQuestionIds(restored), ['q1']);
+});
+
+test('grading response merges into current drafts and ignores a switched run', async () => {
+  const retry = (sessions as any).retryPracticeGradingAndMerge;
+  assert.equal(typeof retry, 'function', 'retry needs a current functional state merge');
+  let current = setAnswer(createPracticeSession({ ...run, quiz_set: { ...run.quiz_set, questions } }, questions, 1_000), 'q2', 'old draft');
+  let resolve!: (value: any) => void;
+  const response = new Promise<any>(done => { resolve = done; });
+  const task = retry({ runId: run.id, attemptId: 'a1', isCurrent: () => true,
+    retryGrading: () => response, updateSession: (update: any) => { current = update(current); } });
+  current = setAnswer(current, 'q2', 'new draft typed during retry');
+  const graded = { ...run, quiz_set: { ...run.quiz_set, questions }, attempts: [{ id: 'a1', quiz_run_id: run.id, question_id: 'q1', attempt_number: 1, user_answer: 'submitted answer', evaluation_status: 'graded', is_correct: true }] };
+  resolve({ run: graded });
+  await task;
+  assert.equal(current.answers.q2, 'new draft typed during retry');
+  assert.equal(current.attemptsByQuestionId.q1.is_correct, true);
+  const switched = createPracticeSession({ ...run, id: 'new-run' }, questions, 5_000);
+  current = switched;
+  await retry({ runId: run.id, attemptId: 'a1', isCurrent: () => true,
+    retryGrading: async () => ({ run: graded }), updateSession: (update: any) => { current = update(current); } });
+  assert.equal(current, switched);
+});
 
 test('full paper keeps answers hidden and reports unanswered questions', () => {
   const state = setAnswer(createPracticeSession(run, questions, 1_000), 'q1', 'A');

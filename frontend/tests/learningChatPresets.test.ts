@@ -12,10 +12,25 @@ import {
 const workspaces = [{ id: 'workspace-1' }, { id: 'workspace-2' }];
 const points = [{ id: 'point-1', workspace_id: 'workspace-1', document_id: 'document-1', title: '勾股定理' }];
 
+test('saved generic recommendation drafts include validated point context before manual send', () => {
+  const preset = applyLearningRecommendationPreset(requestedLearningPreset(new URLSearchParams({
+    workspace: 'workspace-1', knowledge_point_id: 'point-1', mode: 'simple', prompt: '请讲解这个知识点',
+  })), workspaces, points, ['document-1']);
+  let visibleDraft = '';
+  executeLearningRecommendationCommands(planLearningRecommendationPresetCommit(preset), {
+    cancelStream: () => undefined, detachSession: () => undefined,
+    setWorkspace: () => undefined, setDocuments: () => undefined, setMode: () => undefined,
+    setPointTitle: () => undefined, setDraft: value => { visibleDraft = value; },
+  });
+  assert.match(visibleDraft, /勾股定理/);
+  assert.match(visibleDraft, /point-1/);
+  assert.match(visibleDraft, /请讲解这个知识点/);
+});
+
 test('recommendation preset accepts workspace aliases, validates point and never auto-sends', () => {
   const modern = requestedLearningPreset(new URLSearchParams('workspace=workspace-1&knowledge_point_id=point-1&mode=simple&prompt=%E8%AF%B7%E8%AE%B2%E8%A7%A3'));
   assert.deepEqual(applyLearningRecommendationPreset(modern, workspaces, points, ['document-1']), {
-    workspaceId: 'workspace-1', knowledgePointId: 'point-1', knowledgePointTitle: '勾股定理', documentIds: ['document-1'], mode: 'simple', draft: '请讲解',
+    workspaceId: 'workspace-1', knowledgePointId: 'point-1', knowledgePointTitle: '勾股定理', documentIds: ['document-1'], mode: 'simple', draft: '知识点「勾股定理」（ID: point-1）\n\n请讲解',
   });
 
   const legacy = requestedLearningPreset(new URLSearchParams('workspace_id=workspace-2&mode=deep&prompt=ignored'));
@@ -67,7 +82,7 @@ test('production preset command plan resets and commits context without a send o
     { type: 'set-workspace', value: 'workspace-1' },
     { type: 'set-documents', value: ['document-1'] },
     { type: 'set-mode', value: 'simple' },
-    { type: 'set-draft', value: 'first' },
+    { type: 'set-draft', value: '知识点「勾股定理」（ID: point-1）\n\nfirst' },
     { type: 'set-point-title', value: '勾股定理' },
   ]);
   assert.deepEqual([...resetCommands, ...commitCommands].map(command => command.type), [
@@ -75,7 +90,7 @@ test('production preset command plan resets and commits context without a send o
     'set-workspace', 'set-documents', 'set-mode', 'set-draft', 'set-point-title',
   ]);
   executeLearningRecommendationCommands(commitCommands, actions);
-  assert.deepEqual(state, { workspaceId: 'workspace-1', documentIds: ['document-1'], mode: 'simple', draft: 'first', title: '勾股定理', active: false, messages: 0, evidence: false });
+  assert.deepEqual(state, { workspaceId: 'workspace-1', documentIds: ['document-1'], mode: 'simple', draft: '知识点「勾股定理」（ID: point-1）\n\nfirst', title: '勾股定理', active: false, messages: 0, evidence: false });
   assert.equal(cancelled, 1);
 
   executeLearningRecommendationCommands(planLearningRecommendationPresetReset(), actions);

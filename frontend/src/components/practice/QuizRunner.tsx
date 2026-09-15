@@ -5,7 +5,7 @@ import { ArrowLeftOutlined, ArrowRightOutlined, CheckOutlined, ClockCircleOutlin
 import type { PracticeAnswer, PracticeSessionState, QuizAttempt, QuizRunView } from '../../features/practice/types';
 import { remainingSeconds, unansweredQuestionIds } from '../../features/practice/practiceSession';
 import { QuestionInput, answerIsPresent } from './QuestionInput';
-import { QuizResults } from './QuizResults';
+import { QuizResults, ResultQuestion } from './QuizResults';
 
 
 const QUESTION_TYPE_LABELS: Record<PracticeSessionState['questions'][number]['question_type'], string> = {
@@ -34,13 +34,6 @@ export const activeQuestionIndexForRun = (
 const formatTimer = (seconds: number | null): string => {
   if (seconds === null) return '不限时';
   return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
-};
-
-const formatReferenceAnswer = (answer: unknown): string => {
-  if (answer === undefined || answer === null) return '—';
-  if (typeof answer === 'string') return answer;
-  if (Array.isArray(answer)) return answer.join('、');
-  return JSON.stringify(answer);
 };
 
 const markerState = (attempt?: QuizAttempt, hasDraft = false): string => {
@@ -174,23 +167,10 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
           onChange={value => onAnswer(current.id, value)}
         />
 
-        {isRevealed ? <div className={`practice-inline-feedback ${attempt?.evaluation_status === 'grading_failed' ? 'is-grading-failed' : ''}`}>
-          {attempt?.evaluation_status === 'grading_failed' ? <>
-            <strong>评分暂未完成</strong>
-            <p>答案已保存，不会暂时记为错误。{attempt.error_reason ? ` ${attempt.error_reason}` : ''}</p>
-            <Button
-              icon={<ClockCircleOutlined />}
-              loading={retryingAttemptId === attempt.id}
-              onClick={() => void onRetryGrading(attempt.id)}
-            >重试评分</Button>
-          </> : attempt?.evaluation_status === 'pending_ai' ? <>
-            <strong>AI 评分中</strong><p>答案已经提交，评分完成后会显示评价。</p>
-          </> : <>
-            <strong>{attempt?.is_correct ? '回答正确' : '这题值得再看一次'}</strong>
-            <p><b>参考答案：</b>{formatReferenceAnswer(current.answer_payload ?? current.answer)}</p>
-            {current.explanation ? <p>{current.explanation}</p> : null}
-          </>}
-        </div> : null}
+        {isRevealed ? <div className="practice-inline-feedback"><ResultQuestion
+          question={current} attempt={attempt} workspaceId={session.run.quiz_set.workspace_id}
+          retryingAttemptId={retryingAttemptId} onRetryGrading={onRetryGrading}
+        /></div> : null}
 
         <footer className="practice-paper-actions">
           <Button
@@ -203,7 +183,7 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
               type="primary"
               icon={<CheckOutlined />}
               loading={submitting}
-              disabled={!answerIsPresent(answer)}
+              disabled={unanswered.includes(current.id)}
               onClick={() => void onSubmitQuestion(current.id, answer!)}
             >提交本题</Button> : null}
             {safeIndex < questions.length - 1 ? <Button

@@ -1,6 +1,7 @@
 import React from 'react';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import * as learningLoop from '../src/features/practice/learningLoop';
 import { renderToStaticMarkup } from 'react-dom/server';
 
 import { MistakeNotebook, MistakeRedoPanel } from '../src/components/practice/MistakeNotebook';
@@ -92,6 +93,38 @@ test('a failed redo grade stays neutral and explicitly retryable', () => {
   assert.doesNotMatch(html, /这次仍需巩固/);
 });
 
+test('a server-restored failed redo shows its saved answer and retry entry after refresh', () => {
+  const recovered = { ...mistake, question: { ...mistake.question, question_type: 'short_answer' as const },
+    recoverable_redo_attempt: { id: 'saved-attempt', quiz_set_id: 'set-1', quiz_run_id: 'redo-run', question_id: 'question-1', attempt_number: 1,
+      user_answer: 'my durable answer', is_correct: null, score: null, max_score: 1, evaluation_status: 'grading_failed' as const,
+      feedback: null, error_reason: 'offline', duration_seconds: 1, submitted_at: '2026-09-07T09:00:00Z' } };
+  const html = renderToStaticMarkup(<MistakeRedoPanel mistake={recovered} onAnswerChange={() => undefined} onClose={() => undefined} onRedo={() => undefined} onRetryGrading={() => undefined} />);
+  assert.match(html, /my durable answer/);
+  assert.match(html, /重新评分/);
+  assert.doesNotMatch(html, /提交重做答案/);
+  const notebook = renderToStaticMarkup(<MistakeNotebook mistakes={[recovered]} total={1} filters={{}} workspaceOptions={[]} documentOptions={[]} knowledgePointOptions={[]}
+    onFiltersChange={() => undefined} onRedo={() => undefined} onRetryGrading={() => undefined} onSource={() => undefined} />);
+  assert.match(notebook, /继续评分/);
+});
+
+test('multi-blank mistake redo restores positional values without exposing reference answers in inputs', () => {
+  const html = renderToStaticMarkup(<MistakeRedoPanel mistake={{ ...mistake, question: { ...mistake.question, question_type: 'fill_blank', blank_count: 2 } }}
+    answer={['Paris', 'France']} onAnswerChange={() => undefined} onClose={() => undefined} onRedo={() => undefined} onRetryGrading={() => undefined} />);
+  assert.equal((html.match(/<input /g) ?? []).length, 2);
+  assert.match(html, /value="Paris"/);
+  assert.match(html, /value="France"/);
+});
+
+test('ordinary redo refreshes the active filtered page and its total', async () => {
+  const refresh = (learningLoop as any).redoMistakeAndRefresh;
+  assert.equal(typeof refresh, 'function');
+  const result = await refresh({ token: 1, isCurrent: () => true, mistakeId: mistake.id, answer: '5',
+    redo: async () => ({ mistake: { ...mistake, mastery_status: 'mastered' }, attempt: { id: 'graded' } }),
+    loadMistakes: async () => ({ items: [], total: 0, limit: 20, offset: 0 }) });
+  assert.deepEqual(result.page, { items: [], total: 0, limit: 20, offset: 0 });
+  assert.equal(result.attempt.id, 'graded');
+});
+
 test('only subjective pending or failed redo attempts expose grading retry', () => {
   const failedAttempt = {
     id: 'attempt-objective-failed', quiz_set_id: 'set-1', quiz_run_id: 'redo-run', question_id: 'question-1', attempt_number: 3,
@@ -121,9 +154,11 @@ test('weak knowledge exposes component evidence and five exact server actions', 
     assert.match(html, new RegExp(label));
   }
   assert.match(html, /href="\/knowledge\/workspace-1\/documents\/document-1\?page=8"/);
-  assert.equal(weaknessBand(39).label, '状态平稳');
-  assert.equal(weaknessBand(40).label, '继续观察');
-  assert.equal(weaknessBand(70).label, '优先巩固');
+  for (const [score, label] of [[0, '稳定'], [29, '稳定'], [30, '需要巩固'], [59, '需要巩固'], [60, '薄弱'], [79, '薄弱'], [80, '优先处理'], [100, '优先处理']] as const) {
+    const bandHtml = renderToStaticMarkup(<WeakKnowledgePanel items={[{ ...weak, weakness_score: score }]} total={1} filters={{}} documentOptions={[]} knowledgePointOptions={[]}
+      onFiltersChange={() => undefined} onAction={() => undefined} onRecalculate={() => undefined} />);
+    assert.match(bandHtml, new RegExp(label));
+  }
 });
 
 test('list helpers retain the complete filter, due and pagination payloads', () => {

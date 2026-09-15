@@ -46,7 +46,7 @@ interface ResultQuestionProps {
   onSource?: (href: string, source: AssessmentSourceSnapshot) => void;
 }
 
-const ResultQuestion: React.FC<ResultQuestionProps> = ({
+export const ResultQuestion: React.FC<ResultQuestionProps> = ({
   question,
   attempt,
   workspaceId,

@@ -44,6 +44,9 @@ export interface QuizSetRequestValues {
 }
 
 export const buildQuizSetGenerateRequest = (values: QuizSetRequestValues): QuizSetGenerateRequest => {
+  if (Math.round(values.count) < new Set(values.questionTypes).size) {
+    throw new Error('题目数量不能少于所选题型数量');
+  }
   const duration = values.durationMinutes && values.durationMinutes > 0
     ? { duration_limit_seconds: Math.round(values.durationMinutes * 60) }
     : {};
@@ -105,7 +108,7 @@ export const PracticeBuilder: React.FC<PracticeBuilderProps> = ({
   onSectionChange,
   onGenerate,
 }) => {
-  const [count, setCount] = useState(5);
+  const [count, setCount] = useState(DEFAULT_QUESTION_TYPES.length);
   const [difficulty, setDifficulty] = useState<AssessmentDifficulty>('medium');
   const [questionTypes, setQuestionTypes] = useState<AssessmentQuestionType[]>(DEFAULT_QUESTION_TYPES);
   const [strictSources, setStrictSources] = useState(true);
@@ -133,7 +136,8 @@ export const PracticeBuilder: React.FC<PracticeBuilderProps> = ({
   const canGenerate = Boolean(workspaceId)
     && !scopeLoading
     && effectiveDocumentIds.length > 0
-    && questionTypes.length > 0;
+    && questionTypes.length > 0
+    && count >= new Set(questionTypes).size;
 
   const generate = () => {
     if (!workspaceId || !canGenerate) return;
@@ -236,7 +240,8 @@ export const PracticeBuilder: React.FC<PracticeBuilderProps> = ({
       </fieldset>
       <label className="practice-field">
         <span>题目数量</span>
-        <InputNumber min={1} max={50} precision={0} value={count} onChange={value => setCount(value ?? 5)} />
+        <InputNumber min={1} max={50} precision={0} value={count} onChange={value => setCount(value ?? DEFAULT_QUESTION_TYPES.length)} />
+        {count < new Set(questionTypes).size ? <small role="alert">题目数量不能少于所选题型数量</small> : null}
       </label>
       <label className="practice-field">
         <span>难度</span>

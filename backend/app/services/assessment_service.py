@@ -266,7 +266,13 @@ async def _generation_scope(
     chunks = [chunk for chunk in chunks if _chunk_matches_sections(chunk, request.section_filters)]
     if not chunks:
         raise AssessmentValidationError("No source chunks match the selected assessment scope")
-    if not points:
+    if points:
+        matches = {point.id: [chunk for chunk in chunks if _chunk_matches_point_evidence(chunk, point)] for point in points}
+        if any(not point_chunks for point_chunks in matches.values()):
+            raise AssessmentValidationError("Selected knowledge points have no matching source evidence; check their page or heading")
+        selected_chunk_ids = {chunk.id for point_chunks in matches.values() for chunk in point_chunks}
+        chunks = [chunk for chunk in chunks if chunk.id in selected_chunk_ids]
+    else:
         candidates = (await db.execute(
             select(KnowledgePoint)
             .join(
@@ -295,15 +301,11 @@ async def _generation_scope(
     return documents, points, chunks
 
 
-def _question_point_id(question: Any, points: Sequence[KnowledgePoint]) -> str | None:
-    if len(points) == 1:
-        return points[0].id
-    source_document_ids = {
-        source.get("document_id")
-        for source in question.source_snapshot
-        if isinstance(source, dict) and source.get("document_id")
-    }
-    matches = [point.id for point in points if point.document_id in source_document_ids]
+def _question_point_id(question: Any, points: Sequence[KnowledgePoint], evidence: Sequence[DocumentChunk]) -> str | None:
+    cited_ids = set(question.source_chunk_ids)
+    matches = [point.id for point in points if cited_ids and cited_ids <= {
+        chunk.id for chunk in evidence if _chunk_matches_point_evidence(chunk, point)
+    }]
     return matches[0] if len(matches) == 1 else None
 
 
@@ -323,6 +325,8 @@ async def generate_quiz_set(
     completion: Completion | None = None,
 ) -> QuizSet:
     """Validate a generation scope, call the configured AI, and persist atomically."""
+    if request.count < len(set(request.question_types)):
+        raise AssessmentValidationError("Question count must cover every distinct requested question type")
     documents, points, evidence = await _generation_scope(db, request)
     evidence_payload = [{
         "id": chunk.id,
@@ -352,7 +356,10 @@ async def generate_quiz_set(
     quiz_set_id = quiz_set.id
 
     try:
-        paper = await build_generated_paper(evidence_payload, request, settings, completion)
+        paper = await build_generated_paper(evidence_payload, request, settings, completion,
+            knowledge_points=[{"id": point.id, "title": point.title, "summary": point.summary,
+                "source_chunk_ids": [chunk.id for chunk in evidence if _chunk_matches_point_evidence(chunk, point)]}
+                for point in points])
     except Exception as exc:
         try:
             persisted_set = (
@@ -392,7 +399,7 @@ async def generate_quiz_set(
                 workspace_id=request.workspace_id,
                 quiz_set_id=persisted_set.id,
                 document_id=document_id,
-                knowledge_point_id=_question_point_id(generated, points),
+                knowledge_point_id=_question_point_id(generated, points, evidence),
                 question_type=generated.question_type,
                 prompt=generated.prompt,
                 options=list(generated.options) or None,
@@ -868,8 +875,7 @@ async def _persist_prepared_attempt(
     db.add(attempt)
     await db.flush()
 
-    question.last_answer = _legacy_text(grade.user_answer)
-    await _apply_grade_effects(db, question, attempt, is_redo=is_redo, now=submitted_at)
+    await _apply_grade_effects(db, question, attempt, is_redo=is_redo)
 
     if record_activity:
         db.add(StudyActivity(
@@ -895,26 +901,69 @@ async def _persist_prepared_attempt(
     return attempt
 
 
-async def _apply_grade_effects(db, question, attempt, *, is_redo, now):
+async def _apply_grade_effects(db, question, attempt, *, is_redo, rebuild_mistake=False):
     """Single owner for successful-grade counters, mistake state and mastery."""
+    latest = (await db.execute(select(QuizAttempt).join(QuizRun, QuizRun.id == QuizAttempt.quiz_run_id)
+        .where(QuizAttempt.question_id == question.id)
+        .order_by(QuizAttempt.submitted_at.desc(), QuizRun.round_number.desc(), QuizAttempt.attempt_number.desc(), QuizAttempt.id.desc())
+        .limit(1))).scalar_one()
+    question.last_answer = _legacy_text(latest.user_answer)
+    question.last_correct = latest.is_correct if latest.evaluation_status == "graded" else None
     grade = attempt
     if grade.evaluation_status == "graded":
         question.attempts += 1
         question.correct_attempts += int(grade.is_correct is True)
-        question.last_correct = grade.is_correct
-        await _update_mistake(
-            db,
-            question,
-            attempt,
-            correct=bool(grade.is_correct),
-            is_redo=is_redo,
-            submitted_at=now,
-        )
-        await _update_point_mastery(
-            db,
-            question.knowledge_point_id,
-            correct=bool(grade.is_correct),
-        )
+        if rebuild_mistake:
+            await _rebuild_mistake_projection(db, question, attempt)
+        else:
+            await _update_mistake(db, question, attempt, correct=bool(grade.is_correct),
+                is_redo=is_redo, submitted_at=attempt.submitted_at)
+        await _update_point_mastery(db, question.knowledge_point_id, correct=bool(grade.is_correct))
+
+
+async def _rebuild_mistake_projection(db, question, revised_attempt):
+    """Replay evaluated submissions, keeping any pre-assessment legacy baseline."""
+    record = (await db.execute(select(MistakeRecord).where(MistakeRecord.question_id == question.id)
+        .with_for_update().execution_options(populate_existing=True))).scalar_one_or_none()
+    rows = (await db.execute(select(QuizAttempt, QuizRun).join(QuizRun, QuizRun.id == QuizAttempt.quiz_run_id)
+        .where(QuizAttempt.question_id == question.id, QuizAttempt.evaluation_status == "graded")
+        .order_by(QuizAttempt.submitted_at, QuizRun.round_number, QuizAttempt.attempt_number, QuizAttempt.id))).all()
+    activities = (await db.execute(select(StudyActivity).where(StudyActivity.workspace_id == question.workspace_id))).scalars().all()
+    redo_ids = {(activity.payload or {}).get("attempt_id") for activity in activities if (activity.payload or {}).get("is_redo")}
+    previous = [(item, run) for item, run in rows if item.id != revised_attempt.id]
+    known_wrong = sum(item.is_correct is False for item, _ in previous)
+    known_redo = sum(run.question_ids is not None or item.id in redo_ids for item, run in previous)
+    baseline_wrong = max(0, (record.wrong_count if record else 0) - known_wrong)
+    baseline_redo = max(0, (record.redo_count if record else 0) - known_redo)
+    state = None
+    if record and baseline_wrong:
+        # If durable history contains no wrong answer, infer the earlier streak
+        # by removing its known correct redos; an imported mastered record keeps
+        # its status and dates through an ordinary correct submission.
+        baseline_streak = max(0, record.consecutive_correct - known_redo) if not known_wrong else 0
+        state = MistakeState(wrong_count=baseline_wrong, redo_count=baseline_redo,
+            consecutive_correct=baseline_streak,
+            mastery_status="mastered" if baseline_streak >= 2 else "improving" if baseline_streak else "unresolved",
+            first_wrong_at=record.first_wrong_at, last_wrong_at=record.last_wrong_at,
+            last_redone_at=record.last_redone_at if baseline_redo else None,
+            resolved_at=record.resolved_at if baseline_streak >= 2 else None)
+    latest = None
+    for item, run in rows:
+        state = next_mistake_state(state, correct=bool(item.is_correct),
+            is_redo=run.question_ids is not None or item.id in redo_ids, now=item.submitted_at)
+        if state is not None:
+            latest = item
+    if state is None or latest is None:
+        return
+    if record is None:
+        record = MistakeRecord(question_id=question.id, knowledge_point_id=question.knowledge_point_id, workspace_id=question.workspace_id)
+        db.add(record)
+    _apply_mistake_state(record, state)
+    record.latest_attempt_id = latest.id
+    record.user_answer_snapshot = latest.user_answer
+    record.correct_answer_snapshot = question.answer_payload
+    record.error_reason = latest.error_reason
+    record.source_snapshot = list(question.source_snapshot or [])
 
 
 async def retry_grading(db, attempt_id, settings, completion=None):
@@ -945,12 +994,9 @@ async def retry_grading(db, attempt_id, settings, completion=None):
             _check_question_scope(run, question.id)
             for key in ("evaluation_status", "is_correct", "score", "max_score", "feedback", "error_reason"):
                 setattr(attempt, key, getattr(grade, key))
-            activities = (await db.execute(select(StudyActivity).where(StudyActivity.workspace_id == question.workspace_id))).scalars().all()
-            is_redo = run.question_ids is not None or any(
-                (row.payload or {}).get("attempt_id") == attempt.id and (row.payload or {}).get("is_redo")
-                for row in activities
-            )
-            await _apply_grade_effects(db, question, attempt, is_redo=is_redo, now=_now())
+            # Apply cumulative counters once, but project mistakes in submission order.
+            await _apply_grade_effects(db, question, attempt, is_redo=run.question_ids is not None,
+                rebuild_mistake=True)
             await db.flush()
             await _recompute_run(db, run)
             if question.knowledge_point_id:
@@ -1226,6 +1272,8 @@ def serialize_question(
     }
     if attempt is not None:
         payload["attempt"] = serialize_attempt(attempt)
+    if question.question_type == "fill_blank":
+        payload["blank_count"] = len(question.answer_payload) if isinstance(question.answer_payload, list) else 1
     if reveal:
         payload.update({
             "answer": question.answer,

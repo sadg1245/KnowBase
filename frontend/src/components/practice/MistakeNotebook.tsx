@@ -66,9 +66,11 @@ interface MistakeRedoPanelProps {
 }
 
 export const MistakeRedoPanel: React.FC<MistakeRedoPanelProps> = ({
-  mistake, answer, attempt, redoing = false, retrying = false, onAnswerChange, onClose, onRedo, onRetryGrading,
+  mistake, answer: suppliedAnswer, attempt: suppliedAttempt, redoing = false, retrying = false, onAnswerChange, onClose, onRedo, onRetryGrading,
 }) => {
+  const attempt = suppliedAttempt ?? mistake.recoverable_redo_attempt ?? undefined;
   const awaitingGrade = attempt?.evaluation_status === 'grading_failed' || attempt?.evaluation_status === 'pending_ai';
+  const answer = suppliedAnswer ?? (awaitingGrade ? attempt?.user_answer : undefined);
   const subjective = mistake.question.question_type === 'short_answer' || mistake.question.question_type === 'concept_explanation';
   const retryEligible = awaitingGrade && subjective;
   return <div className="mistake-redo">
@@ -144,7 +146,7 @@ export const MistakeNotebook: React.FC<MistakeNotebookProps> = ({
       ? <div className="paper-card empty-guide"><Empty description="当前筛选范围还没有错题记录" /></div>
       : <div className="mistake-ledger-list">{mistakes.map((mistake, index) => {
         const answer = answers[mistake.id];
-        const latestRedo = redoAttempts[mistake.id];
+        const latestRedo = redoAttempts[mistake.id] ?? mistake.recoverable_redo_attempt ?? undefined;
         const sources = mistake.source_snapshot.length ? mistake.source_snapshot : mistake.question.source_snapshot;
         return <article className={`mistake-ledger paper-card is-${mistake.mastery_status}`} key={mistake.id}>
           <aside className="mistake-ledger-margin" aria-label={`错题 ${index + 1}，${masteryCopy[mistake.mastery_status]}`}>
@@ -181,7 +183,7 @@ export const MistakeNotebook: React.FC<MistakeNotebookProps> = ({
               onClose={() => closeRedo(mistake.id)}
               onRedo={value => onRedo(mistake.id, value)}
               onRetryGrading={attemptId => onRetryGrading(mistake.id, attemptId)}
-            /> : <Button className="mistake-open-redo" icon={<RedoOutlined />} onClick={() => setActiveRedoId(mistake.id)}>打开重新练习</Button>}
+            /> : <Button className="mistake-open-redo" icon={<RedoOutlined />} onClick={() => setActiveRedoId(mistake.id)}>{latestRedo && latestRedo.evaluation_status !== 'graded' ? '继续评分' : '打开重新练习'}</Button>}
           </div>
         </article>;
       })}</div>}

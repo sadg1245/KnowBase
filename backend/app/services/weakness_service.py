@@ -124,22 +124,23 @@ def _recommended_actions(point: KnowledgePoint, score: WeaknessScore) -> list[di
         return []
     learn_query = urlencode({"workspace": point.workspace_id, "knowledge_point_id": point.id})
     practice_query = urlencode({"workspace_id": point.workspace_id, "knowledge_point_id": point.id})
+    point_context = f"知识点「{point.title}」（ID: {point.id}）"
     if point.document_id:
         source_query = urlencode({"page": point.source_page}) if point.source_page else ""
         source_path = f"/knowledge/{point.workspace_id}/documents/{point.document_id}"
         if source_query:
             source_path = f"{source_path}?{source_query}"
     else:
-        source_path = f"/learn?{learn_query}&mode=simple&prompt={urlencode({'prompt': '请带我重新阅读这个知识点'}).split('=', 1)[1]}"
+        source_path = f"/learn?{learn_query}&mode=simple&{urlencode({'prompt': '请带我重新阅读' + point_context})}"
     return [
         {"type": "re_read", "label": "重新阅读", "path": source_path},
         {
             "type": "plain_explanation", "label": "通俗讲解",
-            "path": f"/learn?{learn_query}&mode=simple&prompt={urlencode({'prompt': '请用通俗语言讲解这个知识点'}).split('=', 1)[1]}",
+            "path": f"/learn?{learn_query}&mode=simple&{urlencode({'prompt': '请用通俗语言讲解' + point_context})}",
         },
         {
             "type": "new_example", "label": "生成新例子",
-            "path": f"/learn?{learn_query}&mode=simple&prompt={urlencode({'prompt': '请给出一个新的循序渐进例子'}).split('=', 1)[1]}",
+            "path": f"/learn?{learn_query}&mode=simple&{urlencode({'prompt': '请围绕' + point_context + '给出一个新的循序渐进例子'})}",
         },
         {
             "type": "targeted_practice", "label": "针对性练习",
@@ -147,7 +148,7 @@ def _recommended_actions(point: KnowledgePoint, score: WeaknessScore) -> list[di
         },
         {
             "type": "review", "label": "加入近期复习",
-            "path": f"/review?{practice_query}",
+            "path": "/review",
         },
     ]
 

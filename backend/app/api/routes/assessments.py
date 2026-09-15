@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db, get_settings
 from app.config import Settings
-from app.models.assessment import LearningTask, MistakeRecord, WeakKnowledgeState
+from app.models.assessment import LearningTask, MistakeRecord, QuizAttempt, QuizRun, WeakKnowledgeState
 from app.models.learning import KnowledgePoint, QuizQuestion
 from app.schemas.assessment import (LearningTaskStatus, MistakeMasteryStatus, MistakeRedoRequest,
     PaperSubmitRequest, QuestionSubmitRequest, QuizRunCreateRequest, QuizSetGenerateRequest)
@@ -122,11 +122,29 @@ async def _page(db, query, scope, render):
             "limit": scope.limit, "offset": scope.offset}
 
 
-def _mistake(record, question, point):
+def _mistake(record, question, point, recoverable=None):
     return {**workflows.serialize_row(record), "question": service.serialize_question(question, reveal=True),
+            "recoverable_redo_attempt": service.serialize_attempt(recoverable) if recoverable else None,
             "document_id": question.document_id or (point.document_id if point else None),
             "knowledge_point_title": point.title if point else None,
             "source_label": question.source_label, "source_type": "chat" if question.origin_message_id else "quiz"}
+
+
+async def _recoverable_redos(db, question_ids):
+    if not question_ids:
+        return {}
+    rows = (await db.execute(select(QuizAttempt, QuizRun)
+        .join(QuizRun, QuizRun.id == QuizAttempt.quiz_run_id)
+        .join(QuizQuestion, QuizQuestion.id == QuizAttempt.question_id)
+        .where(QuizAttempt.question_id.in_(question_ids), QuizRun.question_ids.is_not(None),
+            QuizAttempt.evaluation_status.in_(["pending_ai", "grading_failed"]),
+            QuizQuestion.question_type.in_(["short_answer", "concept_explanation"]))
+        .order_by(QuizAttempt.submitted_at.desc(), QuizRun.round_number.desc(), QuizAttempt.id.desc()))).all()
+    recovered = {}
+    for attempt, run in rows:
+        if attempt.question_id in run.question_ids:
+            recovered.setdefault(attempt.question_id, attempt)
+    return recovered
 
 
 @router.get("/mistakes")
@@ -136,7 +154,12 @@ async def list_mistakes(db: DB, scope: Scope, mastery_status: MistakeMasteryStat
     query = _scope(query, MistakeRecord, scope, question=True)
     if mastery_status:
         query = query.where(MistakeRecord.mastery_status == mastery_status)
-    return await _page(db, query.order_by(MistakeRecord.last_wrong_at.desc(), MistakeRecord.id), scope, _mistake)
+    page = await _page(db, query.order_by(MistakeRecord.last_wrong_at.desc(), MistakeRecord.id), scope, _mistake)
+    recovered = await _recoverable_redos(db, [item["question_id"] for item in page["items"]])
+    for item in page["items"]:
+        attempt = recovered.get(item["question_id"])
+        item["recoverable_redo_attempt"] = service.serialize_attempt(attempt) if attempt else None
+    return page
 
 
 @router.post("/mistakes/{mistake_id}/redo")
@@ -149,7 +172,8 @@ async def redo_mistake(mistake_id: str, payload: MistakeRedoRequest, db: DB, set
     await db.refresh(mistake)
     question = await db.get(QuizQuestion, mistake.question_id)
     point = await db.get(KnowledgePoint, mistake.knowledge_point_id) if mistake.knowledge_point_id else None
-    return {**(await _attempt_result(db, attempt)), "mistake": _mistake(mistake, question, point)}
+    recovered = await _recoverable_redos(db, [question.id])
+    return {**(await _attempt_result(db, attempt)), "mistake": _mistake(mistake, question, point, recovered.get(question.id))}
 
 
 def _point_record(row, point):

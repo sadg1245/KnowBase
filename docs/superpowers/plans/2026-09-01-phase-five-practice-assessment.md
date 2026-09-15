@@ -132,7 +132,7 @@ Expected: import failure for `assessment_scoring`.
 
 - [ ] **Step 3: Implement normalization and all four objective graders**
 
-Implement single choice and true/false scalar comparison, multiple-choice set comparison, and fill-blank positional comparison against one or more accepted answers per blank. Normalize Unicode whitespace, ASCII case, and surrounding Chinese/ASCII punctuation without using fuzzy semantic matching.
+Implement single choice and true/false scalar comparison, multiple-choice set comparison, and fill-blank positional comparison against one or more accepted answers per blank. Normalize Unicode whitespace, ASCII case, surrounding non-semantic Chinese sentence punctuation and detached ASCII sentence punctuation without fuzzy semantic matching. Preserve signs, operators, decimal points, brackets and identifier punctuation such as C++ and C#.
 
 - [ ] **Step 4: Implement mistake and timer state machines**
 

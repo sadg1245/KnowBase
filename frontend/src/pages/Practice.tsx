@@ -13,6 +13,7 @@ import {
   createPracticeSession,
   loadPracticeSessionDraft,
   savePracticeSessionDraft,
+  retryPracticeGradingAndMerge,
   setAnswer as setSessionAnswer,
 } from '../features/practice/practiceSession';
 import {
@@ -40,7 +41,7 @@ import {
 } from '../services/api';
 import {
   mistakeListFilters,
-  replaceMistakeFromRedo,
+  redoMistakeAndRefresh,
   retryMistakeGradingAndRefresh,
   weakKnowledgeListFilters,
   weakKnowledgeRecalculationScope,
@@ -629,12 +630,11 @@ const Practice: React.FC = () => {
     setGradingOperation({ token, attemptId });
     setPageError(undefined);
     try {
-      const result = await retryAttemptGrading(attemptId);
-      if (!sessionRequestGuard.current.isCurrent(token)) return;
-      const draft = { version: 1 as const, runId: result.run.id, answers: session.answers };
-      const next = createPracticeSession(result.run, result.run.quiz_set.questions, session.createdAt, draft);
-      setSession(next);
-      savePracticeSessionDraft(next);
+      await retryPracticeGradingAndMerge({
+        runId: session.run.id, attemptId,
+        isCurrent: () => sessionRequestGuard.current.isCurrent(token),
+        retryGrading: retryAttemptGrading, updateSession: setSession,
+      });
     } catch (error) {
       if (sessionRequestGuard.current.isCurrent(token)) setPageError(errorDetail(error, '评分重试失败，答案仍已保存。'));
     } finally {
@@ -689,11 +689,14 @@ const Practice: React.FC = () => {
     setRedoOperation({ token, mistakeId });
     setPageError(undefined);
     try {
-      const result = await redoMistake(mistakeId, { answer });
-      if (!redoRequestGuard.current.isCurrent(token)) return;
-      const reconciled = replaceMistakeFromRedo(mistakes, result);
-      setMistakes(reconciled.mistakes);
-      setRedoAttempts(current => ({ ...current, ...reconciled.attemptsByMistakeId }));
+      const result = await redoMistakeAndRefresh({
+        token, mistakeId, answer, isCurrent: redoRequestGuard.current.isCurrent,
+        redo: redoMistake, loadMistakes: () => getMistakes(visibleMistakeFilters),
+      });
+      if (!result) return;
+      setMistakes(result.page.items);
+      setMistakeTotal(result.page.total);
+      setRedoAttempts(current => ({ ...current, [mistakeId]: result.attempt }));
     } catch (error) {
       if (redoRequestGuard.current.isCurrent(token)) setPageError(errorDetail(error, '重做提交失败，答案仍保留在页面上，可以再次尝试。'));
     } finally {

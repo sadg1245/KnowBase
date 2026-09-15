@@ -1,5 +1,6 @@
 import type {
   AssessmentQuestion,
+  AttemptResult,
   PracticeAnswer,
   PracticeResultSummary,
   PracticeSessionDraft,
@@ -17,6 +18,9 @@ const hasAnswer = (answer: PracticeAnswer | undefined): answer is PracticeAnswer
 );
 
 const copyAnswer = (answer: PracticeAnswer): PracticeAnswer => Array.isArray(answer) ? [...answer] : answer;
+const hasDraftContent = (answer: PracticeAnswer | undefined): answer is PracticeAnswer => (
+  typeof answer === 'string' ? answer.trim().length > 0 : Array.isArray(answer) && answer.some(value => value.trim().length > 0)
+);
 
 const isRecord = (value: unknown): value is Record<string, unknown> => (
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -54,7 +58,7 @@ export const createPracticeSession = (
     const serverAttempt = attemptsByQuestionId[question.id];
     if (serverAttempt) {
       answers[question.id] = copyAnswer(serverAttempt.user_answer);
-    } else if (hasAnswer(draftAnswers[question.id])) {
+    } else if (hasDraftContent(draftAnswers[question.id])) {
       answers[question.id] = copyAnswer(draftAnswers[question.id]);
     }
   }
@@ -83,7 +87,7 @@ export const setAnswer = (
 ): PracticeSessionState => {
   if (!state.questions.some(question => question.id === questionId) || state.attemptsByQuestionId[questionId]) return state;
   const answers = { ...state.answers };
-  if (hasAnswer(answer)) answers[questionId] = copyAnswer(answer);
+  if (hasDraftContent(answer)) answers[questionId] = copyAnswer(answer);
   else delete answers[questionId];
   return { ...state, answers };
 };
@@ -108,8 +112,32 @@ export const remainingSeconds = (run: QuizRunView, now: number): number | null =
 };
 
 export const unansweredQuestionIds = (state: PracticeSessionState): string[] => (
-  state.questions.filter(question => !hasAnswer(state.answers[question.id])).map(question => question.id)
+  state.questions.filter(question => {
+    const answer = state.answers[question.id];
+    return !hasAnswer(answer) || (question.question_type === 'fill_blank' && (question.blank_count ?? 1) > 1
+      && (!Array.isArray(answer) || answer.length !== question.blank_count));
+  }).map(question => question.id)
 );
+
+export const retryPracticeGradingAndMerge = async ({
+  runId, attemptId, isCurrent, retryGrading, updateSession,
+}: {
+  runId: string;
+  attemptId: string;
+  isCurrent: () => boolean;
+  retryGrading: (attemptId: string) => Promise<AttemptResult>;
+  updateSession: (update: (current: PracticeSessionState | null) => PracticeSessionState | null) => void;
+}): Promise<void> => {
+  const result = await retryGrading(attemptId);
+  if (!isCurrent()) return;
+  updateSession(current => {
+    if (!isCurrent() || !current || current.run.id !== runId || result.run.id !== runId) return current;
+    const next = createPracticeSession(result.run, result.run.quiz_set.questions, current.createdAt,
+      { version: 1, runId, answers: current.answers });
+    savePracticeSessionDraft(next);
+    return next;
+  });
+};
 
 export const practiceResults = (state: PracticeSessionState): PracticeResultSummary => {
   const gradedAttempts = Object.values(state.attemptsByQuestionId).filter(attempt => attempt.evaluation_status === 'graded');
@@ -147,7 +175,7 @@ export const loadPracticeSessionDraft = (runId: string, storage?: Storage | null
     const parsed: unknown = JSON.parse(raw);
     if (!isRecord(parsed) || parsed.version !== 1 || parsed.runId !== runId || !isRecord(parsed.answers)) return null;
     const answers = Object.entries(parsed.answers).reduce<Record<string, PracticeAnswer>>((validAnswers, [questionId, answer]) => {
-      if (isDraftAnswer(answer) && hasAnswer(answer)) validAnswers[questionId] = copyAnswer(answer);
+      if (isDraftAnswer(answer) && hasDraftContent(answer)) validAnswers[questionId] = copyAnswer(answer);
       return validAnswers;
     }, {});
     return { version: 1, runId, answers };
@@ -170,7 +198,7 @@ export const savePracticeSessionDraft = (state: PracticeSessionState, storage?: 
     return;
   }
   const answers = Object.fromEntries(state.questions
-    .filter(question => !state.attemptsByQuestionId[question.id] && hasAnswer(state.answers[question.id]))
+    .filter(question => !state.attemptsByQuestionId[question.id] && hasDraftContent(state.answers[question.id]))
     .map(question => [question.id, copyAnswer(state.answers[question.id])])) as Record<string, PracticeAnswer>;
   if (Object.keys(answers).length === 0) {
     clearPracticeSessionDraft(storage);

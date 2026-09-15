@@ -98,6 +98,34 @@ test('builder exposes every phase five configuration control and legacy history 
   assert.match(html, /aria-label="章节"/);
   assert.match(html, /aria-label="知识点"/);
   assert.match(html, /href="\/practice\?wrong=1"/);
+  const defaultCount = Number(html.match(/role="spinbutton"[^>]*value="(\d+)"/)?.[1]);
+  const selectedTypes = (html.match(/type="checkbox"[^>]*checked=""/g) ?? []).length;
+  assert.ok(defaultCount >= selectedTypes && selectedTypes === 6, 'default generation covers every selected type');
+});
+
+test('builder rejects impossible counts and counts distinct selected types', () => {
+  const values = {
+    workspaceId: workspace.id, documents: [readyDocument], selectedDocumentIds: [],
+    selectedKnowledgePointIds: [], selectedSectionFilters: [], count: 1,
+    difficulty: 'medium' as const, questionTypes: ['single_choice', 'fill_blank'] as any,
+    strictSources: true, answerMode: 'sequential' as const, durationMinutes: null,
+  };
+  assert.throws(() => buildQuizSetGenerateRequest(values), /题目数量/);
+  assert.equal(buildQuizSetGenerateRequest({ ...values, questionTypes: ['single_choice', 'single_choice'] }).count, 1);
+});
+
+test('multi-blank editor renders positional fields and emits answers including unfinished blanks', () => {
+  const blankQuestion = { ...question, question_type: 'fill_blank' as const, blank_count: 2, options: null };
+  let answer: unknown;
+  const editor = QuestionInput({ question: blankQuestion, value: ['Paris', ''], onChange: value => { answer = value; } }) as React.ReactElement;
+  const html = renderToStaticMarkup(editor);
+  assert.equal((html.match(/<input /g) ?? []).length, 2);
+  assert.match(html, /第 2 空答案/);
+  const inputs = React.Children.toArray(editor.props.children) as React.ReactElement[];
+  inputs[1].props.onChange({ target: { value: 'France' } });
+  assert.deepEqual(answer, ['Paris', 'France']);
+  inputs[0].props.onChange({ target: { value: '' } });
+  assert.deepEqual(answer, ['', '']);
 });
 
 test('builder emits ready documents instead of the empty all-documents sentinel', () => {
@@ -219,16 +247,18 @@ test('sequential runner reveals the submitted question reference answer', () => 
     evaluation_status: 'graded' as const, feedback: { message: '掌握准确' }, error_reason: null,
     duration_seconds: 12, submitted_at: '2026-09-01T00:00:12Z',
   };
-  const revealedQuestion = { ...question, attempt, answer: 'a²+b²=c²', explanation: '平方关系' };
+  const revealedQuestion = { ...question, question_type: 'short_answer' as const, attempt, answer: 'a²+b²=c²', explanation: '平方关系',
+    source_snapshot: [{ ...question.source_snapshot[0], excerpt: '本题的来源片段' }] };
+  const hiddenQuestion = { ...question, id: 'hidden-question', answer: 'SECRET_OTHER_ANSWER', explanation: 'SECRET_OTHER_EXPLANATION' };
   const run = makeRun({
     answer_mode: 'sequential',
     attempts: [attempt],
-    quiz_set: { ...makeRun().quiz_set, questions: [revealedQuestion] },
+    quiz_set: { ...makeRun().quiz_set, questions: [revealedQuestion, hiddenQuestion] },
   });
   const html = renderToStaticMarkup(<QuizRunner
     session={{
       run,
-      questions: [revealedQuestion],
+      questions: [revealedQuestion, hiddenQuestion],
       answers: { [question.id]: attempt.user_answer },
       attemptsByQuestionId: { [question.id]: attempt },
       revealedQuestionIds: new Set([question.id]),
@@ -243,6 +273,10 @@ test('sequential runner reveals the submitted question reference answer', () => 
 
   assert.match(html, /参考答案/);
   assert.match(html, /平方关系/);
+  assert.match(html, /掌握准确/);
+  assert.match(html, /本题的来源片段/);
+  assert.match(html, /href="\/knowledge\/workspace-1\/documents\/document-1\?chunk=chunk-7&amp;page=3"/);
+  assert.doesNotMatch(html, /SECRET_OTHER/);
 });
 
 test('results reveal answer explanation feedback and traceable source links', () => {
