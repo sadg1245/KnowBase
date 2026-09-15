@@ -5,6 +5,8 @@ ALTER statements only bridge older local SQLite databases created before the
 learning fields existed.
 """
 
+import uuid
+
 from loguru import logger
 from sqlalchemy import text
 
@@ -13,6 +15,8 @@ async def run_compat_migrations(conn) -> None:
     if conn.dialect.name != "sqlite":
         return
 
+    table_rows = await conn.execute(text("SELECT name FROM sqlite_master WHERE type = 'table'"))
+    tables = {row[0] for row in table_rows.fetchall()}
     additions = {
         "workspaces": {
             "learning_goal": "TEXT DEFAULT ''",
@@ -46,6 +50,8 @@ async def run_compat_migrations(conn) -> None:
         },
         "user_profiles": {
             "password_hash": "VARCHAR(255)",
+            "weekly_goal_days": "INTEGER NOT NULL DEFAULT 5",
+            "timezone_name": "VARCHAR(100) NOT NULL DEFAULT 'Asia/Shanghai'",
         },
         "conversations": {
             "session_id": "VARCHAR(36)",
@@ -91,34 +97,57 @@ async def run_compat_migrations(conn) -> None:
             "next_status": "VARCHAR(20) NOT NULL DEFAULT 'learning'",
             "algorithm_version": "VARCHAR(20) NOT NULL DEFAULT 'simple_v1'",
         },
+        "study_activities": {
+            "event_key": "VARCHAR(255)",
+            "source_type": "VARCHAR(40)",
+            "source_id": "VARCHAR(64)",
+            "occurred_at": "DATETIME",
+            "schema_version": "INTEGER NOT NULL DEFAULT 1",
+        },
     }
     for table, columns in additions.items():
+        if table not in tables:
+            continue
         rows = await conn.execute(text(f"PRAGMA table_info({table})"))
         existing = {row[1] for row in rows.fetchall()}
         for name, ddl in columns.items():
             if name not in existing:
                 await conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}"))
 
-    await conn.execute(text(
-        "UPDATE flashcards SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL"
-    ))
+    if "flashcards" in tables:
+        await conn.execute(text(
+            "UPDATE flashcards SET updated_at = CURRENT_TIMESTAMP WHERE updated_at IS NULL"
+        ))
+    if "study_activities" in tables:
+        await conn.execute(text(
+            "UPDATE study_activities SET occurred_at = created_at WHERE occurred_at IS NULL"
+        ))
 
-    await conn.execute(text(
-        "CREATE UNIQUE INDEX IF NOT EXISTS ix_flashcards_origin_message_id "
-        "ON flashcards(origin_message_id) WHERE origin_message_id IS NOT NULL"
-    ))
-    await conn.execute(text(
-        "CREATE UNIQUE INDEX IF NOT EXISTS ix_quiz_questions_origin_message_id "
-        "ON quiz_questions(origin_message_id) WHERE origin_message_id IS NOT NULL"
-    ))
-    await conn.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_flashcards_mastery_status ON flashcards(mastery_status)"
-    ))
-    await conn.execute(text(
-        "CREATE INDEX IF NOT EXISTS ix_flashcards_source_type ON flashcards(source_type)"
-    ))
-    rows = await conn.execute(text("SELECT name FROM sqlite_master WHERE type = 'table'"))
-    tables = {row[0] for row in rows.fetchall()}
+    if "flashcards" in tables:
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_flashcards_origin_message_id "
+            "ON flashcards(origin_message_id) WHERE origin_message_id IS NOT NULL"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_flashcards_mastery_status ON flashcards(mastery_status)"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_flashcards_source_type ON flashcards(source_type)"
+        ))
+    if "quiz_questions" in tables:
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_quiz_questions_origin_message_id "
+            "ON quiz_questions(origin_message_id) WHERE origin_message_id IS NOT NULL"
+        ))
+    if "study_activities" in tables:
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_study_activities_event_key "
+            "ON study_activities(event_key) WHERE event_key IS NOT NULL"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_study_activities_type_occurred "
+            "ON study_activities(activity_type, occurred_at)"
+        ))
     if "quiz_runs" in tables:
         columns = {row[1] for row in (await conn.execute(text("PRAGMA table_info(quiz_runs)"))).fetchall()}
         if "question_ids" not in columns:
@@ -143,6 +172,36 @@ async def run_compat_migrations(conn) -> None:
         if table in tables:
             for statement in statements:
                 await conn.execute(text(statement))
+    if "learning_goals" in tables and "user_profiles" in tables:
+        profile_columns = {
+            row[1]
+            for row in (await conn.execute(text("PRAGMA table_info(user_profiles)"))).fetchall()
+        }
+        required = {"daily_goal_minutes", "daily_review_target", "weekly_goal_days"}
+        if required <= profile_columns:
+            profile = (await conn.execute(text(
+                "SELECT daily_goal_minutes, daily_review_target, weekly_goal_days "
+                "FROM user_profiles ORDER BY created_at LIMIT 1"
+            ))).one_or_none()
+            if profile is not None:
+                defaults = (
+                    ("daily_minutes", float(profile.daily_goal_minutes)),
+                    ("daily_reviews", float(profile.daily_review_target)),
+                    ("weekly_days", float(profile.weekly_goal_days)),
+                )
+                for metric, target_value in defaults:
+                    exists = await conn.scalar(text(
+                        "SELECT COUNT(*) FROM learning_goals "
+                        "WHERE scope_type = 'global' AND metric = :metric"
+                    ), {"metric": metric})
+                    if not exists:
+                        await conn.execute(text(
+                            "INSERT INTO learning_goals "
+                            "(id, scope_type, workspace_id, metric, target_value, target_date, "
+                            "is_active, version, created_at, updated_at) VALUES "
+                            "(:id, 'global', NULL, :metric, :target_value, NULL, 1, 1, "
+                            "CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                        ), {"id": str(uuid.uuid4()), "metric": metric, "target_value": target_value})
     try:
         await conn.execute(text(
             "CREATE VIRTUAL TABLE IF NOT EXISTS document_chunks_fts USING fts5("

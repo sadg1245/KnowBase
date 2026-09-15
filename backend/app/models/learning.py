@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, JSON, String, Text, func
+from sqlalchemy import Boolean, Column, Date, DateTime, Float, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import relationship
 
 from app.models.base import Base
@@ -24,6 +24,8 @@ class UserProfile(Base):
     display_name = Column(String(80), nullable=False, default="学习者")
     daily_goal_minutes = Column(Integer, nullable=False, default=25)
     daily_review_target = Column(Integer, nullable=False, default=10)
+    weekly_goal_days = Column(Integer, nullable=False, default=5)
+    timezone_name = Column(String(100), nullable=False, default="Asia/Shanghai")
     preferred_mode = Column(String(30), nullable=False, default="explain")
     reminder_time = Column(String(5), nullable=True, default="20:00")
     password_hash = Column(String(255), nullable=True)
@@ -140,7 +142,96 @@ class StudyActivity(Base):
     id = Column(String(36), primary_key=True, default=_uuid)
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True)
     activity_type = Column(String(30), nullable=False, index=True)
+    event_key = Column(String(255), nullable=True, unique=True, index=True)
+    source_type = Column(String(40), nullable=True, index=True)
+    source_id = Column(String(64), nullable=True, index=True)
     title = Column(String(255), nullable=False)
     duration_seconds = Column(Integer, nullable=False, default=0)
     payload = Column(JSON, nullable=True)
+    occurred_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now(), index=True)
+    schema_version = Column(Integer, nullable=False, default=1)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now(), index=True)
+
+
+class StudySession(Base):
+    __tablename__ = "study_sessions"
+    __table_args__ = (
+        Index(
+            "uq_study_sessions_active_context",
+            "context_type",
+            "context_id",
+            unique=True,
+            sqlite_where=text("status = 'active'"),
+            postgresql_where=text("status = 'active'"),
+        ),
+    )
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True)
+    context_type = Column(String(20), nullable=False)
+    context_id = Column(String(36), nullable=False, index=True)
+    started_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now())
+    last_heartbeat_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now())
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+    active_seconds = Column(Integer, nullable=False, default=0)
+    status = Column(String(20), nullable=False, default="active", index=True)
+    last_sequence = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now(), onupdate=_now)
+
+
+class LearningGoal(Base):
+    __tablename__ = "learning_goals"
+    __table_args__ = (
+        Index(
+            "uq_learning_goals_global_metric",
+            "metric",
+            unique=True,
+            sqlite_where=text("scope_type = 'global'"),
+            postgresql_where=text("scope_type = 'global'"),
+        ),
+        Index(
+            "uq_learning_goals_workspace_metric",
+            "workspace_id",
+            "metric",
+            unique=True,
+            sqlite_where=text("scope_type = 'workspace'"),
+            postgresql_where=text("scope_type = 'workspace'"),
+        ),
+    )
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    scope_type = Column(String(20), nullable=False, index=True)
+    workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
+    metric = Column(String(30), nullable=False, index=True)
+    target_value = Column(Float, nullable=False)
+    target_date = Column(Date, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    version = Column(Integer, nullable=False, default=1)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now(), onupdate=_now)
+
+
+class ReportSuggestion(Base):
+    __tablename__ = "report_suggestions"
+    __table_args__ = (
+        UniqueConstraint(
+            "period_type", "period_start", "timezone_name", "stats_hash",
+            name="uq_report_suggestions_snapshot",
+        ),
+    )
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    period_type = Column(String(10), nullable=False, index=True)
+    period_start = Column(DateTime(timezone=True), nullable=False, index=True)
+    period_end = Column(DateTime(timezone=True), nullable=False)
+    timezone_name = Column(String(100), nullable=False)
+    stats_hash = Column(String(64), nullable=False)
+    stats_snapshot = Column(JSON, nullable=False, default=dict)
+    status = Column(String(20), nullable=False, default="pending", index=True)
+    suggestion = Column(Text, nullable=True)
+    model = Column(String(255), nullable=True)
+    error_message = Column(Text, nullable=True)
+    generated_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now(), onupdate=_now)
