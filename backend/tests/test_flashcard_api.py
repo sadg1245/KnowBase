@@ -1,7 +1,7 @@
 """Flashcard CRUD, generation, source, and validation contracts."""
 
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
 from sqlalchemy import select
@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import app.models  # noqa: F401
 from app.api.routes.learning import (
     create_card,
+    dashboard,
     delete_card,
     generate_workspace_cards,
     list_cards,
@@ -18,6 +19,7 @@ from app.api.routes.learning import (
     update_card,
 )
 from app.models.base import Base
+from app.models.assessment import LearningTask, WeakKnowledgeState
 from app.models.document import Document
 from app.models.learning import Flashcard, KnowledgePoint
 from app.models.workspace import Workspace
@@ -181,6 +183,55 @@ class FlashcardApiTests(unittest.IsolatedAsyncioTestCase):
                     db,
                 )
             self.assertEqual(cross_workspace.exception.status_code, 400)
+
+    async def test_due_cards_order_by_weakness_before_due_time(self):
+        async with self.sessions() as db:
+            workspace, _other, _document, point_a, point_b = await self._fixture(db)
+            now = datetime.now(timezone.utc)
+            early = Flashcard(
+                workspace_id=workspace.id, knowledge_point_id=point_a.id,
+                front="Early", back="A", due_at=now - timedelta(minutes=10),
+            )
+            weak = Flashcard(
+                workspace_id=workspace.id, knowledge_point_id=point_b.id,
+                front="Weak", back="B", due_at=now - timedelta(minutes=1),
+            )
+            db.add_all([early, weak])
+            await db.flush()
+            db.add_all([
+                WeakKnowledgeState(workspace_id=workspace.id, knowledge_point_id=point_a.id, weakness_score=20),
+                WeakKnowledgeState(workspace_id=workspace.id, knowledge_point_id=point_b.id, weakness_score=90),
+            ])
+            await db.flush()
+
+            rows = await list_cards(workspace_id=workspace.id, due_only=True, db=db)
+
+            self.assertEqual([row["id"] for row in rows], [weak.id, early.id])
+
+    async def test_dashboard_exposes_due_weak_learning_tasks(self):
+        async with self.sessions() as db:
+            workspace, _other, _document, point_a, _point_b = await self._fixture(db)
+            task = LearningTask(
+                workspace_id=workspace.id,
+                knowledge_point_id=point_a.id,
+                task_type="targeted_practice",
+                title="Practice spacing",
+                path=f"/practice?workspace_id={workspace.id}&knowledge_point_id={point_a.id}&mode=targeted",
+                due_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+                priority=81,
+            )
+            db.add(task)
+            await db.flush()
+
+            payload = await dashboard(db)
+
+            self.assertTrue(any(
+                row.get("id") == task.id
+                and row["type"] == "targeted_practice"
+                and row["title"] == "Practice spacing"
+                and row["path"] == task.path
+                for row in payload["today_tasks"]
+            ))
 
 
 if __name__ == "__main__":

@@ -64,7 +64,7 @@ class LearningMaterial(BaseModel):
 Completion = Callable[..., Awaitable[Any] | Any]
 
 
-def _provider_configuration(settings: Settings) -> tuple[str, str, str | None]:
+def resolve_provider_configuration(settings: Settings) -> tuple[str, str, str | None]:
     try:
         provider = (settings.DEFAULT_LLM_PROVIDER or "").strip().lower()
         model = (settings.DEFAULT_LLM_MODEL or "").strip()
@@ -97,6 +97,11 @@ def _provider_configuration(settings: Settings) -> tuple[str, str, str | None]:
         raise
     except Exception as exc:
         raise LearningGenerationError("No configured LLM provider is available for learning generation") from exc
+
+
+# Kept for callers that imported the original private helper before provider
+# configuration became a shared service boundary.
+_provider_configuration = resolve_provider_configuration
 
 
 def _generation_prompt(chunks: list[DocumentChunk]) -> str:

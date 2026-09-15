@@ -1,4 +1,53 @@
 import axios from 'axios';
+import type {
+  AssessmentListScope,
+  AssessmentPage,
+  AttemptResult,
+  LearningTask,
+  LearningTaskFilters,
+  MistakeFilters,
+  MistakeRecord,
+  MistakeRedoRequest,
+  MistakeRedoResult,
+  PaperSubmitRequest,
+  QuestionSubmitRequest,
+  QuizRunCreateRequest,
+  QuizRunView,
+  QuizSetGenerateRequest,
+  QuizSetView,
+  WeakKnowledgeRecalculation,
+  WeakKnowledgeRecalculationScope,
+  WeakKnowledgeState,
+} from '../features/practice/types';
+
+export type {
+  AssessmentListScope,
+  AssessmentPage,
+  AssessmentQuestion,
+  AssessmentQuestionType,
+  AttemptEvaluationStatus,
+  AttemptFeedbackPayload,
+  AttemptResult,
+  LearningTask,
+  LearningTaskFilters,
+  MistakeFilters,
+  MistakeMasteryStatus,
+  MistakeRecord,
+  MistakeRedoRequest,
+  MistakeRedoResult,
+  PaperSubmitRequest,
+  PracticeAnswer,
+  QuestionSubmitRequest,
+  QuizAttempt,
+  QuizRunCreateRequest,
+  QuizRunSummary,
+  QuizRunView,
+  QuizSetGenerateRequest,
+  QuizSetView,
+  WeakKnowledgeRecalculation,
+  WeakKnowledgeRecalculationScope,
+  WeakKnowledgeState,
+} from '../features/practice/types';
 
 const api = axios.create({
   baseURL: '/api',
@@ -389,10 +438,23 @@ export interface QuizQuestion {
   last_answer?: string | null; last_correct?: boolean | null;
 }
 
+export type DashboardTask = {
+  type: string;
+  title: string;
+  path: string | null;
+  count?: number;
+  id?: string;
+  knowledge_point_id?: string | null;
+  workspace_id?: string;
+  due_at?: string | null;
+  priority?: number;
+  status?: 'pending' | 'completed' | 'dismissed';
+};
+
 export interface LearningDashboard {
   profile: { display_name: string; daily_goal_minutes: number; daily_review_target: number };
   stats: { workspace_count: number; document_count: number; knowledge_point_count: number; due_cards: number; wrong_questions: number; today_minutes: number; week_minutes: number; streak_days: number };
-  today_tasks: { type: string; title: string; count: number; path: string }[];
+  today_tasks: DashboardTask[];
   weak_points: KnowledgePoint[];
   recent_activities: { id: string; type: string; title: string; duration_seconds: number; created_at: string }[];
   recent_workspaces: Workspace[];
@@ -450,6 +512,38 @@ export const getQuizzes = async (wrongOnly = false, workspaceId?: string, docume
   paramsSerializer: { indexes: null },
 })).data;
 export const submitQuiz = async (id: string, answer: string): Promise<{ correct: boolean; reference_answer: string; explanation: string; source_label?: string; question: QuizQuestion }> => (await api.post(`/learning/quizzes/${id}/submit`, { answer })).data;
+
+export const generateQuizSet = async (values: QuizSetGenerateRequest): Promise<QuizSetView> =>
+  (await api.post('/learning/quiz-sets/generate', values)).data;
+export const getQuizSet = async (quizSetId: string): Promise<QuizSetView> =>
+  (await api.get(`/learning/quiz-sets/${quizSetId}`)).data;
+export const createQuizRun = async (quizSetId: string, values: QuizRunCreateRequest = {}): Promise<QuizRunView> =>
+  (await api.post(`/learning/quiz-sets/${quizSetId}/runs`, values)).data;
+export const startQuizRun = async (runId: string): Promise<QuizRunView> =>
+  (await api.post(`/learning/quiz-runs/${runId}/start`)).data;
+export const submitQuizQuestion = async (
+  runId: string,
+  questionId: string,
+  values: QuestionSubmitRequest,
+): Promise<AttemptResult> => (await api.post(`/learning/quiz-runs/${runId}/questions/${questionId}/submit`, values)).data;
+export const submitQuizPaper = async (runId: string, values: PaperSubmitRequest = {}): Promise<QuizRunView> =>
+  (await api.post(`/learning/quiz-runs/${runId}/submit`, values)).data;
+export const retryQuizRun = async (runId: string): Promise<QuizRunView> =>
+  (await api.post(`/learning/quiz-runs/${runId}/retry`)).data;
+export const retryAttemptGrading = async (attemptId: string): Promise<AttemptResult> =>
+  (await api.post(`/learning/attempts/${attemptId}/retry-grading`)).data;
+export const getMistakes = async (filters: MistakeFilters = {}): Promise<AssessmentPage<MistakeRecord>> =>
+  (await api.get('/learning/mistakes', { params: filters })).data;
+export const redoMistake = async (mistakeId: string, values: MistakeRedoRequest): Promise<MistakeRedoResult> =>
+  (await api.post(`/learning/mistakes/${mistakeId}/redo`, values)).data;
+export const getWeakKnowledge = async (filters: AssessmentListScope = {}): Promise<AssessmentPage<WeakKnowledgeState>> =>
+  (await api.get('/learning/weak-knowledge', { params: filters })).data;
+export const recalculateWeakKnowledge = async (scope: WeakKnowledgeRecalculationScope = {}): Promise<WeakKnowledgeRecalculation> =>
+  (await api.post('/learning/weak-knowledge/recalculate', scope)).data;
+export const getLearningTasks = async (filters: LearningTaskFilters = {}): Promise<AssessmentPage<LearningTask>> =>
+  (await api.get('/learning/tasks', { params: filters })).data;
+export const completeLearningTask = async (taskId: string): Promise<LearningTask> =>
+  (await api.post(`/learning/tasks/${taskId}/complete`)).data;
 export const getLearningReport = async (days = 7) => (await api.get('/learning/report', { params: { days } })).data;
 export const exportLearningData = async () => (await api.get('/learning/export')).data;
 export const createActivity = async (values: { workspace_id?: string; activity_type: string; title: string; duration_seconds?: number; payload?: object }) => (await api.post('/learning/activities', values)).data;

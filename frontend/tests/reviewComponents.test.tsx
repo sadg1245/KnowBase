@@ -7,6 +7,7 @@ import { CardLibrary } from '../src/components/review/CardLibrary';
 import { ReviewSessionPanel } from '../src/components/review/ReviewSessionPanel';
 import { ReviewResults } from '../src/components/review/ReviewResults';
 import type { Flashcard, ReviewSummary } from '../src/services/api';
+import type { LearningTask } from '../src/features/practice/types';
 import { createReviewSession, flipCard } from '../src/features/review/reviewSession';
 
 const card: Flashcard = {
@@ -29,13 +30,24 @@ const summary: ReviewSummary = {
   }],
 };
 
+const learningTask: LearningTask = {
+  id: 'task-1', workspace_id: 'workspace-1', knowledge_point_id: 'point-1', task_type: 'targeted_practice', title: '针对性练习',
+  path: '/practice?workspace=workspace-1&knowledge_point_id=point-1&mode=targeted', payload: {}, due_at: '2026-09-07T08:00:00Z',
+  priority: 80, status: 'pending', created_at: '2026-09-06T08:00:00Z', completed_at: null, knowledge_point_title: '遗忘曲线',
+  document_id: null, source_page: null, source_heading: null,
+};
+
 test('review overview renders every required metric and start action', () => {
   const html = renderToStaticMarkup(
-    <ReviewOverview summary={summary} onStart={() => undefined} onManage={() => undefined} />,
+    <ReviewOverview summary={summary} tasks={[learningTask]} onStart={() => undefined} onManage={() => undefined} onTask={() => undefined} onCompleteTask={() => undefined} />,
   );
   for (const label of ['今日待复习', '新卡片', '今日完成', '预计时长', '连续学习', '逾期卡片', '薄弱知识点', '开始复习']) {
     assert.match(html, new RegExp(label));
   }
+  assert.match(html, /近期学习任务/);
+  assert.match(html, /针对性练习/);
+  assert.match(html, /href="\/practice\?workspace=workspace-1&amp;knowledge_point_id=point-1&amp;mode=targeted"/);
+  assert.ok(html.indexOf('遗忘曲线') < html.indexOf('针对性练习'), 'backend weak-point order and existing weak section stay ahead of tasks');
 });
 
 test('card library exposes filtering and CRUD actions', () => {

@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.models  # noqa: F401
+from app.models.assessment import WeakKnowledgeState
 from app.models.base import Base
 from app.models.learning import Flashcard, KnowledgePoint, ReviewLog, StudyActivity
 from app.models.workspace import Workspace
@@ -133,6 +134,29 @@ class ReviewTransactionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(card.interval_days, 1)
             self.assertEqual(card.review_count, 4)
             self.assertEqual(card.total_review_seconds, 13)
+
+    async def test_low_review_recalculates_only_the_linked_weakness_before_commit(self):
+        fixed_now = datetime(2026, 8, 29, 4, 0, tzinfo=timezone.utc)
+        async with self.sessions() as db:
+            workspace = Workspace(name="Weak link", slug="weak-link")
+            point = KnowledgePoint(workspace_id="pending", title="Ratios", summary="R")
+            db.add(workspace)
+            await db.flush()
+            point.workspace_id = workspace.id
+            db.add(point)
+            await db.flush()
+            card = Flashcard(
+                workspace_id=workspace.id, knowledge_point_id=point.id,
+                front="Ratio", back="A",
+            )
+            db.add(card)
+            await db.flush()
+
+            await apply_card_review(db, card, rating=1, duration_seconds=8, now=fixed_now)
+
+            state = (await db.execute(select(WeakKnowledgeState))).scalar_one()
+            self.assertEqual(state.knowledge_point_id, point.id)
+            self.assertGreater(state.review_feedback_component, 90)
 
 
 if __name__ == "__main__":

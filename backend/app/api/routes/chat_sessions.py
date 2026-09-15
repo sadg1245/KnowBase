@@ -220,7 +220,9 @@ async def create_message_mistake(message_id: str, db: AsyncSession = Depends(get
         )
         db.add(quiz)
         await db.flush()
-    return {"id": quiz.id, "prompt": quiz.prompt, "question_type": quiz.question_type}
+    from app.services.assessment_workflows import ensure_chat_mistake
+    mistake = await ensure_chat_mistake(db, quiz, message.sources)
+    return {"id": quiz.id, "prompt": quiz.prompt, "question_type": quiz.question_type, "mistake_id": mistake.id}
 
 
 @router.put("/messages/{message_id}/feedback")

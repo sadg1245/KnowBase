@@ -5,13 +5,18 @@ import {
   PlusCircleOutlined, ReadOutlined, RightOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import type { ReviewSummary } from '../../services/api';
+import type { LearningTask } from '../../features/practice/types';
 
 const { Text, Title } = Typography;
 
 interface ReviewOverviewProps {
   summary: ReviewSummary;
+  tasks?: LearningTask[];
   onStart: () => void;
   onManage: () => void;
+  onTask?: (path: string) => void;
+  onCompleteTask?: (taskId: string) => void;
+  completingTaskIds?: ReadonlySet<string>;
 }
 
 const metrics = (summary: ReviewSummary) => [
@@ -23,7 +28,7 @@ const metrics = (summary: ReviewSummary) => [
   { label: '逾期卡片', value: summary.overdue_count, suffix: '张', icon: <WarningOutlined /> },
 ];
 
-export const ReviewOverview: React.FC<ReviewOverviewProps> = ({ summary, onStart, onManage }) => {
+export const ReviewOverview: React.FC<ReviewOverviewProps> = ({ summary, tasks = [], onStart, onManage, onTask, onCompleteTask, completingTaskIds }) => {
   const targetPercent = Math.min(100, Math.round((summary.completed_today / Math.max(1, summary.daily_target)) * 100));
   return <div className="review-overview">
     <div className="review-hero paper-card">
@@ -61,6 +66,20 @@ export const ReviewOverview: React.FC<ReviewOverviewProps> = ({ summary, onStart
           <div className="review-weak-progress"><Progress percent={Math.round(point.mastery * 100)} showInfo={false} strokeColor="#d59a42" /><Text>{Math.round(point.mastery * 100)}%</Text></div>
         </div>)}
       </div> : <div className="review-inline-empty">完成几次复习后，这里会显示需要巩固的知识点。</div>}
+    </section>
+
+    <section className="review-tasks paper-card">
+      <div className="review-section-heading">
+        <div><div className="page-eyebrow">NEXT · 可完成的巩固安排</div><Title level={3}>近期学习任务</Title></div>
+        <Text type="secondary">路径与截止时间来自你的学习记录</Text>
+      </div>
+      {tasks.length ? <div className="review-task-list">{tasks.map(task => <article key={task.id}>
+        <div><Text strong>{task.title}</Text><small>{task.knowledge_point_title || '综合复习'} · {task.due_at ? `截止 ${new Date(task.due_at).toLocaleString('zh-CN')}` : '未设截止时间'} · 待完成</small></div>
+        <div>
+          {task.path ? <Button href={task.path} onClick={event => { event.preventDefault(); onTask?.(task.path!); }}>开始任务</Button> : null}
+          <Button type="link" loading={completingTaskIds?.has(task.id)} onClick={() => onCompleteTask?.(task.id)}>标记完成</Button>
+        </div>
+      </article>)}</div> : <div className="review-inline-empty">今天没有到期的学习任务，可以专注完成卡片复习。</div>}
     </section>
   </div>;
 };

@@ -9,6 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.learning import Flashcard, KnowledgePoint, ReviewLog, StudyActivity, UserProfile
+from app.models.assessment import WeakKnowledgeState
+from app.services.weakness_service import recalculate_knowledge_point, upsert_weak_learning_tasks
 
 
 ALGORITHM_VERSION = "simple_v1"
@@ -65,7 +67,15 @@ async def build_review_summary(
     current = now or datetime.now(timezone.utc)
     day_start, day_end = local_day_bounds(current, timezone_offset_minutes)
     due_cards = (
-        await db.execute(select(Flashcard).where(Flashcard.due_at <= current).order_by(Flashcard.due_at.asc()))
+        await db.execute(
+            select(Flashcard)
+            .outerjoin(
+                WeakKnowledgeState,
+                WeakKnowledgeState.knowledge_point_id == Flashcard.knowledge_point_id,
+            )
+            .where(Flashcard.due_at <= current)
+            .order_by(WeakKnowledgeState.weakness_score.desc().nullslast(), Flashcard.due_at.asc())
+        )
     ).scalars().all()
     due_count = len(due_cards)
     new_count = sum(1 for card in due_cards if card.review_count == 0)
@@ -196,6 +206,9 @@ async def apply_card_review(
         created_at=reviewed_at,
     ))
     await db.flush()
+    if card.knowledge_point_id:
+        state = await recalculate_knowledge_point(db, card.knowledge_point_id, reviewed_at)
+        await upsert_weak_learning_tasks(db, state, reviewed_at)
     return {
         "previous_mastery": previous_mastery,
         "next_mastery": next_mastery,

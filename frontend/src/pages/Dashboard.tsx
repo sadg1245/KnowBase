@@ -1,17 +1,73 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { App, Button, Col, Empty, Progress, Row, Skeleton, Space, Tag, Typography } from 'antd';
 import { ArrowRightOutlined, BookOutlined, ClockCircleOutlined, FireOutlined, ReadOutlined, TrophyOutlined } from '@ant-design/icons';
-import { getLearningDashboard, LearningDashboard } from '../services/api';
+import { completeLearningTask, getLearningDashboard } from '../services/api';
+import type { DashboardTask, LearningDashboard } from '../services/api';
+import { createTaskCompletionCoordinator, type TaskCompletionCoordinator } from '../features/practice/learningLoop';
 
 const { Title, Text } = Typography;
+
+interface TodayTaskListProps {
+  tasks: DashboardTask[];
+  completingIds?: ReadonlySet<string>;
+  onNavigate: (path: string) => void;
+  onComplete: (taskId: string) => void;
+}
+
+export const TodayTaskList: React.FC<TodayTaskListProps> = ({ tasks, completingIds, onNavigate, onComplete }) => <div className="learning-trail dashboard-task-list">
+  {tasks.map((task, index) => {
+    const durable = Boolean(task.id);
+    return <article key={task.id || `${task.type}-${task.path}-${index}`} className="dashboard-task-row">
+      <span className="trail-dot" />
+      <div className="dashboard-task-copy"><Text strong>{task.title}</Text><small>
+        {typeof task.count === 'number' ? (task.count ? `还有 ${task.count} 项等待你` : '今天已经完成')
+          : `${task.status === 'completed' ? '已完成' : '待完成'}${task.due_at ? ` · 截止 ${new Date(task.due_at).toLocaleString('zh-CN')}` : ''}`}
+      </small></div>
+      <div className="dashboard-task-actions">
+        {task.path ? <Button type="link" href={task.path} onClick={event => { event.preventDefault(); onNavigate(task.path!); }}>前往 <ArrowRightOutlined /></Button> : null}
+        {durable && task.status !== 'completed' ? <Button size="small" loading={completingIds?.has(task.id!)} onClick={() => onComplete(task.id!)}>标记完成</Button> : null}
+      </div>
+    </article>;
+  })}
+</div>;
 
 const Dashboard: React.FC = () => {
   const { message } = App.useApp();
   const navigate = useNavigate();
   const [data, setData] = useState<LearningDashboard | null>(null);
   const [loading, setLoading] = useState(true);
-  useEffect(() => { getLearningDashboard().then(setData).catch(() => message.error('学习数据暂时没有加载成功')).finally(() => setLoading(false)); }, []);
+  const [completingIds, setCompletingIds] = useState<ReadonlySet<string>>(() => new Set());
+  const requestVersion = useRef(0);
+  const completionCoordinator = useRef<TaskCompletionCoordinator | null>(null);
+  const loadDashboard = useCallback(async () => {
+    const version = ++requestVersion.current;
+    setLoading(true);
+    try {
+      const next = await getLearningDashboard();
+      if (version === requestVersion.current) setData(next);
+    } catch {
+      if (version === requestVersion.current) message.error('学习数据暂时没有加载成功');
+    } finally {
+      if (version === requestVersion.current) setLoading(false);
+    }
+  }, [message]);
+  useEffect(() => {
+    const coordinator = createTaskCompletionCoordinator(setCompletingIds);
+    completionCoordinator.current = coordinator;
+    void loadDashboard();
+    return () => {
+      requestVersion.current += 1;
+      coordinator.dispose();
+      if (completionCoordinator.current === coordinator) completionCoordinator.current = null;
+    };
+  }, [loadDashboard]);
+  const completeTask = (taskId: string) => completionCoordinator.current?.run(
+    taskId,
+    () => completeLearningTask(taskId),
+    async () => { message.success('学习任务已完成'); await loadDashboard(); },
+    async () => { message.error('任务完成状态没有保存，请重试'); },
+  );
   const greeting = useMemo(() => new Date().getHours() < 12 ? '早上好' : new Date().getHours() < 18 ? '下午好' : '晚上好', []);
   if (loading) return <Skeleton active paragraph={{ rows: 10 }} />;
   const stats = data?.stats;
@@ -32,12 +88,8 @@ const Dashboard: React.FC = () => {
             <div><Text type="secondary">今日节奏</Text><Title level={2} style={{ margin:'4px 0 0' }}><span className="metric-number">{stats?.today_minutes || 0}</span> <small style={{fontSize:15,fontWeight:400}}>分钟</small></Title></div>
             <div style={{ width:72 }}><Progress type="circle" size={72} percent={completion} strokeColor="#167d8d" trailColor="#dcebea" format={() => `${completion}%`} /></div>
           </Space>
-          <div className="learning-trail" style={{ marginTop:28 }}>
-            {(data?.today_tasks || []).map((task, index) => <button key={task.type} onClick={() => navigate(task.path)} style={{ display:'flex',width:'100%',border:0,background:'transparent',padding:'0 0 22px',textAlign:'left',cursor:'pointer',position:'relative' }}>
-              <span className="trail-dot" style={{top:4}} /><span style={{flex:1}}><Text strong>{task.title}</Text><br/><Text type="secondary">{task.count ? `还有 ${task.count} 项等待你` : '今天已经完成'}</Text></span><ArrowRightOutlined style={{color:'#78909b',marginTop:6}} />
-            </button>)}
-            <button onClick={() => navigate('/knowledge')} style={{ display:'flex',width:'100%',border:0,background:'transparent',padding:0,textAlign:'left',cursor:'pointer',position:'relative' }}><span className="trail-dot" style={{top:4,borderColor:'#f0a35b'}}/><span style={{flex:1}}><Text strong>继续最近的知识库</Text><br/><Text type="secondary">从上次停下的地方接着学</Text></span><ArrowRightOutlined style={{color:'#78909b',marginTop:6}} /></button>
-          </div>
+          <div style={{ marginTop:28 }}><TodayTaskList tasks={data?.today_tasks || []} completingIds={completingIds} onNavigate={path => navigate(path)} onComplete={taskId => void completeTask(taskId)} /></div>
+          <Button className="dashboard-continue" type="link" onClick={() => navigate('/knowledge')}>继续最近的知识库 <ArrowRightOutlined /></Button>
         </section>
       </Col>
       <Col xs={24} lg={10}>

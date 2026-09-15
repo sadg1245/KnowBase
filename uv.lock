@@ -238,7 +238,7 @@ requires-dist = [
     { name = "httpx", specifier = "==0.27.2" },
     { name = "jieba", specifier = "==0.42.1" },
     { name = "lark-oapi", specifier = "==1.4.0" },
-    { name = "litellm", specifier = "==1.48.0" },
+    { name = "litellm", specifier = "==1.53.1" },
     { name = "loguru", specifier = "==0.7.2" },
     { name = "markdown", specifier = "==3.7" },
     { name = "openpyxl", specifier = "==3.1.5" },
@@ -1242,7 +1242,7 @@ wheels = [
 
 [[package]]
 name = "litellm"
-version = "1.48.0"
+version = "1.53.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1257,9 +1257,9 @@ dependencies = [
     { name = "tiktoken" },
     { name = "tokenizers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/85/cf/ec69c348c6f16148a55657f3bd63215e965028441c0f322ae8edf9c1210a/litellm-1.48.0.tar.gz", hash = "sha256:31a9b8a25a9daf44c24ddc08bf74298da920f2c5cea44135e5061278d0aa6fc9", size = 8394537, upload-time = "2024-09-24T02:37:49.218Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/70/fc/fb491dc60307cd1a8826050fbdeeef84e560000a3a2593430887f0b44598/litellm-1.53.1.tar.gz", hash = "sha256:20bb2f98a4613c4c7b86e9186df84c27d7166eca65a7b58584c1e061a29f7519", size = 6170999, upload-time = "2024-11-28T05:36:34.058Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/37/2b/6a42747557dc557e71d1e0664c4d5a814b08cda0589213921bb51c64c5e4/litellm-1.48.0-py3-none-any.whl", hash = "sha256:7765e8a92069778f5fc66aacfabd0e2f8ec8d74fb117f5e475567d89b0d376b9", size = 8723245, upload-time = "2024-09-24T02:37:45.822Z" },
+    { url = "https://files.pythonhosted.org/packages/d5/a6/8a3b430d89b9935ef6d1e88e565f631038d3124788e6effa3c0c9ad4756e/litellm-1.53.1-py3-none-any.whl", hash = "sha256:7a0b480c0bd4f9236910a426d8d8f46a517af4daae2a61d57e42bff4b4daf9b0", size = 6418676, upload-time = "2024-11-28T05:36:31.154Z" },
 ]
 
 [[package]]

@@ -132,7 +132,7 @@ Expected: import failure for `assessment_scoring`.
 
 - [ ] **Step 3: Implement normalization and all four objective graders**
 
-Implement single choice and true/false scalar comparison, multiple-choice set comparison, and fill-blank positional comparison against one or more accepted answers per blank. Normalize Unicode whitespace, ASCII case, and surrounding Chinese/ASCII punctuation without using fuzzy semantic matching.
+Implement single choice and true/false scalar comparison, multiple-choice set comparison, and fill-blank positional comparison against one or more accepted answers per blank. Normalize Unicode whitespace, ASCII case, surrounding non-semantic Chinese sentence punctuation and detached ASCII sentence punctuation without fuzzy semantic matching. Preserve signs, operators, decimal points, brackets and identifier punctuation such as C++ and C#.
 
 - [ ] **Step 4: Implement mistake and timer state machines**
 
@@ -311,7 +311,7 @@ async def test_recalculation_keeps_one_pending_task_per_point_and_type(self):
     await upsert_weak_learning_tasks(self.db, state, NOW)
     await upsert_weak_learning_tasks(self.db, state, NOW)
     rows = (await self.db.execute(select(LearningTask))).scalars().all()
-    self.assertEqual(len(rows), 5)
+    self.assertEqual(len(rows), 2)
 ```
 
 - [ ] **Step 2: Run weakness tests and verify RED**
@@ -425,7 +425,7 @@ git commit -m "feat: expose phase five assessment APIs"
 
 **Interfaces:**
 - Produces TypeScript types matching all new API schemas.
-- Produces API functions `generateQuizSet`, `getQuizSet`, `createQuizRun`, `startQuizRun`, `submitQuizQuestion`, `submitQuizPaper`, `retryQuizRun`, `getMistakes`, `redoMistake`, `getWeakKnowledge`, `getLearningTasks`, and `completeLearningTask`.
+- Produces API functions `generateQuizSet`, `getQuizSet`, `createQuizRun`, `startQuizRun`, `submitQuizQuestion`, `submitQuizPaper`, `retryQuizRun`, `retryAttemptGrading`, `getMistakes`, `redoMistake`, `getWeakKnowledge`, `getLearningTasks`, and `completeLearningTask`.
 - Produces pure state functions `createPracticeSession`, `setAnswer`, `recordAttempt`, `remainingSeconds`, `unansweredQuestionIds`, and `practiceResults`.
 
 - [ ] **Step 1: Write failing state-machine tests**
@@ -636,7 +636,7 @@ Create a temporary database outside the repository with the pre-phase-five `quiz
 
 - [ ] **Step 5: Run desktop Playwright acceptance**
 
-Flow: `/practice` -> configure all requested fields -> generate a six-type strict-source paper -> start sequential mode -> answer one objective and one subjective question -> verify timer, answer, explanation, AI feedback, and source navigation -> intentionally miss a question -> verify it appears in the mistake notebook -> redo it twice correctly -> verify mastered status.
+Flow: `/practice` -> configure all requested fields -> generate a six-type strict-source paper -> start sequential mode -> answer one objective and one subjective question -> verify timer, answer, explanation, AI feedback, and source navigation -> intentionally miss a question -> verify it appears in the mistake notebook -> redo it twice correctly -> verify mastered status. Use Playwright route fixtures for the browser workflow unless a local no-cost model is already configured; AI provider behavior itself is proven by backend tests with injected completion functions, and verification must not consume a paid external model without explicit authorization.
 
 - [ ] **Step 6: Run weak-knowledge and review-link acceptance**
 

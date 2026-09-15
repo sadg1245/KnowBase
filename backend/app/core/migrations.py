@@ -57,6 +57,15 @@ async def run_compat_migrations(conn) -> None:
         },
         "quiz_questions": {
             "origin_message_id": "VARCHAR(36)",
+            "quiz_set_id": "VARCHAR(36)",
+            "document_id": "VARCHAR(36)",
+            "difficulty_level": "VARCHAR(20) NOT NULL DEFAULT 'medium'",
+            "answer_payload": "JSON",
+            "grading_rubric": "JSON",
+            "source_snapshot": "JSON NOT NULL DEFAULT '[]'",
+            "strict_sources": "BOOLEAN NOT NULL DEFAULT 0",
+            "generation_model": "VARCHAR(255)",
+            "position": "INTEGER NOT NULL DEFAULT 0",
         },
         "flashcards": {
             "origin_message_id": "VARCHAR(36)",
@@ -108,6 +117,32 @@ async def run_compat_migrations(conn) -> None:
     await conn.execute(text(
         "CREATE INDEX IF NOT EXISTS ix_flashcards_source_type ON flashcards(source_type)"
     ))
+    rows = await conn.execute(text("SELECT name FROM sqlite_master WHERE type = 'table'"))
+    tables = {row[0] for row in rows.fetchall()}
+    if "quiz_runs" in tables:
+        columns = {row[1] for row in (await conn.execute(text("PRAGMA table_info(quiz_runs)"))).fetchall()}
+        if "question_ids" not in columns:
+            await conn.execute(text("ALTER TABLE quiz_runs ADD COLUMN question_ids JSON"))
+    assessment_indexes = {
+        "quiz_questions": (
+            "CREATE INDEX IF NOT EXISTS ix_quiz_questions_quiz_set_id ON quiz_questions(quiz_set_id)",
+            "CREATE INDEX IF NOT EXISTS ix_quiz_questions_document_id ON quiz_questions(document_id)",
+        ),
+        "mistake_records": (
+            "CREATE INDEX IF NOT EXISTS ix_mistake_records_mastery_status ON mistake_records(mastery_status)",
+        ),
+        "weak_knowledge_states": (
+            "CREATE INDEX IF NOT EXISTS ix_weak_knowledge_states_weakness_score ON weak_knowledge_states(weakness_score)",
+        ),
+        "learning_tasks": (
+            "CREATE INDEX IF NOT EXISTS ix_learning_tasks_due_at ON learning_tasks(due_at)",
+            "CREATE INDEX IF NOT EXISTS ix_learning_tasks_status ON learning_tasks(status)",
+        ),
+    }
+    for table, statements in assessment_indexes.items():
+        if table in tables:
+            for statement in statements:
+                await conn.execute(text(statement))
     try:
         await conn.execute(text(
             "CREATE VIRTUAL TABLE IF NOT EXISTS document_chunks_fts USING fts5("

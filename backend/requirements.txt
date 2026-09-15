@@ -6,7 +6,7 @@ python-multipart==0.0.12
 pydantic==2.9.2
 pydantic-settings==2.5.2
 python-dotenv==1.0.1
-litellm==1.49.1
+litellm==1.53.1
 chromadb>=1.0.21
 sentence-transformers==3.1.1
 celery[redis]==5.4.0
