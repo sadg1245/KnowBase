@@ -22,6 +22,7 @@ from app.services.review_service import apply_card_review, build_review_summary,
 from app.services.weakness_service import weakness_priority_subquery
 from app.services import assessment_service, assessment_workflows
 from app.services.activity_service import append_card_created, append_mastery_change
+from app.services import goal_service
 from app.services.assessment_ai import AssessmentAIError
 from app.schemas.assessment import QuestionSubmitRequest
 from app.schemas.learning import (
@@ -102,14 +103,7 @@ def _quiz(row: QuizQuestion, reveal: bool = False, *, preserve_legacy_history: b
 
 
 async def _profile(db: AsyncSession) -> UserProfile:
-    result = await db.execute(select(UserProfile).limit(1))
-    profile = result.scalar_one_or_none()
-    if profile is None:
-        profile = UserProfile(display_name="学习者")
-        db.add(profile)
-        await db.flush()
-        await db.refresh(profile)
-    return profile
+    return await goal_service.get_or_create_profile(db)
 
 
 @router.get("/profile")
@@ -117,14 +111,27 @@ async def get_profile(db: AsyncSession = Depends(get_db)) -> dict:
     profile = await _profile(db)
     return {key: getattr(profile, key) for key in (
         "id", "display_name", "daily_goal_minutes", "daily_review_target",
-        "preferred_mode", "reminder_time",
+        "weekly_goal_days", "timezone_name", "preferred_mode", "reminder_time",
     )}
 
 
 @router.put("/profile")
 async def update_profile(payload: ProfileUpdate, db: AsyncSession = Depends(get_db)) -> dict:
     profile = await _profile(db)
-    for key, value in payload.model_dump(exclude_none=True).items():
+    values = payload.model_dump(exclude_none=True)
+    goal_fields = {key: value for key, value in values.items() if key in {
+        "daily_goal_minutes", "daily_review_target", "weekly_goal_days", "timezone_name"
+    }}
+    try:
+        if goal_fields:
+            profile = await goal_service.sync_legacy_profile_goals(
+                db, goal_fields, now=datetime.now(timezone.utc)
+            )
+    except goal_service.GoalValidationError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    for key, value in values.items():
+        if key in goal_fields:
+            continue
         setattr(profile, key, value)
     profile.updated_at = datetime.now(timezone.utc)
     await db.flush()

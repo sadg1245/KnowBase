@@ -26,6 +26,8 @@ class ProfileUpdate(BaseModel):
     display_name: Optional[str] = Field(None, min_length=1, max_length=80)
     daily_goal_minutes: Optional[int] = Field(None, ge=5, le=480)
     daily_review_target: Optional[int] = Field(None, ge=1, le=200)
+    weekly_goal_days: Optional[int] = Field(None, ge=1, le=7)
+    timezone_name: Optional[str] = Field(None, min_length=1, max_length=100)
     preferred_mode: Optional[str] = None
     reminder_time: Optional[str] = Field(None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
 

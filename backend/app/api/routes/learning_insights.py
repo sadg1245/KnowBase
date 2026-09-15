@@ -9,8 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
 from app.models.learning import StudyActivity, StudySession
-from app.schemas.insights import StudySessionFinish, StudySessionHeartbeat, StudySessionStart
-from app.services import study_session_service
+from app.schemas.insights import (
+    GlobalGoalsUpdate, StudySessionFinish, StudySessionHeartbeat, StudySessionStart,
+    WorkspaceGoalUpdate,
+)
+from app.services import goal_service, study_session_service
 
 
 router = APIRouter(prefix="/learning", tags=["learning-insights"])
@@ -49,6 +52,54 @@ def _activity(row: StudyActivity) -> dict:
         "occurred_at": _iso(row.occurred_at),
         "created_at": _iso(row.created_at),
     }
+
+
+def _goal_collection(result: dict) -> dict:
+    return {
+        "timezone_name": result["timezone_name"],
+        "global": {metric: result[metric] for metric in goal_service.GLOBAL_METRICS},
+        "workspaces": result["workspace_goals"],
+    }
+
+
+def _goal_error(exc: Exception):
+    if isinstance(exc, goal_service.GoalNotFoundError):
+        raise HTTPException(404, "Learning goal not found") from exc
+    raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/goals")
+async def get_learning_goals(db: AsyncSession = Depends(get_db)) -> dict:
+    return _goal_collection(await goal_service.get_goals(db, now=datetime.now(timezone.utc)))
+
+
+@router.put("/goals/global")
+async def put_global_goals(payload: GlobalGoalsUpdate, db: AsyncSession = Depends(get_db)) -> dict:
+    try:
+        result = await goal_service.update_global_goals(db, payload, now=datetime.now(timezone.utc))
+    except goal_service.GoalValidationError as exc:
+        _goal_error(exc)
+    return _goal_collection(result)
+
+
+@router.put("/goals/workspaces/{workspace_id}")
+async def put_workspace_goal(
+    workspace_id: str, payload: WorkspaceGoalUpdate, db: AsyncSession = Depends(get_db)
+) -> dict:
+    try:
+        return await goal_service.update_workspace_goal(
+            db, workspace_id, payload, now=datetime.now(timezone.utc)
+        )
+    except (goal_service.GoalValidationError, goal_service.GoalNotFoundError) as exc:
+        _goal_error(exc)
+
+
+@router.delete("/goals/workspaces/{workspace_id}")
+async def delete_workspace_goal(workspace_id: str, db: AsyncSession = Depends(get_db)) -> dict:
+    try:
+        return await goal_service.delete_workspace_goal(db, workspace_id, now=datetime.now(timezone.utc))
+    except goal_service.GoalNotFoundError as exc:
+        _goal_error(exc)
 
 
 async def _call(operation):

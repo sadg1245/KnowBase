@@ -1,6 +1,7 @@
 """HTTP contracts for phase-six learning insight endpoints."""
 
 import unittest
+from datetime import date
 
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
@@ -117,6 +118,55 @@ class LearningInsightsAPITests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(second.json()["items"]), 1)
         self.assertIsNone(second.json()["next_cursor"])
+
+    async def test_goal_routes_validate_update_list_and_preserve_deleted_workspace_goal(self):
+        invalid = await self.client.put("/api/learning/goals/global", json={
+            "daily_minutes": 40,
+            "daily_reviews": 12,
+            "weekly_days": 6,
+            "target_completion_date": "2026-12-31",
+            "timezone_name": "Invalid/Zone",
+        })
+        self.assertEqual(invalid.status_code, 422, invalid.text)
+
+        updated = await self.client.put("/api/learning/goals/global", json={
+            "daily_minutes": 40,
+            "daily_reviews": 12,
+            "weekly_days": 6,
+            "target_completion_date": "2099-12-31",
+            "timezone_name": "Asia/Shanghai",
+        })
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(updated.json()["global"]["daily_minutes"]["target"], 40)
+
+        workspace_goal = await self.client.put(
+            f"/api/learning/goals/workspaces/{self.workspace.id}",
+            json={"target_mastery": 80, "target_date": "2099-12-31"},
+        )
+        self.assertEqual(workspace_goal.status_code, 200, workspace_goal.text)
+        self.assertEqual(workspace_goal.json()["workspace_id"], self.workspace.id)
+        deleted = await self.client.delete(f"/api/learning/goals/workspaces/{self.workspace.id}")
+        self.assertEqual(deleted.status_code, 200, deleted.text)
+        self.assertFalse(deleted.json()["is_active"])
+
+        listed = await self.client.get("/api/learning/goals")
+        self.assertEqual(listed.status_code, 200, listed.text)
+        self.assertEqual(listed.json()["timezone_name"], "Asia/Shanghai")
+
+    async def test_legacy_profile_goal_fields_stay_in_sync(self):
+        response = await self.client.put("/api/learning/profile", json={
+            "daily_goal_minutes": 35,
+            "daily_review_target": 9,
+            "weekly_goal_days": 4,
+            "timezone_name": "Asia/Tokyo",
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["weekly_goal_days"], 4)
+        self.assertEqual(response.json()["timezone_name"], "Asia/Tokyo")
+        goals = (await self.client.get("/api/learning/goals")).json()
+        self.assertEqual(goals["global"]["daily_minutes"]["target"], 35)
+        self.assertEqual(goals["global"]["daily_reviews"]["target"], 9)
+        self.assertEqual(goals["global"]["weekly_days"]["target"], 4)
 
 
 if __name__ == "__main__":
