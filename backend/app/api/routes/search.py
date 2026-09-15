@@ -329,6 +329,8 @@ async def chat(
         generation_status="complete",
     )
     db.add(user_msg)
+    await db.flush()
+    await service.record_question(session, user_msg)
     title_changed = await service.touch_session(session, payload.question)
     await db.commit()
 

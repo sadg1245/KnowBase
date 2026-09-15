@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.assessment import LearningTask, MistakeRecord, QuizAttempt, WeakKnowledgeState
 from app.models.learning import Flashcard, KnowledgePoint, QuizQuestion, ReviewLog, StudyActivity
+from app.services.activity_service import append_weakness_change, weakness_category
 
 
 ATTEMPT_LIMIT = 20
@@ -271,6 +272,8 @@ async def recalculate_knowledge_point(
     state = (await db.execute(
         select(WeakKnowledgeState).where(WeakKnowledgeState.knowledge_point_id == point.id)
     )).scalar_one_or_none()
+    before_score = float(state.weakness_score) if state is not None else None
+    before_category = weakness_category(before_score)
     if state is None:
         state = WeakKnowledgeState(knowledge_point_id=point.id, workspace_id=point.workspace_id)
         db.add(state)
@@ -284,6 +287,14 @@ async def recalculate_knowledge_point(
     state.recommended_actions = _recommended_actions(point, score)
     state.calculated_at = current
     await db.flush()
+    await append_weakness_change(
+        db,
+        state,
+        before_score=before_score,
+        before_category=before_category,
+        reason="recalculation",
+        occurred_at=current,
+    )
     return state
 
 

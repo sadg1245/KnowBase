@@ -104,10 +104,24 @@ class ReviewTransactionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(review.previous_status, "learning")
             self.assertEqual(review.next_status, "mastered")
             self.assertEqual(review.algorithm_version, "simple_v1")
-            activity = (await db.execute(select(StudyActivity))).scalar_one()
+            activity = (await db.execute(select(StudyActivity).where(
+                StudyActivity.activity_type == "review_completed"
+            ))).scalar_one()
             self.assertEqual(activity.duration_seconds, 17)
             self.assertEqual(activity.payload["rating"], 3)
             self.assertEqual(activity.payload["card_id"], card.id)
+            self.assertEqual(activity.source_type, "review_log")
+            self.assertEqual(activity.source_id, review.id)
+            self.assertEqual(change["review_id"], review.id)
+            evidence = (await db.execute(select(StudyActivity).where(
+                StudyActivity.activity_type == "mastery_changed"
+            ))).scalar_one()
+            self.assertEqual(evidence.payload["before_mastery"], 0.70)
+            self.assertEqual(evidence.payload["after_mastery"], 0.82)
+            milestone = (await db.execute(select(StudyActivity).where(
+                StudyActivity.activity_type == "knowledge_mastered"
+            ))).scalar_one()
+            self.assertEqual(milestone.source_id, point.id)
 
     async def test_forgotten_unlinked_card_clamps_mastery_and_stays_learning(self):
         fixed_now = datetime(2026, 8, 29, 4, 0, tzinfo=timezone.utc)

@@ -21,6 +21,7 @@ from app.services.learning_content import LearningGenerationError, generate_docu
 from app.services.review_service import apply_card_review, build_review_summary, schedule_review
 from app.services.weakness_service import weakness_priority_subquery
 from app.services import assessment_service, assessment_workflows
+from app.services.activity_service import append_card_created, append_mastery_change
 from app.services.assessment_ai import AssessmentAIError
 from app.schemas.assessment import QuestionSubmitRequest
 from app.schemas.learning import (
@@ -351,6 +352,7 @@ async def create_point(payload: KnowledgePointCreate, db: AsyncSession = Depends
 async def update_point(point_id: str, payload: KnowledgePointUpdate, db: AsyncSession = Depends(get_db)) -> dict:
     row = (await db.execute(select(KnowledgePoint).where(KnowledgePoint.id == point_id))).scalar_one_or_none()
     if not row: raise HTTPException(404, "Knowledge point not found")
+    before_mastery, before_status = row.mastery, row.mastery_status
     values = payload.model_dump(exclude_none=True)
     explicit_status = "mastery_status" in payload.model_fields_set
     for key, value in values.items(): setattr(row, key, value)
@@ -358,7 +360,12 @@ async def update_point(point_id: str, payload: KnowledgePointUpdate, db: AsyncSe
         row.mastery = 1.0
     elif payload.mastery is not None and not explicit_status:
         row.mastery_status = "mastered" if payload.mastery >= 1 else ("learning" if payload.mastery > 0 else "not_started")
-    await db.flush(); return _point(row)
+    await db.flush()
+    await append_mastery_change(
+        db, row, before_mastery=before_mastery, before_status=before_status,
+        reason="manual_update", source_type="knowledge_point", source_id=f"manual:{row.updated_at.isoformat()}",
+    )
+    return _point(row)
 
 
 @router.post("/knowledge-points/merge")
@@ -449,7 +456,7 @@ async def point_to_card(point_id: str, db: AsyncSession = Depends(get_db)) -> di
         mastery=point.mastery,
         mastery_status=point.mastery_status,
     )
-    db.add(card); await db.flush(); await db.refresh(card)
+    db.add(card); await db.flush(); await append_card_created(db, card); await db.refresh(card)
     return _card(card)
 
 
@@ -497,6 +504,7 @@ async def generate_workspace_cards(
         )
         db.add(card)
         await db.flush()
+        await append_card_created(db, card)
         created.append(_card(card))
     return {"created_count": len(created), "cards": created}
 
@@ -545,7 +553,7 @@ async def create_card(payload: FlashcardCreate, db: AsyncSession = Depends(get_d
     values = payload.model_dump()
     values.update(source_type="manual", source_snapshot=None, knowledge_point_id=None)
     row = Flashcard(**values)
-    db.add(row); await db.flush(); await db.refresh(row); return _card(row)
+    db.add(row); await db.flush(); await append_card_created(db, row); await db.refresh(row); return _card(row)
 
 
 @router.post("/cards/from-selection", status_code=201)
@@ -570,7 +578,7 @@ async def selection_to_card(payload: FlashcardSelectionCreate, db: AsyncSession 
         tags=payload.tags,
         difficulty=payload.difficulty,
     )
-    db.add(row); await db.flush(); await db.refresh(row)
+    db.add(row); await db.flush(); await append_card_created(db, row); await db.refresh(row)
     return _card(row)
 
 

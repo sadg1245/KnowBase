@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat import ChatSession
 from app.models.conversation import Conversation
+from app.services.activity_service import append_activity
 
 
 SESSION_MODES = {"direct", "simple", "deep", "socratic", "feynman", "quiz"}
@@ -108,6 +109,25 @@ class ConversationService:
         session.updated_at = now
         await self.db.flush()
         return title_changed
+
+    async def record_question(self, session: ChatSession, message: Conversation):
+        """Record one persisted user question without copying its content."""
+        return await append_activity(
+            self.db,
+            event_key=f"activity:question:{message.id}",
+            activity_type="question_asked",
+            title="发起了一次学习提问",
+            workspace_id=session.workspace_id,
+            source_type="conversation_message",
+            source_id=message.id,
+            payload={
+                "question_length": len(message.content),
+                "mode": message.mode or session.preferred_mode,
+                "session_id": session.id,
+                "document_ids": list(session.selected_document_ids or []),
+            },
+            occurred_at=message.created_at,
+        )
 
     async def messages(self, session_id: str) -> list[Conversation]:
         if await self.get_session(session_id) is None:

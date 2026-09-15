@@ -67,3 +67,116 @@ async def append_activity(
 
 def compatible_activity_type(value: str) -> str:
     return {"review": "review_completed", "quiz": "quiz_completed"}.get(value, value)
+
+
+async def append_card_created(db: AsyncSession, card, *, occurred_at: datetime | None = None) -> StudyActivity:
+    return await append_activity(
+        db,
+        event_key=f"activity:card:{card.id}",
+        activity_type="card_created",
+        title="创建了一张知识卡片",
+        workspace_id=card.workspace_id,
+        source_type="flashcard",
+        source_id=card.id,
+        payload={
+            "knowledge_point_id": card.knowledge_point_id,
+            "card_source_type": card.source_type,
+        },
+        occurred_at=occurred_at,
+    )
+
+
+async def append_mastery_change(
+    db: AsyncSession,
+    point,
+    *,
+    before_mastery: float,
+    before_status: str,
+    reason: str,
+    source_type: str,
+    source_id: str,
+    occurred_at: datetime | None = None,
+) -> list[StudyActivity]:
+    after_mastery = float(point.mastery)
+    after_status = point.mastery_status
+    if before_mastery == after_mastery and before_status == after_status:
+        return []
+    timestamp = occurred_at or datetime.now(timezone.utc)
+    payload = {
+        "knowledge_point_id": point.id,
+        "before_mastery": before_mastery,
+        "after_mastery": after_mastery,
+        "before_status": before_status,
+        "after_status": after_status,
+        "reason": reason,
+    }
+    evidence = await append_activity(
+        db,
+        event_key=f"evidence:mastery:{point.id}:{source_type}:{source_id}",
+        activity_type="mastery_changed",
+        title=f"知识点掌握度发生变化：{point.title}",
+        workspace_id=point.workspace_id,
+        source_type=source_type,
+        source_id=source_id,
+        payload=payload,
+        occurred_at=timestamp,
+    )
+    rows = [evidence]
+    if before_status != "mastered" and after_status == "mastered":
+        rows.append(await append_activity(
+            db,
+            event_key=f"activity:mastered:{point.id}:{source_type}:{source_id}",
+            activity_type="knowledge_mastered",
+            title=f"掌握了知识点：{point.title}",
+            workspace_id=point.workspace_id,
+            source_type="knowledge_point",
+            source_id=point.id,
+            payload=payload,
+            occurred_at=timestamp,
+        ))
+    return rows
+
+
+def weakness_category(score: float | None) -> str | None:
+    if score is None:
+        return None
+    if score >= 60:
+        return "weak"
+    if score >= 30:
+        return "watch"
+    return "stable"
+
+
+async def append_weakness_change(
+    db: AsyncSession,
+    state,
+    *,
+    before_score: float | None,
+    before_category: str | None,
+    reason: str,
+    occurred_at: datetime | None = None,
+) -> StudyActivity | None:
+    after_score = float(state.weakness_score)
+    after_category = weakness_category(after_score)
+    if before_score == after_score and before_category == after_category:
+        return None
+    timestamp = occurred_at or datetime.now(timezone.utc)
+    key_time = timestamp.astimezone(timezone.utc).isoformat()
+    return await append_activity(
+        db,
+        event_key=f"evidence:weakness:{state.knowledge_point_id}:{key_time}:{after_score}",
+        activity_type="weakness_changed",
+        title="知识点薄弱度发生变化",
+        workspace_id=state.workspace_id,
+        source_type="weak_knowledge_state",
+        source_id=state.id,
+        payload={
+            "knowledge_point_id": state.knowledge_point_id,
+            "before_score": before_score,
+            "after_score": after_score,
+            "before_category": before_category,
+            "after_category": after_category,
+            "reason": reason,
+        },
+        occurred_at=timestamp,
+    )

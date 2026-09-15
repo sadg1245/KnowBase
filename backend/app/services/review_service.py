@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.learning import Flashcard, KnowledgePoint, ReviewLog, StudyActivity, UserProfile
+from app.services.activity_service import append_activity, append_mastery_change
 from app.models.assessment import WeakKnowledgeState
 from app.services.weakness_service import recalculate_knowledge_point, upsert_weak_learning_tasks
 
@@ -176,15 +177,20 @@ async def apply_card_review(
     card.algorithm_version = ALGORITHM_VERSION
     card.updated_at = reviewed_at
 
+    point = None
+    point_previous_mastery = None
+    point_previous_status = None
     if card.knowledge_point_id:
         point = (
             await db.execute(select(KnowledgePoint).where(KnowledgePoint.id == card.knowledge_point_id))
         ).scalar_one_or_none()
         if point:
+            point_previous_mastery = point.mastery
+            point_previous_status = point.mastery_status
             point.mastery = mastery_after_review(point.mastery, rating)
             point.mastery_status = mastery_status_for(point.mastery, next_review_count)
 
-    db.add(ReviewLog(
+    review = ReviewLog(
         card_id=card.id,
         rating=rating,
         previous_interval=previous_interval,
@@ -196,16 +202,32 @@ async def apply_card_review(
         next_status=next_status,
         algorithm_version=ALGORITHM_VERSION,
         reviewed_at=reviewed_at,
-    ))
-    db.add(StudyActivity(
-        workspace_id=card.workspace_id,
-        activity_type="review",
-        title="完成了一张知识卡复习",
-        duration_seconds=duration,
-        payload={"rating": rating, "card_id": card.id},
-        created_at=reviewed_at,
-    ))
+    )
+    db.add(review)
     await db.flush()
+    await append_activity(
+        db,
+        event_key=f"activity:review:{review.id}",
+        activity_type="review_completed",
+        title="完成了一张知识卡复习",
+        workspace_id=card.workspace_id,
+        source_type="review_log",
+        source_id=review.id,
+        duration_seconds=duration,
+        payload={"rating": rating, "card_id": card.id, "knowledge_point_id": card.knowledge_point_id},
+        occurred_at=reviewed_at,
+    )
+    if point is not None and point_previous_mastery is not None and point_previous_status is not None:
+        await append_mastery_change(
+            db,
+            point,
+            before_mastery=point_previous_mastery,
+            before_status=point_previous_status,
+            reason="review",
+            source_type="review_log",
+            source_id=review.id,
+            occurred_at=reviewed_at,
+        )
     if card.knowledge_point_id:
         state = await recalculate_knowledge_point(db, card.knowledge_point_id, reviewed_at)
         await upsert_weak_learning_tasks(db, state, reviewed_at)
@@ -217,4 +239,5 @@ async def apply_card_review(
         "previous_interval": previous_interval,
         "next_interval": next_interval,
         "duration_seconds": duration,
+        "review_id": review.id,
     }

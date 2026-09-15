@@ -550,7 +550,9 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
             now=NOW + timedelta(seconds=12),
         )
         mistake = (await self.db.execute(select(MistakeRecord))).scalar_one()
-        activity = (await self.db.execute(select(StudyActivity))).scalar_one()
+        activity = (await self.db.execute(select(StudyActivity).where(
+            StudyActivity.activity_type == "quiz_completed"
+        ))).scalar_one()
 
         self.assertFalse(attempt.is_correct)
         self.assertEqual(attempt.attempt_number, 1)
@@ -563,6 +565,8 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.point.mastery, 0.42)
         self.assertEqual(self.point.mastery_status, "learning")
         self.assertEqual(activity.duration_seconds, 12)
+        self.assertEqual(activity.source_type, "quiz_run")
+        self.assertEqual(activity.source_id, run.id)
         self.assertEqual(run.graded_count, 1)
         self.assertEqual(run.max_score, 1)
 
@@ -591,7 +595,9 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(await self.db.scalar(select(func.count(QuizAttempt.id))), 1)
-        self.assertEqual(await self.db.scalar(select(func.count(StudyActivity.id))), 1)
+        self.assertEqual(await self.db.scalar(select(func.count(StudyActivity.id)).where(
+            StudyActivity.activity_type == "quiz_completed"
+        )), 0)
         await self.db.refresh(question)
         self.assertEqual(question.attempts, 1)
         self.assertEqual(question.correct_attempts, 0)
@@ -619,7 +625,9 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(isinstance(result, QuizAttempt) for result in results), 1)
         self.assertEqual(sum(isinstance(result, AssessmentStateError) for result in results), 1)
         self.assertEqual(await self.db.scalar(select(func.count(QuizAttempt.id))), 1)
-        self.assertEqual(await self.db.scalar(select(func.count(StudyActivity.id))), 1)
+        self.assertEqual(await self.db.scalar(select(func.count(StudyActivity.id)).where(
+            StudyActivity.activity_type == "quiz_completed"
+        )), 0)
 
     async def test_concurrent_round_creation_is_monotonic_without_integrity_errors(self):
         quiz_set, _ = await self.make_set()
@@ -667,7 +675,9 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(persisted_question.attempts, 2)
             self.assertEqual(persisted_question.correct_attempts, 0)
             self.assertEqual(persisted_point.mastery, 0.34)
-            self.assertEqual(await verifier.scalar(select(func.count(StudyActivity.id))), 2)
+            self.assertEqual(await verifier.scalar(select(func.count(StudyActivity.id)).where(
+                StudyActivity.activity_type == "quiz_completed"
+            )), 2)
 
     async def test_independent_sqlite_engines_preserve_shared_submission_state(self):
         with TemporaryDirectory() as directory:
@@ -763,7 +773,9 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(point.mastery, 0.34)
                     self.assertEqual(mistake.wrong_count, 2)
                     self.assertEqual(await verifier.scalar(select(func.count(QuizAttempt.id))), 2)
-                    self.assertEqual(await verifier.scalar(select(func.count(StudyActivity.id))), 2)
+                    self.assertEqual(await verifier.scalar(select(func.count(StudyActivity.id)).where(
+                        StudyActivity.activity_type == "quiz_completed"
+                    )), 2)
             finally:
                 release_first.set()
                 first_finished.set()
@@ -797,14 +809,14 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
             SETTINGS,
             now=NOW + timedelta(seconds=15),
         )
-        activities = (
-            await self.db.execute(select(StudyActivity).order_by(StudyActivity.created_at))
-        ).scalars().all()
+        activities = (await self.db.execute(select(StudyActivity).where(
+            StudyActivity.activity_type == "quiz_completed"
+        ))).scalars().all()
 
         self.assertEqual(first_attempt.duration_seconds, 12)
         self.assertEqual(second_attempt.duration_seconds, 3)
-        self.assertEqual([activity.duration_seconds for activity in activities], [12, 3])
-        self.assertLessEqual(sum(activity.duration_seconds for activity in activities), 15)
+        self.assertEqual(activities, [])
+        self.assertLessEqual(first_attempt.duration_seconds + second_attempt.duration_seconds, 15)
 
     async def test_two_correct_redos_master_the_existing_mistake(self):
         quiz_set, question = await self.make_set()

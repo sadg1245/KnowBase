@@ -157,7 +157,9 @@ class AssessmentAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.status_code, 200, first.text)
         second = await self.request("POST", f"/tasks/{task.id}/complete")
         self.assertEqual(first.json()["completed_at"], second.json()["completed_at"])
-        self.assertEqual(await self.db.scalar(select(func.count(StudyActivity.id))), 1)
+        self.assertEqual(await self.db.scalar(select(func.count(StudyActivity.id)).where(
+            StudyActivity.activity_type == "learning_task"
+        )), 1)
         state = (await self.request("GET", "/weak-knowledge")).json()["items"][0]
         self.assertEqual(state["recency_component"], 0)
         self.assertIn("evidence", state)

@@ -135,6 +135,12 @@ class WeaknessPersistenceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual({row.task_type for row in rows}, {"review", "targeted_practice"})
         self.assertTrue(all(row.due_at <= NOW + timedelta(days=3) for row in rows))
         self.assertEqual(len(state.recommended_actions), 5)
+        evidence = (await self.db.execute(select(StudyActivity).where(
+            StudyActivity.activity_type == "weakness_changed"
+        ))).scalars().all()
+        self.assertEqual(len(evidence), 1)
+        self.assertIsNone(evidence[0].payload["before_score"])
+        self.assertEqual(evidence[0].payload["after_score"], state.weakness_score)
         paths = {action["type"]: action["path"] for action in state.recommended_actions}
         self.assertEqual(paths["review"], "/review")
         self.assertTrue(all("?" in path for kind, path in paths.items() if kind != "review"))

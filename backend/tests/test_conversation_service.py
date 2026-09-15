@@ -10,6 +10,7 @@ import app.models  # noqa: F401
 from app.models.base import Base
 from app.models.conversation import Conversation
 from app.models.chat import ChatFeedback
+from app.models.learning import StudyActivity
 from app.models.workspace import Workspace
 
 
@@ -159,6 +160,37 @@ class ConversationServiceTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(feedback["helpful"])
             feedback_count = (await db.execute(select(func.count(ChatFeedback.id)))).scalar()
             self.assertEqual(feedback_count, 1)
+            card_events = (await db.execute(select(StudyActivity).where(
+                StudyActivity.activity_type == "card_created"
+            ))).scalars().all()
+            self.assertEqual(len(card_events), 1)
+            self.assertEqual(card_events[0].source_id, card_a["id"])
+
+    async def test_record_question_is_idempotent_and_omits_question_text(self):
+        module = _load_service()
+        async with self.session_factory() as db:
+            workspace = Workspace(name="提问", slug="questions")
+            db.add(workspace)
+            await db.flush()
+            service = module.ConversationService(db)
+            session = await service.create_session(
+                workspace_id=workspace.id,
+                document_ids=["doc-1"],
+                mode="deep",
+                strict_sources=True,
+            )
+            message = Conversation(
+                user_id="default", session_id=session.id, workspace_id=workspace.id,
+                role="user", content="解释一下梯度下降", mode="deep",
+            )
+            db.add(message)
+            await db.flush()
+            first = await service.record_question(session, message)
+            second = await service.record_question(session, message)
+            self.assertEqual(first.id, second.id)
+            self.assertEqual(first.activity_type, "question_asked")
+            self.assertEqual(first.payload["question_length"], 8)
+            self.assertNotIn("question", first.payload)
 
 
 if __name__ == "__main__":

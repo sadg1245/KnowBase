@@ -12,6 +12,7 @@ from app.models.conversation import Conversation
 from app.models.learning import Flashcard, QuizQuestion
 from app.schemas.chat import ChatSessionCreate, ChatSessionUpdate, FeedbackUpdate, MessageNoteCreate, SummaryNoteCreate
 from app.services.conversation_service import ConversationService
+from app.services.activity_service import append_card_created
 
 
 router = APIRouter(prefix="/chat", tags=["chat sessions"])
@@ -170,6 +171,7 @@ async def create_message_card(message_id: str, db: AsyncSession = Depends(get_db
         )
         db.add(existing)
         await db.flush()
+        await append_card_created(db, existing)
     elif existing.source_type == "manual":
         existing.source_type = "answer"
         existing.source_snapshot = message.sources or []

@@ -35,6 +35,7 @@ from app.services.assessment_scoring import (
     grade_objective,
     next_mistake_state,
 )
+from app.services.activity_service import append_activity, append_mastery_change
 from app.services.weakness_service import recalculate_knowledge_point, upsert_weak_learning_tasks
 
 
@@ -640,6 +641,7 @@ async def _update_point_mastery(
     point_id: str | None,
     *,
     correct: bool,
+    attempt: QuizAttempt,
 ) -> None:
     if point_id is None:
         return
@@ -653,8 +655,20 @@ async def _update_point_mastery(
     ).scalar_one_or_none()
     if point is None:
         return
+    before_mastery = point.mastery
+    before_status = point.mastery_status
     point.mastery = round(max(0.0, min(1.0, point.mastery + (0.12 if correct else -0.08))), 6)
     point.mastery_status = "mastered" if point.mastery >= 0.8 else "learning"
+    await append_mastery_change(
+        db,
+        point,
+        before_mastery=before_mastery,
+        before_status=before_status,
+        reason="quiz_attempt",
+        source_type="quiz_attempt",
+        source_id=attempt.id,
+        occurred_at=attempt.submitted_at,
+    )
 
 
 async def _recompute_run(db: AsyncSession, run: QuizRun) -> None:
@@ -679,7 +693,7 @@ async def _finish_if_complete(
     run: QuizRun,
     quiz_set: QuizSet,
     submitted_at: datetime,
-) -> None:
+) -> bool:
     answered_count = await db.scalar(
         select(func.count(func.distinct(QuizAttempt.question_id))).where(
             QuizAttempt.quiz_run_id == run.id
@@ -687,10 +701,28 @@ async def _finish_if_complete(
     )
     required = len(run.question_ids) if run.question_ids is not None else quiz_set.question_count
     if int(answered_count or 0) < required:
-        return
+        return False
     run.status = "submitted"
     run.submitted_at = submitted_at
     run.elapsed_seconds = _run_elapsed(run, submitted_at, quiz_set.duration_limit_seconds)
+    await append_activity(
+        db,
+        event_key=f"activity:quiz-run:{run.id}",
+        activity_type="quiz_completed",
+        title="完成了一次测验",
+        workspace_id=quiz_set.workspace_id,
+        source_type="quiz_run",
+        source_id=run.id,
+        duration_seconds=run.elapsed_seconds,
+        payload={
+            "quiz_set_id": quiz_set.id,
+            "quiz_run_id": run.id,
+            "graded_count": run.graded_count,
+            "correct_count": run.correct_count,
+        },
+        occurred_at=submitted_at,
+    )
+    return True
 
 
 async def _submission_context(
@@ -855,7 +887,6 @@ async def _persist_prepared_attempt(
     duration: int,
     submitted_at: datetime,
     is_redo: bool,
-    record_activity: bool,
 ) -> QuizAttempt:
     attempt = QuizAttempt(
         quiz_set_id=run.quiz_set_id,
@@ -877,23 +908,6 @@ async def _persist_prepared_attempt(
 
     await _apply_grade_effects(db, question, attempt, is_redo=is_redo)
 
-    if record_activity:
-        db.add(StudyActivity(
-            workspace_id=question.workspace_id,
-            activity_type="quiz",
-            title="Completed an assessment question",
-            duration_seconds=duration,
-            payload={
-                "quiz_set_id": run.quiz_set_id,
-                "quiz_run_id": run.id,
-                "question_id": question.id,
-                "attempt_id": attempt.id,
-                "evaluation_status": grade.evaluation_status,
-                "correct": grade.is_correct,
-                "is_redo": is_redo,
-            },
-            created_at=submitted_at,
-        ))
     await db.flush()
     if question.knowledge_point_id:
         state = await recalculate_knowledge_point(db, question.knowledge_point_id, submitted_at)
@@ -918,7 +932,12 @@ async def _apply_grade_effects(db, question, attempt, *, is_redo, rebuild_mistak
         else:
             await _update_mistake(db, question, attempt, correct=bool(grade.is_correct),
                 is_redo=is_redo, submitted_at=attempt.submitted_at)
-        await _update_point_mastery(db, question.knowledge_point_id, correct=bool(grade.is_correct))
+        await _update_point_mastery(
+            db,
+            question.knowledge_point_id,
+            correct=bool(grade.is_correct),
+            attempt=attempt,
+        )
 
 
 async def _rebuild_mistake_projection(db, question, revised_attempt):
@@ -1071,7 +1090,6 @@ async def submit_question(
                 duration=duration,
                 submitted_at=submitted_at,
                 is_redo=is_redo or run.question_ids is not None,
-                record_activity=True,
             )
             await _recompute_run(db, run)
             run.elapsed_seconds = _run_elapsed(run, submitted_at, quiz_set.duration_limit_seconds)
@@ -1183,7 +1201,6 @@ async def submit_paper(
                     duration=0,
                     submitted_at=submitted_at,
                     is_redo=run.question_ids is not None,
-                    record_activity=False,
                 )
 
             await _recompute_run(db, run)
@@ -1194,10 +1211,14 @@ async def submit_paper(
                 submitted_at,
                 quiz_set.duration_limit_seconds,
             )
-            db.add(StudyActivity(
+            await append_activity(
+                db,
+                event_key=f"activity:quiz-run:{run.id}",
+                activity_type="quiz_completed",
+                title="完成了一次测验",
                 workspace_id=quiz_set.workspace_id,
-                activity_type="quiz",
-                title="Completed an assessment paper",
+                source_type="quiz_run",
+                source_id=run.id,
                 duration_seconds=run.elapsed_seconds,
                 payload={
                     "quiz_set_id": quiz_set.id,
@@ -1205,8 +1226,8 @@ async def submit_paper(
                     "graded_count": run.graded_count,
                     "correct_count": run.correct_count,
                 },
-                created_at=submitted_at,
-            ))
+                occurred_at=submitted_at,
+            )
             await db.commit()
             return run
         except AssessmentServiceError:
