@@ -168,6 +168,18 @@ class LearningInsightsAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(goals["global"]["daily_reviews"]["target"], 9)
         self.assertEqual(goals["global"]["weekly_days"]["target"], 4)
 
+    async def test_dashboard_contract_and_derived_task_cannot_be_manually_completed(self):
+        dashboard = await self.client.get("/api/learning/dashboard")
+        self.assertEqual(dashboard.status_code, 200, dashboard.text)
+        for key in (
+            "profile", "stats", "today_tasks", "weak_points", "recent_activities",
+            "recent_workspaces", "goal_progress", "learning_queue", "recommended_workspaces",
+        ):
+            self.assertIn(key, dashboard.json())
+        derived = "derived:2099-01-01:review:global"
+        response = await self.client.post(f"/api/assessments/tasks/{derived}/complete")
+        self.assertIn(response.status_code, {400, 404})
+
 
 if __name__ == "__main__":
     unittest.main()

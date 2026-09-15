@@ -22,7 +22,7 @@ from app.services.review_service import apply_card_review, build_review_summary,
 from app.services.weakness_service import weakness_priority_subquery
 from app.services import assessment_service, assessment_workflows
 from app.services.activity_service import append_card_created, append_mastery_change
-from app.services import goal_service
+from app.services import dashboard_service, goal_service
 from app.services.assessment_ai import AssessmentAIError
 from app.schemas.assessment import QuestionSubmitRequest
 from app.schemas.learning import (
@@ -140,70 +140,7 @@ async def update_profile(payload: ProfileUpdate, db: AsyncSession = Depends(get_
 
 @router.get("/dashboard")
 async def dashboard(db: AsyncSession = Depends(get_db)) -> dict:
-    now = datetime.now(timezone.utc)
-    start_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    week_start = start_today - timedelta(days=start_today.weekday())
-    profile = await _profile(db)
-
-    async def scalar(stmt):
-        return (await db.execute(stmt)).scalar() or 0
-
-    workspace_count = await scalar(select(func.count(Workspace.id)).where(Workspace.archived.is_(False)))
-    document_count = await scalar(select(func.count(Document.id)))
-    point_count = await scalar(select(func.count(KnowledgePoint.id)))
-    due_count = await scalar(select(func.count(Flashcard.id)).where(Flashcard.due_at <= now))
-    wrong_count = await scalar(select(func.count(QuizQuestion.id)).where(QuizQuestion.last_correct.is_(False)))
-    today_seconds = await scalar(select(func.coalesce(func.sum(StudyActivity.duration_seconds), 0)).where(StudyActivity.created_at >= start_today))
-    week_seconds = await scalar(select(func.coalesce(func.sum(StudyActivity.duration_seconds), 0)).where(StudyActivity.created_at >= week_start))
-
-    activity_rows = (await db.execute(select(StudyActivity).order_by(StudyActivity.created_at.desc()).limit(8))).scalars().all()
-    due_task_rows = (await db.execute(
-        select(LearningTask)
-        .where(
-            LearningTask.status == "pending",
-            LearningTask.due_at.is_not(None),
-            LearningTask.due_at <= now,
-        )
-        .order_by(LearningTask.priority.desc(), LearningTask.due_at.asc(), LearningTask.id)
-    )).scalars().all()
-    weak_rows = (await db.execute(select(KnowledgePoint).order_by(KnowledgePoint.mastery.asc(), KnowledgePoint.importance.desc()).limit(5))).scalars().all()
-    recent_workspaces = (await db.execute(select(Workspace).where(Workspace.archived.is_(False)).order_by(Workspace.updated_at.desc()).limit(4))).scalars().all()
-
-    # Streak is based on distinct activity dates and intentionally timezone-neutral for now.
-    dates = (await db.execute(select(func.date(StudyActivity.created_at)).distinct().order_by(func.date(StudyActivity.created_at).desc()).limit(60))).scalars().all()
-    streak = 0
-    cursor = start_today.date()
-    date_set = {datetime.fromisoformat(str(d)).date() if not hasattr(d, "year") else d for d in dates}
-    if cursor not in date_set:
-        cursor -= timedelta(days=1)
-    while cursor in date_set:
-        streak += 1
-        cursor -= timedelta(days=1)
-
-    return {
-        "profile": {"display_name": profile.display_name, "daily_goal_minutes": profile.daily_goal_minutes, "daily_review_target": profile.daily_review_target},
-        "stats": {"workspace_count": workspace_count, "document_count": document_count, "knowledge_point_count": point_count, "due_cards": due_count, "wrong_questions": wrong_count, "today_minutes": round(today_seconds / 60), "week_minutes": round(week_seconds / 60), "streak_days": streak},
-        "today_tasks": [
-            {"type": "review", "title": "完成今日复习", "count": due_count, "path": "/review"},
-            {"type": "mistake", "title": "重做薄弱题目", "count": wrong_count, "path": "/practice?wrong=1"},
-            *[
-                {
-                    "id": task.id,
-                    "type": task.task_type,
-                    "title": task.title,
-                    "path": task.path,
-                    "knowledge_point_id": task.knowledge_point_id,
-                    "workspace_id": task.workspace_id,
-                    "due_at": _iso(task.due_at),
-                    "priority": task.priority,
-                }
-                for task in due_task_rows
-            ],
-        ],
-        "weak_points": [_point(row) for row in weak_rows],
-        "recent_activities": [{"id": row.id, "type": row.activity_type, "title": row.title, "duration_seconds": row.duration_seconds, "created_at": _iso(row.created_at)} for row in activity_rows],
-        "recent_workspaces": [{"id": row.id, "name": row.name, "description": row.description or "", "domain": row.domain, "accent_color": row.accent_color, "learning_goal": row.learning_goal or ""} for row in recent_workspaces],
-    }
+    return await dashboard_service.build_dashboard(db, now=datetime.now(timezone.utc))
 
 
 @router.get("/workspaces/{workspace_id}")
