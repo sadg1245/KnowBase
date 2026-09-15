@@ -1,36 +1,18 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { App, Button, Col, Empty, Progress, Row, Skeleton, Space, Tag, Typography } from 'antd';
-import { ArrowRightOutlined, BookOutlined, ClockCircleOutlined, FireOutlined, ReadOutlined, TrophyOutlined } from '@ant-design/icons';
-import { completeLearningTask, getLearningDashboard } from '../services/api';
-import type { DashboardTask, LearningDashboard } from '../services/api';
+import { App, Button, Progress, Skeleton } from 'antd';
+import { SettingOutlined } from '@ant-design/icons';
+
+import { ActivityTimeline } from '../components/dashboard/ActivityTimeline';
+import { LearningQueue } from '../components/dashboard/LearningQueue';
+import { QuickQuestion } from '../components/dashboard/QuickQuestion';
+import { TodayPlan } from '../components/dashboard/TodayPlan';
+import { quickQuestionDestination } from '../features/learning/quickQuestion';
 import { createTaskCompletionCoordinator, type TaskCompletionCoordinator } from '../features/practice/learningLoop';
+import { completeLearningTask, getLearningDashboard } from '../services/api';
+import type { LearningDashboard } from '../services/api';
 
-const { Title, Text } = Typography;
-
-interface TodayTaskListProps {
-  tasks: DashboardTask[];
-  completingIds?: ReadonlySet<string>;
-  onNavigate: (path: string) => void;
-  onComplete: (taskId: string) => void;
-}
-
-export const TodayTaskList: React.FC<TodayTaskListProps> = ({ tasks, completingIds, onNavigate, onComplete }) => <div className="learning-trail dashboard-task-list">
-  {tasks.map((task, index) => {
-    const durable = Boolean(task.id);
-    return <article key={task.id || `${task.type}-${task.path}-${index}`} className="dashboard-task-row">
-      <span className="trail-dot" />
-      <div className="dashboard-task-copy"><Text strong>{task.title}</Text><small>
-        {typeof task.count === 'number' ? (task.count ? `还有 ${task.count} 项等待你` : '今天已经完成')
-          : `${task.status === 'completed' ? '已完成' : '待完成'}${task.due_at ? ` · 截止 ${new Date(task.due_at).toLocaleString('zh-CN')}` : ''}`}
-      </small></div>
-      <div className="dashboard-task-actions">
-        {task.path ? <Button type="link" href={task.path} onClick={event => { event.preventDefault(); onNavigate(task.path!); }}>前往 <ArrowRightOutlined /></Button> : null}
-        {durable && task.status !== 'completed' ? <Button size="small" loading={completingIds?.has(task.id!)} onClick={() => onComplete(task.id!)}>标记完成</Button> : null}
-      </div>
-    </article>;
-  })}
-</div>;
+export const TodayTaskList = TodayPlan;
 
 const Dashboard: React.FC = () => {
   const { message } = App.useApp();
@@ -40,6 +22,7 @@ const Dashboard: React.FC = () => {
   const [completingIds, setCompletingIds] = useState<ReadonlySet<string>>(() => new Set());
   const requestVersion = useRef(0);
   const completionCoordinator = useRef<TaskCompletionCoordinator | null>(null);
+
   const loadDashboard = useCallback(async () => {
     const version = ++requestVersion.current;
     setLoading(true);
@@ -47,11 +30,12 @@ const Dashboard: React.FC = () => {
       const next = await getLearningDashboard();
       if (version === requestVersion.current) setData(next);
     } catch {
-      if (version === requestVersion.current) message.error('学习数据暂时没有加载成功');
+      if (version === requestVersion.current) message.error('学习数据暂时没有加载成功，请重试');
     } finally {
       if (version === requestVersion.current) setLoading(false);
     }
   }, [message]);
+
   useEffect(() => {
     const coordinator = createTaskCompletionCoordinator(setCompletingIds);
     completionCoordinator.current = coordinator;
@@ -62,59 +46,68 @@ const Dashboard: React.FC = () => {
       if (completionCoordinator.current === coordinator) completionCoordinator.current = null;
     };
   }, [loadDashboard]);
+
   const completeTask = (taskId: string) => completionCoordinator.current?.run(
     taskId,
     () => completeLearningTask(taskId),
     async () => { message.success('学习任务已完成'); await loadDashboard(); },
     async () => { message.error('任务完成状态没有保存，请重试'); },
   );
-  const greeting = useMemo(() => new Date().getHours() < 12 ? '早上好' : new Date().getHours() < 18 ? '下午好' : '晚上好', []);
-  if (loading) return <Skeleton active paragraph={{ rows: 10 }} />;
-  const stats = data?.stats;
-  const goal = data?.profile.daily_goal_minutes || 25;
-  const completion = Math.min(100, Math.round(((stats?.today_minutes || 0) / goal) * 100));
+  const greeting = useMemo(() => {
+    const hour = new Date().getHours();
+    return hour < 12 ? '早上好' : hour < 18 ? '下午好' : '晚上好';
+  }, []);
+  const workspaceOptions = useMemo(() => {
+    const byId = new Map<string, { id: string; name: string }>();
+    data?.recommended_workspaces.forEach(item => byId.set(item.workspace_id, { id: item.workspace_id, name: item.name }));
+    data?.recent_workspaces.forEach(item => byId.set(item.id, { id: item.id, name: item.name }));
+    return [...byId.values()];
+  }, [data?.recent_workspaces, data?.recommended_workspaces]);
 
-  return <div>
-    <div className="page-eyebrow">Today · 你的学习现场</div>
-    <Row gutter={[24, 24]} align="bottom">
-      <Col flex="auto"><Title className="page-title" level={1}>{greeting}，{data?.profile.display_name || '学习者'}</Title><p className="page-lead">今天不必学很多，沿着昨天留下的线索继续走一点就好。</p></Col>
-      <Col><Button type="primary" size="large" icon={<BookOutlined />} onClick={() => navigate('/learn')}>开始一次学习</Button></Col>
-    </Row>
+  if (loading) return <Skeleton active paragraph={{ rows: 12 }} />;
+  if (!data) return <div className="dashboard-load-error"><h2>首页暂时没有加载成功</h2><p>学习记录仍然安全保存，可以立即重试。</p><Button type="primary" onClick={() => void loadDashboard()}>重新加载</Button></div>;
+  const minutesGoal = data.goal_progress.daily_minutes;
+  const dailyPercent = Math.min(100, Math.round(minutesGoal.ratio * 100));
 
-    <Row gutter={[18, 18]} style={{ marginTop: 30 }}>
-      <Col xs={24} lg={14}>
-        <section className="paper-card" style={{ padding: 26, height:'100%' }}>
-          <Space align="start" style={{ width:'100%', justifyContent:'space-between' }}>
-            <div><Text type="secondary">今日节奏</Text><Title level={2} style={{ margin:'4px 0 0' }}><span className="metric-number">{stats?.today_minutes || 0}</span> <small style={{fontSize:15,fontWeight:400}}>分钟</small></Title></div>
-            <div style={{ width:72 }}><Progress type="circle" size={72} percent={completion} strokeColor="#167d8d" trailColor="#dcebea" format={() => `${completion}%`} /></div>
-          </Space>
-          <div style={{ marginTop:28 }}><TodayTaskList tasks={data?.today_tasks || []} completingIds={completingIds} onNavigate={path => navigate(path)} onComplete={taskId => void completeTask(taskId)} /></div>
-          <Button className="dashboard-continue" type="link" onClick={() => navigate('/knowledge')}>继续最近的知识库 <ArrowRightOutlined /></Button>
-        </section>
-      </Col>
-      <Col xs={24} lg={10}>
-        <section className="soft-panel" style={{ padding:26,height:'100%' }}>
-          <Text type="secondary">本周一瞥</Text>
-          <Row gutter={[12,22]} style={{marginTop:20}}>
-            <Col span={12}><FireOutlined style={{color:'#ef7d59'}}/><div className="metric-number" style={{fontSize:30,fontWeight:700}}>{stats?.streak_days || 0}</div><Text type="secondary">连续学习天数</Text></Col>
-            <Col span={12}><ClockCircleOutlined style={{color:'#167d8d'}}/><div className="metric-number" style={{fontSize:30,fontWeight:700}}>{stats?.week_minutes || 0}</div><Text type="secondary">本周学习分钟</Text></Col>
-            <Col span={12}><ReadOutlined style={{color:'#6e71a8'}}/><div className="metric-number" style={{fontSize:30,fontWeight:700}}>{stats?.knowledge_point_count || 0}</div><Text type="secondary">已整理知识点</Text></Col>
-            <Col span={12}><TrophyOutlined style={{color:'#d9913b'}}/><div className="metric-number" style={{fontSize:30,fontWeight:700}}>{stats?.wrong_questions || 0}</div><Text type="secondary">待攻克错题</Text></Col>
-          </Row>
-        </section>
-      </Col>
-    </Row>
+  return <main className="dashboard-page">
+    <section className="dashboard-hero">
+      <div className="dashboard-hero-copy">
+        <span className="dashboard-kicker">Today · 你的学习现场</span>
+        <h1>{greeting}，{data.profile.display_name}</h1>
+        <p>今天不必学很多。先完成最靠前的一件事，让理解继续生长。</p>
+      </div>
+      <div className="dashboard-day-seal" aria-label={`今日目标完成 ${dailyPercent}%`}>
+        <Progress type="circle" size={92} percent={dailyPercent} strokeColor="#167d8d" trailColor="#d9e8e7" />
+        <small>今日 {data.stats.today_minutes}/{data.profile.daily_goal_minutes} 分钟</small>
+      </div>
+      <dl className="dashboard-vitals">
+        <div><dt>连续学习</dt><dd>{data.stats.streak_days}<small>天</small></dd></div>
+        <div><dt>本周学习</dt><dd>{data.stats.week_minutes}<small>分钟</small></dd></div>
+        <div><dt>当前薄弱点</dt><dd>{data.weak_points.length}<small>个</small></dd></div>
+      </dl>
+    </section>
 
-    <Row gutter={[24,24]} style={{marginTop:24}}>
-      <Col xs={24} xl={15}>
-        <Space style={{width:'100%',justifyContent:'space-between',marginBottom:14}}><Title level={3} style={{margin:0}}>最近的知识库</Title><Button type="link" onClick={() => navigate('/knowledge')}>查看全部</Button></Space>
-        {(data?.recent_workspaces || []).length ? <Row gutter={[14,14]}>{data!.recent_workspaces.map((item) => <Col xs={24} sm={12} key={item.id}><button className="paper-card lift" onClick={() => navigate(`/knowledge/${item.id}`)} style={{width:'100%',padding:20,textAlign:'left',cursor:'pointer',borderTop:`4px solid ${item.accent_color || '#167d8d'}`}}><Tag bordered={false}>{item.domain || '未分类'}</Tag><Title level={4} style={{margin:'12px 0 6px'}}>{item.name}</Title><Text type="secondary" ellipsis>{item.learning_goal || item.description || '为这个知识库写下一个学习目标'}</Text></button></Col>)}</Row> : <div className="paper-card empty-guide"><Empty description="还没有知识库"/><Button type="primary" onClick={() => navigate('/knowledge')}>创建第一个知识库</Button></div>}
-      </Col>
-      <Col xs={24} xl={9}>
-        <Title level={3} style={{margin:'0 0 14px'}}>值得再看一眼</Title>
-        <div className="paper-card" style={{padding:'8px 20px'}}>{(data?.weak_points || []).length ? data!.weak_points.map((point) => <button key={point.id} onClick={() => navigate(`/knowledge/${point.workspace_id}`)} style={{width:'100%',padding:'14px 0',display:'flex',gap:12,alignItems:'center',border:0,borderBottom:'1px solid #edf1f2',background:'transparent',textAlign:'left',cursor:'pointer'}}><Progress type="circle" size={38} percent={Math.round(point.mastery*100)} showInfo={false} strokeColor="#ef7d59"/><span style={{flex:1}}><Text strong>{point.title}</Text><br/><Text type="secondary" style={{fontSize:12}}>掌握度 {Math.round(point.mastery*100)}%</Text></span></button>) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="学习后会在这里发现薄弱点"/>}</div>
-      </Col>
-    </Row>
-  </div>;
+    <QuickQuestion workspaces={workspaceOptions} onAsk={(question, workspaceId) => navigate(
+      quickQuestionDestination(question, workspaceId, crypto.randomUUID())
+    )} />
+
+    <div className="dashboard-primary-grid">
+      <TodayPlan tasks={data.today_tasks} completingIds={completingIds} onNavigate={navigate} onComplete={taskId => void completeTask(taskId)} />
+      <LearningQueue queue={data.learning_queue} recommendations={data.recommended_workspaces} onNavigate={navigate} />
+    </div>
+
+    <div className="dashboard-review-grid">
+      <ActivityTimeline activities={data.recent_activities} />
+      <section className="dashboard-section dashboard-weakness">
+        <header className="dashboard-section-heading"><div><span className="dashboard-kicker">Focus</span><h2>当前薄弱知识点</h2></div></header>
+        {data.weak_points.length ? <div>{data.weak_points.map(point => <button key={point.id} onClick={() => navigate(`/knowledge/${point.workspace_id}`)}>
+          <Progress type="circle" size={40} percent={Math.round(point.mastery * 100)} showInfo={false} strokeColor="#c98b37" />
+          <span><strong>{point.title}</strong><small>掌握度 {Math.round(point.mastery * 100)}%{typeof point.weakness_score === 'number' ? ` · 薄弱分 ${Math.round(point.weakness_score)}` : ''}</small></span>
+        </button>)}</div> : <div className="dashboard-empty"><p>完成测验和复习后，这里会显示需要再看一眼的知识。</p><Button onClick={() => navigate('/practice')}>开始一次练习</Button></div>}
+      </section>
+    </div>
+    <footer className="dashboard-footer-link"><Button type="text" icon={<SettingOutlined />} onClick={() => navigate('/report')}>查看报告并调整学习目标</Button></footer>
+  </main>;
 };
+
 export default Dashboard;

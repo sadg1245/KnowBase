@@ -391,6 +391,7 @@ export interface KnowledgePoint {
   source_heading?: string | null; importance: number; difficulty: number;
   mastery: number; tags: string[]; is_key: boolean;
   mastery_status: 'not_started' | 'learning' | 'mastered'; created_at: string;
+  weakness_score?: number | null;
 }
 
 export interface Flashcard {
@@ -449,15 +450,44 @@ export type DashboardTask = {
   due_at?: string | null;
   priority?: number;
   status?: 'pending' | 'completed' | 'dismissed';
+  description?: string;
+  estimated_minutes?: number;
+  source?: { type: string; [key: string]: unknown };
+  derived?: boolean;
+};
+
+export type GoalProgress = {
+  id: string; scope_type: 'global' | 'workspace'; workspace_id?: string | null;
+  metric: string; actual: number; target: number; ratio: number;
+  status: 'not_started' | 'in_progress' | 'completed'; target_date?: string | null;
+  is_active: boolean; version: number;
+};
+export type DashboardLearningQueue = {
+  due_reviews: { count: number; path: string };
+  mistakes: { count: number; path: string };
+};
+export type WorkspaceRecommendation = {
+  workspace_id: string; name: string; description: string; domain?: string;
+  accent_color: string; score: number; reason: string; path: string;
+  components: { goal_urgency: number; weakness: number; unfinished_work: number; recent_activity: number; new_material: number };
+  last_activity_at?: string | null;
+};
+export type DashboardActivity = {
+  id: string; workspace_id?: string | null; type: string; title: string;
+  duration_seconds: number; created_at: string; occurred_at?: string;
+  source_type?: string | null; source_id?: string | null;
 };
 
 export interface LearningDashboard {
-  profile: { display_name: string; daily_goal_minutes: number; daily_review_target: number };
+  profile: { display_name: string; daily_goal_minutes: number; daily_review_target: number; weekly_goal_days: number; timezone_name: string };
   stats: { workspace_count: number; document_count: number; knowledge_point_count: number; due_cards: number; wrong_questions: number; today_minutes: number; week_minutes: number; streak_days: number };
   today_tasks: DashboardTask[];
   weak_points: KnowledgePoint[];
-  recent_activities: { id: string; type: string; title: string; duration_seconds: number; created_at: string }[];
+  recent_activities: DashboardActivity[];
   recent_workspaces: Workspace[];
+  goal_progress: Record<string, GoalProgress>;
+  learning_queue: DashboardLearningQueue;
+  recommended_workspaces: WorkspaceRecommendation[];
 }
 
 export interface KnowledgeBaseDetail extends Workspace {
