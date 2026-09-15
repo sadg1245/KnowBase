@@ -1,9 +1,11 @@
 services:
   # ============ Backend API ============
   backend:
+    image: knowbase-backend:production
     build:
       context: ./backend
       dockerfile: Dockerfile
+      target: production
     container_name: knowbase-backend
     ports:
       - "9000:8000"
@@ -24,11 +26,12 @@ services:
     volumes:
       - backend_data:/app/data
       - backend_uploads:/app/uploads
+      - model_cache:/opt/huggingface
     networks:
       - knowbase-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -36,9 +39,11 @@ services:
 
   # ============ Celery Worker ============
   worker:
+    image: knowbase-backend:production
     build:
       context: ./backend
       dockerfile: Dockerfile
+      target: production
     container_name: knowbase-worker
     command: celery -A app.collector.tasks worker --loglevel=info --concurrency=4
     env_file:
@@ -58,6 +63,7 @@ services:
     volumes:
       - backend_data:/app/data
       - backend_uploads:/app/uploads
+      - model_cache:/opt/huggingface
     networks:
       - knowbase-net
     restart: unless-stopped
@@ -84,9 +90,11 @@ services:
 
   # ============ Frontend ============
   frontend:
+    image: knowbase-frontend:production
     build:
       context: ./frontend
       dockerfile: Dockerfile
+      target: production
     container_name: knowbase-frontend
     ports:
       - "3000:80"
@@ -136,5 +144,6 @@ networks:
 volumes:
   backend_data:
   backend_uploads:
+  model_cache:
   chroma_data:
   redis_data:

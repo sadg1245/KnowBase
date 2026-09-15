@@ -1,11 +1,10 @@
-version: "3.8"
-
 # 开发环境覆盖配置
 # 使用方式：docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 
 services:
   # ============ Backend API (开发模式) ============
   backend:
+    image: knowbase-backend:dev
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -17,11 +16,16 @@ services:
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     environment:
       - LOG_LEVEL=DEBUG
-    ports:
+    ports: !override
       - "8000:8000"
 
   # ============ Celery Worker (开发模式) ============
   worker:
+    image: knowbase-backend:dev
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      target: dev
     volumes:
       - ./backend:/app
       - /app/__pycache__
@@ -40,17 +44,16 @@ services:
 
   # ============ Frontend (开发模式) ============
   frontend:
+    image: knowbase-frontend:dev
     build:
       context: ./frontend
       dockerfile: Dockerfile
-      target: build
+      target: dev
     volumes:
-      - ./frontend/src:/app/src
-      - ./frontend/index.html:/app/index.html
-      - ./frontend/vite.config.ts:/app/vite.config.ts
+      - ./frontend:/app
       - /app/node_modules
     command: npm run dev -- --host 0.0.0.0
-    ports:
+    ports: !override
       - "5173:5173"
     environment:
-      - VITE_API_BASE_URL=http://localhost:8000
+      - VITE_API_PROXY_TARGET=http://backend:8000
