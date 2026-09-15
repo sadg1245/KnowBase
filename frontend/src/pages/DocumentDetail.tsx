@@ -18,6 +18,7 @@ import {
 import { buildOutline, pdfPageFragment, resolveSelectedChunk } from './documentDetailState';
 import { CardEditorModal } from '../components/review/CardEditorModal';
 import { DocumentCardSelection, normalizeDocumentCardSelection } from './documentCardSelection';
+import { useActiveStudySession } from '../hooks/useActiveStudySession';
 
 const { Title, Paragraph, Text } = Typography;
 
@@ -64,6 +65,10 @@ const DocumentDetail: React.FC = () => {
   const [form] = Form.useForm();
   const selectedRef = useRef<HTMLDivElement>(null);
   const sourceRef = useRef<HTMLElement>(null);
+  useActiveStudySession({
+    contextType: 'document', contextId: document?.id, workspaceId,
+    enabled: Boolean(document),
+  });
 
   const load = useCallback(async (quiet = false) => {
     if (!documentId) return;

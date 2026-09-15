@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { App, Button, Drawer, Space, Tag, Typography } from 'antd';
 import { FileTextOutlined, MenuOutlined } from '@ant-design/icons';
 
@@ -42,6 +42,8 @@ import {
   requestedLearningPreset,
   type RequestedLearningPreset,
 } from './learningChatPresets';
+import { consumeQuickQuestion } from '../features/learning/quickQuestion';
+import { useActiveStudySession } from '../hooks/useActiveStudySession';
 
 
 const { Text, Title } = Typography;
@@ -60,18 +62,20 @@ const historyMessage = (item: ChatMessage): DisplayMessage => ({
 const LearningChat: React.FC = () => {
   const { message } = App.useApp();
   const navigate = useNavigate();
+  const location = useLocation();
   const [params] = useSearchParams();
   const presetQuery = params.toString();
   const initialPreset = requestedLearningPreset(params);
+  const initialQuickQuestion = consumeQuickQuestion(location.state, undefined);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workspacesLoading, setWorkspacesLoading] = useState(true);
-  const [workspaceId, setWorkspaceId] = useState<string | undefined>(initialPreset.workspaceId);
+  const [workspaceId, setWorkspaceId] = useState<string | undefined>(initialQuickQuestion?.workspaceId || initialPreset.workspaceId);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [documentIds, setDocumentIds] = useState<string[]>([]);
   const [documentsLoading, setDocumentsLoading] = useState(false);
   const [mode, setMode] = useState<LearningMode>('simple');
   const [strict, setStrict] = useState(true);
-  const [question, setQuestion] = useState('');
+  const [question, setQuestion] = useState(initialQuickQuestion?.question || '');
   const [presetPointTitle, setPresetPointTitle] = useState<string>();
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [source, setSource] = useState<SourceItem | null>(null);
@@ -85,9 +89,16 @@ const LearningChat: React.FC = () => {
   const pendingDocumentIdsRef = useRef<string[] | undefined>();
   const pendingPresetRef = useRef<{ query: string; preset: RequestedLearningPreset }>({ query: presetQuery, preset: initialPreset });
   const workspacesRef = useRef(workspaces);
+  const consumedQuickNonceRef = useRef<string>();
   workspacesRef.current = workspaces;
 
   const sessionState = useChatSessions();
+  useActiveStudySession({
+    contextType: 'conversation',
+    contextId: sessionState.activeSession?.id,
+    workspaceId: sessionState.activeSession?.workspace_id || workspaceId,
+    enabled: Boolean(sessionState.activeSession),
+  });
   const activeSessionRef = useRef(sessionState.activeSession);
   activeSessionRef.current = sessionState.activeSession;
   const detachActiveSession = useCallback(() => {
@@ -145,6 +156,15 @@ const LearningChat: React.FC = () => {
       setWorkspaceId(preset.workspaceId);
     }
   }, [detachActiveSession, presetQuery, streaming.cancel]);
+
+  useEffect(() => {
+    const quick = consumeQuickQuestion(location.state, consumedQuickNonceRef.current);
+    if (!quick) return;
+    consumedQuickNonceRef.current = quick.nonce;
+    if (quick.workspaceId) setWorkspaceId(quick.workspaceId);
+    setQuestion(quick.question);
+    navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
+  }, [location.pathname, location.search, location.state, navigate]);
 
   useEffect(() => {
     let active = true;

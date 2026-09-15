@@ -472,6 +472,29 @@ export interface KnowledgeBaseDetail extends Workspace {
 }
 
 export const getLearningDashboard = async (): Promise<LearningDashboard> => (await api.get('/learning/dashboard')).data;
+export type StudySession = {
+  id: string; workspace_id?: string | null; context_type: 'document' | 'conversation';
+  context_id: string; started_at: string; last_heartbeat_at: string;
+  ended_at?: string | null; active_seconds: number; status: 'active' | 'completed' | 'expired';
+  last_sequence: number;
+};
+export const startStudySession = async (values: {
+  id: string; context_type: 'document' | 'conversation'; context_id: string; workspace_id?: string;
+}): Promise<StudySession> => (await api.post('/learning/study-sessions/start', values)).data;
+export const heartbeatStudySession = async (id: string, sequence: number): Promise<StudySession> =>
+  (await api.post(`/learning/study-sessions/${id}/heartbeat`, { sequence })).data;
+export const finishStudySession = async (id: string, sequence: number): Promise<unknown> =>
+  (await api.post(`/learning/study-sessions/${id}/finish`, { sequence })).data;
+export const finishStudySessionKeepalive = async (id: string, sequence: number): Promise<unknown> => {
+  const token = authToken();
+  const response = await fetch(`/api/learning/study-sessions/${id}/finish`, {
+    method: 'POST', keepalive: true,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify({ sequence }),
+  });
+  if (!response.ok) throw new Error(`Study session finish failed: ${response.status}`);
+  return response.json();
+};
 export interface LearningProfile { id: string; display_name: string; daily_goal_minutes: number; daily_review_target: number; preferred_mode: string; reminder_time?: string }
 export const getLearningProfile = async (): Promise<LearningProfile> => (await api.get('/learning/profile')).data;
 export const updateLearningProfile = async (values: Partial<LearningProfile>): Promise<LearningProfile> => (await api.put('/learning/profile', values)).data;
