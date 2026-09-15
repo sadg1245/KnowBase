@@ -83,12 +83,13 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # 路由
 # ---------------------------------------------------------------------------
-from app.api.routes import workspaces, documents, search, settings as settings_route, learning, auth, chat_sessions, assessments  # noqa: E402
+from app.api.routes import workspaces, documents, search, settings as settings_route, learning, learning_insights, auth, chat_sessions, assessments  # noqa: E402
 
 app.include_router(workspaces.router, prefix="/api")
 app.include_router(documents.router, prefix="/api")
 app.include_router(search.router, prefix="/api")
 app.include_router(settings_route.router, prefix="/api")
+app.include_router(learning_insights.router, prefix="/api")
 app.include_router(learning.router, prefix="/api")
 app.include_router(auth.router, prefix="/api")
 app.include_router(chat_sessions.router, prefix="/api")
