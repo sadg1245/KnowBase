@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  formatComparison, formatDuration, moveAnchorDate, reportMetricCards, suggestionCopy,
+  formatComparison, formatDuration, moveAnchorDate, periodRangeLabel, reportMetricCards, suggestionCopy,
 } from '../src/features/report/reportViewModel';
 
 test('zero previous period is shown as no comparable baseline', () => {
@@ -38,4 +38,9 @@ test('period navigation keeps calendar dates and suggestion states are explicit'
   assert.equal(moveAnchorDate('2026-09-15', 'week', 1), '2026-09-22');
   assert.match(suggestionCopy(undefined), /生成学习建议/);
   assert.match(suggestionCopy({ status: 'failed', error_message: 'x' } as any), /重新生成/);
+});
+
+test('report range renders the exclusive server end as an inclusive calendar date', () => {
+  assert.equal(periodRangeLabel('2026-09-14', '2026-09-21'), '2026-09-14 — 2026-09-20');
+  assert.equal(periodRangeLabel('2026-09-16', '2026-09-17'), '2026-09-16');
 });

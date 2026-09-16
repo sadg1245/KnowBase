@@ -36,6 +36,14 @@ const parseCalendarDate = (value: string) => {
 };
 const calendarString = (date: Date) => date.toISOString().slice(0, 10);
 
+export const periodRangeLabel = (localStart: string, exclusiveLocalEnd: string): string => {
+  const { year, month, day } = parseCalendarDate(exclusiveLocalEnd);
+  const inclusiveEnd = new Date(Date.UTC(year, month - 1, day));
+  inclusiveEnd.setUTCDate(inclusiveEnd.getUTCDate() - 1);
+  const end = calendarString(inclusiveEnd);
+  return localStart === end ? localStart : `${localStart} — ${end}`;
+};
+
 export const moveAnchorDate = (value: string, period: PeriodType, direction: -1 | 1): string => {
   const { year, month, day } = parseCalendarDate(value);
   if (period === 'month') {

@@ -6,7 +6,7 @@ import { EvidenceDrawer } from '../components/report/EvidenceDrawer';
 import { GoalEditor, toGlobalGoalPayload, type GlobalGoalForm, type WorkspaceGoalForm } from '../components/report/GoalEditor';
 import { ReportTrend } from '../components/report/ReportTrend';
 import { WeaknessChanges } from '../components/report/WeaknessChanges';
-import { moveAnchorDate, reportMetricCards, suggestionCopy } from '../features/report/reportViewModel';
+import { moveAnchorDate, periodRangeLabel, reportMetricCards, suggestionCopy } from '../features/report/reportViewModel';
 import {
   deleteWorkspaceGoal, generateReportSuggestion, getLearningGoals, getNaturalLearningReport,
   getReportEvidence, getWorkspaces, updateGlobalGoals, updateWorkspaceGoal,
@@ -148,7 +148,7 @@ const LearningReportPage: React.FC = () => {
         { label: '日', value: 'day' }, { label: '周', value: 'week' }, { label: '月', value: 'month' },
       ]} />
       <div><Button aria-label="上一周期" icon={<LeftOutlined />} onClick={() => setAnchorDate(value => moveAnchorDate(value, period, -1))} />
-        <span>{report.period.local_start} — {report.period.local_end}<small>{report.period.timezone_name}</small></span>
+        <span>{periodRangeLabel(report.period.local_start, report.period.local_end)}<small>{report.period.timezone_name}</small></span>
         <Button aria-label="下一周期" icon={<RightOutlined />} disabled={anchorDate >= today()} onClick={() => setAnchorDate(value => moveAnchorDate(value, period, 1))} /></div>
     </div>
 
