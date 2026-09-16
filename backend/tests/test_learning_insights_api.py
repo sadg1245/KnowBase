@@ -134,6 +134,10 @@ class LearningInsightsAPITests(unittest.IsolatedAsyncioTestCase):
             "title": "无效活动",
         })
         self.assertEqual(unknown.status_code, 422, unknown.text)
+        legacy = await self.client.post("/api/learning/activities", json={
+            "activity_type": "organize", "title": "伪造旧记录", "duration_seconds": 3600,
+        })
+        self.assertEqual(legacy.status_code, 403, legacy.text)
         self.assertEqual(await self.db.scalar(select(func.count(StudyActivity.id))), 0)
 
     async def test_export_v2_contains_phase_six_evidence(self):

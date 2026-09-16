@@ -272,7 +272,9 @@ async def build_dashboard(db: AsyncSession, *, now: datetime) -> dict:
         cursor -= timedelta(days=1)
 
     recent_rows = list(await db.scalars(
-        select(StudyActivity).order_by(StudyActivity.occurred_at.desc(), StudyActivity.id.desc()).limit(8)
+        select(StudyActivity)
+        .where(StudyActivity.activity_type.not_in(("mastery_changed", "weakness_changed")))
+        .order_by(StudyActivity.occurred_at.desc(), StudyActivity.id.desc()).limit(8)
     ))
     weak_pairs = (await db.execute(
         select(KnowledgePoint, WeakKnowledgeState.weakness_score)

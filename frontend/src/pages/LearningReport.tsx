@@ -43,6 +43,8 @@ const LearningReportPage: React.FC = () => {
 
   const load = useCallback(async () => {
     const version = ++requestVersion.current;
+    setReport(null);
+    setEvidenceMetric(null);
     setLoading(true);
     try {
       const [nextReport, nextGoals, nextWorkspaces] = await Promise.all([

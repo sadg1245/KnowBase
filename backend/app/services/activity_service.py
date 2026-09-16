@@ -60,6 +60,23 @@ async def append_activity(
         occurred_at=occurred_at or datetime.now(timezone.utc),
         schema_version=1,
     )
+    if event_key and db.bind and db.bind.dialect.name in {"sqlite", "postgresql"}:
+        if db.bind.dialect.name == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert
+        else:
+            from sqlalchemy.dialects.postgresql import insert
+        values = {
+            "event_key": event_key, "activity_type": activity_type, "title": title,
+            "workspace_id": workspace_id, "source_type": source_type, "source_id": source_id,
+            "duration_seconds": row.duration_seconds, "payload": payload,
+            "occurred_at": row.occurred_at, "schema_version": 1,
+        }
+        await db.execute(insert(StudyActivity).values(**values).on_conflict_do_nothing(
+            index_elements=[StudyActivity.event_key]
+        ))
+        return (await db.execute(
+            select(StudyActivity).where(StudyActivity.event_key == event_key)
+        )).scalar_one()
     db.add(row)
     await db.flush()
     return row

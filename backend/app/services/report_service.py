@@ -261,6 +261,8 @@ async def get_metric_evidence(
         rows = list(await db.scalars(select(QuizAttempt).where(
             QuizAttempt.submitted_at >= bounds.utc_start,
             QuizAttempt.submitted_at < bounds.utc_end,
+            QuizAttempt.evaluation_status == "graded",
+            QuizAttempt.score.is_not(None),
         ).order_by(QuizAttempt.submitted_at.desc(), QuizAttempt.id.desc())))
         items = [{
             "id": row.id, "kind": "quiz_attempt", "title": "测验作答",

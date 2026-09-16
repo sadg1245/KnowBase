@@ -71,6 +71,7 @@ async def start_session(
     now: datetime | None = None,
 ) -> StudySession:
     now = _aware(now or datetime.now(timezone.utc))
+    await expire_stale_sessions(db, now)
     existing = (await db.execute(
         select(StudySession).where(StudySession.id == request.id)
     )).scalar_one_or_none()
@@ -97,6 +98,24 @@ async def start_session(
         active_seconds=0,
         last_sequence=0,
     )
+    if db.bind and db.bind.dialect.name in {"sqlite", "postgresql"}:
+        if db.bind.dialect.name == "sqlite":
+            from sqlalchemy.dialects.sqlite import insert
+        else:
+            from sqlalchemy.dialects.postgresql import insert
+        await db.execute(insert(StudySession).values(
+            id=request.id, workspace_id=workspace_id,
+            context_type=request.context_type, context_id=request.context_id,
+            started_at=now, last_heartbeat_at=now, status="active",
+            active_seconds=0, last_sequence=0,
+        ).on_conflict_do_nothing())
+        resolved = (await db.execute(select(StudySession).where(
+            StudySession.context_type == request.context_type,
+            StudySession.context_id == request.context_id,
+            StudySession.status == "active",
+        ))).scalar_one_or_none()
+        if resolved is not None:
+            return resolved
     db.add(row)
     await db.flush()
     return row
@@ -124,7 +143,8 @@ async def heartbeat_session(
         return row
     now = _aware(now or datetime.now(timezone.utc))
     delta = max(0, int((now - _aware(row.last_heartbeat_at)).total_seconds()))
-    row.active_seconds += min(MAX_HEARTBEAT_SECONDS, delta)
+    if delta <= MAX_HEARTBEAT_SECONDS:
+        row.active_seconds += delta
     row.last_heartbeat_at = now
     row.last_sequence = sequence
     row.status = "active"

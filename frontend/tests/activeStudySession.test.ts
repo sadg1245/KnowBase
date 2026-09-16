@@ -96,3 +96,41 @@ test('context switch finishes old session and dispose uses keepalive', async () 
     'start:session-1', 'finish:session-1:0:false', 'start:session-2', 'finish:session-2:0:true',
   ]);
 });
+
+test('uses the server session id when a lost unload request resumes an active session', async () => {
+  const fake = fakeClock();
+  const calls: string[] = [];
+  const controller = createActiveStudyController({
+    clock: fake.clock, createId: () => 'new-id',
+    start: async () => ({ id: 'existing-id', last_sequence: 4 }),
+    heartbeat: async (id, sequence) => { calls.push(`beat:${id}:${sequence}`); },
+    finish: async () => undefined,
+  });
+  controller.contextChanged({ contextType: 'document', contextId: 'doc' });
+  await fake.advance(30_000);
+  assert.deepEqual(calls, ['beat:existing-id:5']);
+});
+
+test('hidden and idle transitions finish the old interval before resuming', async () => {
+  const fake = fakeClock();
+  const calls: string[] = [];
+  let id = 0;
+  const controller = createActiveStudyController({
+    clock: fake.clock, createId: () => `session-${++id}`,
+    start: async (_context, sessionId) => { calls.push(`start:${sessionId}`); return { id: sessionId, last_sequence: 0 }; },
+    heartbeat: async () => undefined,
+    finish: async sessionId => { calls.push(`finish:${sessionId}`); },
+  });
+  controller.contextChanged({ contextType: 'document', contextId: 'doc' });
+  await fake.advance(0);
+  controller.visibilityChanged(false);
+  controller.visibilityChanged(true);
+  await fake.advance(0);
+  await fake.advance(61_000);
+  controller.userActivity();
+  await fake.advance(0);
+  assert.deepEqual(calls, [
+    'start:session-1', 'finish:session-1', 'start:session-2',
+    'finish:session-2', 'start:session-3',
+  ]);
+});

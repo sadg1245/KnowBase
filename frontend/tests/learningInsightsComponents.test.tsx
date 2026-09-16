@@ -7,6 +7,7 @@ import { ActivityTimeline } from '../src/components/dashboard/ActivityTimeline';
 import { LearningQueue } from '../src/components/dashboard/LearningQueue';
 import { QuickQuestion } from '../src/components/dashboard/QuickQuestion';
 import { TodayPlan } from '../src/components/dashboard/TodayPlan';
+import { evidenceDetail } from '../src/components/report/EvidenceDrawer';
 
 test('quick question and today plan render safe actions and completed copy', () => {
   const quick = renderToStaticMarkup(<QuickQuestion
@@ -56,4 +57,16 @@ test('activity timeline labels records without a source as legacy history', () =
   ]} />);
   assert.match(html, /最近学习记录/);
   assert.match(html, /历史记录/);
+});
+
+test('report evidence explains how quiz mastery and weakness rows contribute', () => {
+  assert.match(evidenceDetail({ kind: 'quiz_attempt', score: 8, max_score: 10 } as any) || '', /8\/10/);
+  assert.match(evidenceDetail({
+    kind: 'activity', activity_type: 'mastery_changed',
+    payload: { before_mastery: 20, after_mastery: 45, before_status: 'learning', after_status: 'familiar' },
+  } as any) || '', /20 → 45/);
+  assert.match(evidenceDetail({
+    kind: 'activity', activity_type: 'weakness_changed',
+    payload: { before_score: 70, after_score: 35, before_category: 'weak', after_category: 'watch' },
+  } as any) || '', /70 → 35/);
 });

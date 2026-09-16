@@ -14,6 +14,31 @@ from app.schemas.insights import GoalUpdate, GlobalGoalsUpdate, WorkspaceGoalUpd
 
 
 class PhaseSixModelTests(unittest.IsolatedAsyncioTestCase):
+    async def test_postgresql_compat_migration_adds_phase_six_columns(self):
+        statements = []
+
+        class Result:
+            def __init__(self, values=()): self.values = values
+            def scalars(self): return self.values
+
+        class Connection:
+            dialect = type("Dialect", (), {"name": "postgresql"})()
+
+            async def execute(self, statement, params=None):
+                sql = str(statement)
+                statements.append((sql, params))
+                if "information_schema.tables" in sql:
+                    return Result(("user_profiles", "study_activities"))
+                if "information_schema.columns" in sql:
+                    return Result(("id", "created_at"))
+                return Result()
+
+        await run_compat_migrations(Connection())
+        sql = "\n".join(statement for statement, _ in statements)
+        self.assertIn('ALTER TABLE "user_profiles" ADD COLUMN "timezone_name"', sql)
+        self.assertIn('ALTER TABLE "study_activities" ADD COLUMN "occurred_at"', sql)
+        self.assertIn("CREATE UNIQUE INDEX IF NOT EXISTS ix_study_activities_event_key", sql)
+
     def test_phase_six_tables_and_columns_are_registered(self):
         self.assertTrue(
             {"study_sessions", "learning_goals", "report_suggestions"}

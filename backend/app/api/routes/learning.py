@@ -24,10 +24,7 @@ from app.services.learning_content import LearningGenerationError, generate_docu
 from app.services.review_service import apply_card_review, build_review_summary, schedule_review
 from app.services.weakness_service import weakness_priority_subquery
 from app.services import assessment_service, assessment_workflows
-from app.services.activity_service import (
-    ALLOWED_ACTIVITY_TYPES, INTERNAL_EVIDENCE_TYPES, USER_ACTIVITY_TYPES,
-    append_activity, append_card_created, append_mastery_change,
-)
+from app.services.activity_service import ALLOWED_ACTIVITY_TYPES, append_card_created, append_mastery_change
 from app.services import dashboard_service, goal_service, report_service
 from app.services.assessment_ai import AssessmentAIError
 from app.schemas.assessment import QuestionSubmitRequest
@@ -638,23 +635,9 @@ async def submit_quiz(quiz_id: str, payload: QuizSubmitRequest, db: AsyncSession
 
 @router.post("/activities", status_code=201)
 async def create_activity(payload: ActivityCreate, db: AsyncSession = Depends(get_db)) -> dict:
-    if payload.activity_type in USER_ACTIVITY_TYPES | INTERNAL_EVIDENCE_TYPES:
+    if payload.activity_type in ALLOWED_ACTIVITY_TYPES:
         raise HTTPException(403, "This activity is recorded automatically")
-    if payload.activity_type not in ALLOWED_ACTIVITY_TYPES:
-        raise HTTPException(422, "Unsupported activity type")
-    row = await append_activity(
-        db,
-        event_key=None,
-        activity_type=payload.activity_type,
-        title=payload.title,
-        workspace_id=payload.workspace_id,
-        source_type=None,
-        source_id=None,
-        duration_seconds=payload.duration_seconds,
-        payload=payload.payload,
-    )
-    await db.refresh(row)
-    return {"id": row.id, "created_at": _iso(row.created_at)}
+    raise HTTPException(422, "Unsupported activity type")
 
 
 @router.get("/report")

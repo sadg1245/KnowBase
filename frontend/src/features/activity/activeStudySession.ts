@@ -13,7 +13,7 @@ export interface ActiveStudyClock {
 export type ActiveStudyDependencies = {
   clock: ActiveStudyClock;
   createId: () => string;
-  start: (context: ActiveStudyContext, sessionId: string) => Promise<unknown>;
+  start: (context: ActiveStudyContext, sessionId: string) => Promise<{ id?: string; last_sequence?: number } | unknown>;
   heartbeat: (sessionId: string, sequence: number) => Promise<unknown>;
   finish: (sessionId: string, sequence: number, keepalive: boolean) => Promise<unknown>;
 };
@@ -35,14 +35,30 @@ export const createActiveStudyController = (deps: ActiveStudyDependencies) => {
   let startedSessionId: string | null = null;
   let lifecycle = Promise.resolve();
 
+  const startCurrent = () => {
+    if (disposed || !visible || !context || sessionId) return;
+    const requestedId = deps.createId();
+    sessionId = requestedId;
+    lifecycle = lifecycle.then(async () => {
+      const result = await deps.start(context!, requestedId) as { id?: string; last_sequence?: number } | undefined;
+      if (sessionId !== requestedId) return;
+      const actualId = result?.id || requestedId;
+      sessionId = actualId;
+      startedSessionId = actualId;
+      sequence = result?.last_sequence || 0;
+    }).catch(() => {
+      if (sessionId === requestedId) sessionId = null;
+    });
+  };
+
   const heartbeat = async () => {
     if (disposed || !visible || !sessionId || heartbeatInFlight) return;
     if (deps.clock.now() - lastActivityAt > 60_000) return;
     heartbeatInFlight = true;
-    const heartbeatSessionId = sessionId;
     try {
       await lifecycle;
-      if (disposed || !visible || sessionId !== heartbeatSessionId || startedSessionId !== heartbeatSessionId) return;
+      const heartbeatSessionId = sessionId;
+      if (disposed || !visible || !heartbeatSessionId || startedSessionId !== heartbeatSessionId) return;
       const nextSequence = sequence + 1;
       await deps.heartbeat(heartbeatSessionId, nextSequence);
       sequence = nextSequence;
@@ -67,23 +83,30 @@ export const createActiveStudyController = (deps: ActiveStudyDependencies) => {
 
   return {
     userActivity() {
-      if (!disposed) lastActivityAt = deps.clock.now();
+      if (disposed) return;
+      const now = deps.clock.now();
+      if (now - lastActivityAt > 60_000 && sessionId) {
+        finishCurrent(false);
+        startCurrent();
+      }
+      lastActivityAt = now;
     },
     visibilityChanged(nextVisible: boolean) {
+      if (visible === nextVisible || disposed) return;
       visible = nextVisible;
+      if (!nextVisible) finishCurrent(false);
+      else {
+        lastActivityAt = deps.clock.now();
+        startCurrent();
+      }
     },
     contextChanged(nextContext: ActiveStudyContext | null) {
       if (disposed || sameContext(context, nextContext)) return;
       finishCurrent(false);
       context = nextContext;
       if (!nextContext) return;
-      sessionId = deps.createId();
-      const nextId = sessionId;
       lastActivityAt = deps.clock.now();
-      lifecycle = lifecycle.then(async () => {
-        await deps.start(nextContext, nextId);
-        if (sessionId === nextId) startedSessionId = nextId;
-      }).catch(() => undefined);
+      startCurrent();
     },
     dispose() {
       if (disposed) return;

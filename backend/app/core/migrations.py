@@ -11,7 +11,56 @@ from loguru import logger
 from sqlalchemy import text
 
 
+async def _run_postgresql_phase_six_migrations(conn) -> None:
+    """Bridge pre-Phase-6 PostgreSQL tables before ORM queries touch new columns."""
+    additions = {
+        "user_profiles": {
+            "weekly_goal_days": "INTEGER NOT NULL DEFAULT 5",
+            "timezone_name": "VARCHAR(100) NOT NULL DEFAULT 'Asia/Shanghai'",
+        },
+        "study_activities": {
+            "event_key": "VARCHAR(255)",
+            "source_type": "VARCHAR(40)",
+            "source_id": "VARCHAR(64)",
+            "occurred_at": "TIMESTAMP WITH TIME ZONE",
+            "schema_version": "INTEGER NOT NULL DEFAULT 1",
+        },
+    }
+    tables = set((await conn.execute(text(
+        "SELECT table_name FROM information_schema.tables "
+        "WHERE table_schema = current_schema()"
+    ))).scalars())
+    for table, columns in additions.items():
+        if table not in tables:
+            continue
+        existing = set((await conn.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = current_schema() AND table_name = :table"
+        ), {"table": table})).scalars())
+        for name, ddl in columns.items():
+            if name not in existing:
+                await conn.execute(text(f'ALTER TABLE "{table}" ADD COLUMN "{name}" {ddl}'))
+    if "study_activities" in tables:
+        await conn.execute(text(
+            "UPDATE study_activities SET occurred_at = created_at WHERE occurred_at IS NULL"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE study_activities ALTER COLUMN occurred_at SET NOT NULL"
+        ))
+        await conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_study_activities_event_key "
+            "ON study_activities(event_key) WHERE event_key IS NOT NULL"
+        ))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_study_activities_type_occurred "
+            "ON study_activities(activity_type, occurred_at)"
+        ))
+
+
 async def run_compat_migrations(conn) -> None:
+    if conn.dialect.name == "postgresql":
+        await _run_postgresql_phase_six_migrations(conn)
+        return
     if conn.dialect.name != "sqlite":
         return
 

@@ -135,7 +135,7 @@ class ActivityCreate(BaseModel):
     workspace_id: Optional[str] = None
     activity_type: str
     title: str
-    duration_seconds: int = Field(0, ge=0)
+    duration_seconds: int = Field(0, ge=0, le=3600)
     payload: Optional[dict[str, Any]] = None
 
 

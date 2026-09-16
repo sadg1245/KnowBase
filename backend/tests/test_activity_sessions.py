@@ -83,7 +83,7 @@ class ActivitySessionTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(await self.db.scalar(select(func.count(StudyActivity.id))), 0)
 
-    async def test_heartbeat_counts_ordered_intervals_once_and_caps_long_gap(self):
+    async def test_heartbeat_counts_ordered_intervals_once_and_ignores_long_gap(self):
         session = await start_session(
             self.db,
             StudySessionStart(
@@ -99,7 +99,7 @@ class ActivitySessionTests(unittest.IsolatedAsyncioTestCase):
         duplicate_seconds = duplicate.active_seconds
         result = await heartbeat_session(self.db, session.id, 2, NOW + timedelta(seconds=150))
         self.assertEqual(duplicate_seconds, 30)
-        self.assertEqual(result.active_seconds, 90)
+        self.assertEqual(result.active_seconds, 30)
         self.assertEqual(result.last_sequence, 2)
 
     async def test_finish_is_idempotent_and_creates_one_document_read_activity(self):

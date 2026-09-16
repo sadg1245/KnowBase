@@ -93,7 +93,7 @@ async def generate_suggestion(
     if row is not None and row.status == "ready":
         return _view(row)
     if row is None:
-        row = ReportSuggestion(
+        values = dict(
             period_type=period_type,
             period_start=period_start,
             period_end=datetime.fromisoformat(report["period"]["utc_end"]),
@@ -102,7 +102,21 @@ async def generate_suggestion(
             stats_snapshot=snapshot,
             status="pending",
         )
-        db.add(row)
+        if db.bind and db.bind.dialect.name in {"sqlite", "postgresql"}:
+            if db.bind.dialect.name == "sqlite":
+                from sqlalchemy.dialects.sqlite import insert
+            else:
+                from sqlalchemy.dialects.postgresql import insert
+            await db.execute(insert(ReportSuggestion).values(**values).on_conflict_do_nothing())
+            row = await db.scalar(select(ReportSuggestion).where(
+                ReportSuggestion.period_type == period_type,
+                ReportSuggestion.period_start == period_start,
+                ReportSuggestion.timezone_name == report["period"]["timezone_name"],
+                ReportSuggestion.stats_hash == digest,
+            ))
+        else:
+            row = ReportSuggestion(**values)
+            db.add(row)
     else:
         row.status = "pending"
         row.error_message = None
