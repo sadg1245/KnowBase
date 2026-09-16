@@ -5,11 +5,12 @@ from datetime import date
 
 from pydantic import ValidationError
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.models  # noqa: F401 - register complete SQLAlchemy metadata
 from app.core.migrations import run_compat_migrations
 from app.models.base import Base
+from app.services.activity_service import append_activity
 from app.schemas.insights import GoalUpdate, GlobalGoalsUpdate, WorkspaceGoalUpdate
 
 
@@ -105,13 +106,13 @@ class PhaseSixModelTests(unittest.IsolatedAsyncioTestCase):
                     "CREATE TABLE quiz_questions (id TEXT PRIMARY KEY)",
                     "CREATE TABLE flashcards (id TEXT PRIMARY KEY, front TEXT, back TEXT)",
                     "CREATE TABLE review_logs (id TEXT PRIMARY KEY, flashcard_id TEXT, rating INTEGER)",
-                    "CREATE TABLE study_activities (id TEXT PRIMARY KEY, activity_type TEXT, title TEXT, duration_seconds INTEGER, created_at DATETIME)",
+                    "CREATE TABLE study_activities (id TEXT PRIMARY KEY, workspace_id TEXT, activity_type TEXT, title TEXT, duration_seconds INTEGER, payload JSON, created_at DATETIME)",
                 ]
                 for ddl in legacy_tables:
                     await connection.execute(text(ddl))
                 await connection.execute(text(
                     "INSERT INTO study_activities VALUES "
-                    "('legacy', 'review', '旧复习', 20, '2026-09-15 01:02:03')"
+                    "('legacy', NULL, 'review', '旧复习', 20, NULL, '2026-09-15 01:02:03')"
                 ))
                 await connection.run_sync(Base.metadata.create_all)
                 await run_compat_migrations(connection)
@@ -135,6 +136,13 @@ class PhaseSixModelTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue({"timezone_name", "weekly_goal_days"} <= profile_columns)
                 self.assertEqual(str(row.occurred_at), "2026-09-15 01:02:03")
                 self.assertEqual(row.schema_version, 1)
+            async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+                activity = await append_activity(
+                    session, event_key="activity:post-upgrade", activity_type="card_created",
+                    title="升级后活动", source_type="flashcard", source_id="card-1",
+                )
+                await session.commit()
+                self.assertEqual(activity.event_key, "activity:post-upgrade")
         finally:
             await engine.dispose()
 

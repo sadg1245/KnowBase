@@ -1,7 +1,7 @@
 """AI report suggestion snapshot cache and failure persistence tests."""
 
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
 from types import SimpleNamespace
 
 from sqlalchemy import select
@@ -67,6 +67,36 @@ class ReportAIServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(retried["id"], row.id)
         self.assertEqual(retried["status"], "ready")
+
+    async def test_existing_pending_generation_has_one_owner(self):
+        self.db.add(ReportSuggestion(
+            period_type="week", period_start=datetime(2026, 9, 13, 16, tzinfo=timezone.utc),
+            period_end=datetime(2026, 9, 20, 16, tzinfo=timezone.utc),
+            timezone_name="Asia/Shanghai", stats_hash="placeholder",
+            stats_snapshot={}, status="pending",
+        ))
+        await self.db.commit()
+        # Use the actual snapshot identity so this row represents a concurrent owner.
+        report = await report_ai_service.report_service.build_report(
+            self.db, "week", date(2026, 9, 16), now=datetime.now(timezone.utc)
+        )
+        row = await self.db.scalar(select(ReportSuggestion))
+        row.period_start = datetime.fromisoformat(report["period"]["utc_start"])
+        row.period_end = datetime.fromisoformat(report["period"]["utc_end"])
+        row.stats_hash = report_ai_service.snapshot_hash(report_ai_service.canonical_snapshot(report))
+        await self.db.commit()
+        calls = 0
+
+        async def completion(_prompt):
+            nonlocal calls
+            calls += 1
+            return "不应调用", "model-x"
+
+        result = await report_ai_service.generate_suggestion(
+            self.db, self.settings, "week", date(2026, 9, 16), completion=completion
+        )
+        self.assertEqual(result["status"], "pending")
+        self.assertEqual(calls, 0)
 
 
 if __name__ == "__main__":

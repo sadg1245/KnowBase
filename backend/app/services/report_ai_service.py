@@ -5,9 +5,9 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.learning import ReportSuggestion
@@ -92,6 +92,7 @@ async def generate_suggestion(
     ))
     if row is not None and row.status == "ready":
         return _view(row)
+    owns_generation = False
     if row is None:
         values = dict(
             period_type=period_type,
@@ -107,7 +108,8 @@ async def generate_suggestion(
                 from sqlalchemy.dialects.sqlite import insert
             else:
                 from sqlalchemy.dialects.postgresql import insert
-            await db.execute(insert(ReportSuggestion).values(**values).on_conflict_do_nothing())
+            inserted = await db.execute(insert(ReportSuggestion).values(**values).on_conflict_do_nothing())
+            owns_generation = inserted.rowcount == 1
             row = await db.scalar(select(ReportSuggestion).where(
                 ReportSuggestion.period_type == period_type,
                 ReportSuggestion.period_start == period_start,
@@ -117,9 +119,20 @@ async def generate_suggestion(
         else:
             row = ReportSuggestion(**values)
             db.add(row)
+            owns_generation = True
     else:
-        row.status = "pending"
-        row.error_message = None
+        claimed = await db.execute(update(ReportSuggestion).where(
+            ReportSuggestion.id == row.id,
+            or_(
+                ReportSuggestion.status == "failed",
+                (ReportSuggestion.status == "pending")
+                & (ReportSuggestion.updated_at < now - timedelta(minutes=2)),
+            ),
+        ).values(status="pending", error_message=None, updated_at=now))
+        owns_generation = claimed.rowcount == 1
+        await db.refresh(row)
+    if not owns_generation:
+        return _view(row)
     # This endpoint is the transaction boundary: persist the in-flight state before
     # making a slow provider call so a process interruption remains observable.
     await db.commit()

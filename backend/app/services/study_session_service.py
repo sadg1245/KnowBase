@@ -142,6 +142,8 @@ async def heartbeat_session(
     if sequence <= row.last_sequence:
         return row
     now = _aware(now or datetime.now(timezone.utc))
+    if now - _aware(row.started_at) > MAX_SESSION_AGE:
+        return (await _settle(db, row, _aware(row.last_heartbeat_at), "expired")).session
     delta = max(0, int((now - _aware(row.last_heartbeat_at)).total_seconds()))
     if delta <= MAX_HEARTBEAT_SECONDS:
         row.active_seconds += delta
@@ -208,5 +210,5 @@ async def expire_stale_sessions(
     results = []
     for row in rows:
         if now - _aware(row.started_at) > MAX_SESSION_AGE:
-            results.append(await _settle(db, row, now, "expired"))
+            results.append(await _settle(db, row, _aware(row.last_heartbeat_at), "expired"))
     return results

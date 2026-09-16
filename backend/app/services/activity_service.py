@@ -71,9 +71,7 @@ async def append_activity(
             "duration_seconds": row.duration_seconds, "payload": payload,
             "occurred_at": row.occurred_at, "schema_version": 1,
         }
-        await db.execute(insert(StudyActivity).values(**values).on_conflict_do_nothing(
-            index_elements=[StudyActivity.event_key]
-        ))
+        await db.execute(insert(StudyActivity).values(**values).on_conflict_do_nothing())
         return (await db.execute(
             select(StudyActivity).where(StudyActivity.event_key == event_key)
         )).scalar_one()

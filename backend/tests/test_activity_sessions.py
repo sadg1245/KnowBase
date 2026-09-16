@@ -154,6 +154,19 @@ class ActivitySessionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(expired), 1)
         self.assertEqual(expired[0].session.status, "expired")
         self.assertEqual(expired[0].activity.duration_seconds, 30)
+        self.assertEqual(
+            expired[0].activity.occurred_at.replace(tzinfo=timezone.utc),
+            session.last_heartbeat_at,
+        )
+
+    async def test_heartbeat_expires_session_past_absolute_age_without_counting_gap(self):
+        session = await start_session(self.db, StudySessionStart(
+            id="session-age", context_type="document", context_id=self.document.id,
+            workspace_id=self.workspace.id,
+        ), NOW)
+        result = await heartbeat_session(self.db, session.id, 1, NOW + timedelta(hours=13))
+        self.assertEqual(result.status, "expired")
+        self.assertEqual(result.active_seconds, 0)
 
 
 if __name__ == "__main__":

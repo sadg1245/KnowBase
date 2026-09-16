@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.assessment import QuizAttempt
 from app.models.learning import KnowledgePoint, StudyActivity
 from app.models.workspace import Workspace
-from app.services import goal_service
+from app.services import goal_service, study_session_service
 from app.services.period_service import daily_buckets, period_bounds, previous_period
 
 
@@ -118,6 +118,7 @@ def _comparison(current: float, previous: float) -> dict:
 async def build_report(
     db: AsyncSession, period_type: str, anchor_date: date, *, now: datetime
 ) -> dict:
+    await study_session_service.expire_stale_sessions(db, now)
     profile = await goal_service.get_or_create_profile(db)
     bounds = period_bounds(period_type, anchor_date, profile.timezone_name)
     previous = previous_period(bounds)
@@ -212,6 +213,7 @@ async def get_metric_evidence(
     cursor: str | None = None,
     limit: int = 30,
 ) -> dict:
+    await study_session_service.expire_stale_sessions(db, datetime.now(timezone.utc))
     if metric not in EVIDENCE_METRICS:
         raise ValueError(f"Unsupported report metric: {metric}")
     profile = await goal_service.get_or_create_profile(db)
@@ -278,6 +280,7 @@ async def get_metric_evidence(
 
 async def build_legacy_report(db: AsyncSession, *, days: int, now: datetime) -> dict:
     """Adapt the shared evidence calculations to the old rolling-window response."""
+    await study_session_service.expire_stale_sessions(db, now)
     profile = await goal_service.get_or_create_profile(db)
     end = _aware(now) + timedelta(microseconds=1)
     start = _aware(now) - timedelta(days=days)

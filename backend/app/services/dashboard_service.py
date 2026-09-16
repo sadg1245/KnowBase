@@ -14,7 +14,7 @@ from app.models.assessment import LearningTask, MistakeRecord, QuizAttempt, Weak
 from app.models.document import Document
 from app.models.learning import Flashcard, KnowledgePoint, LearningGoal, ReviewLog, StudyActivity
 from app.models.workspace import Workspace
-from app.services import goal_service
+from app.services import goal_service, study_session_service
 from app.services.period_service import period_bounds
 
 
@@ -162,6 +162,7 @@ async def rank_workspaces(db: AsyncSession, *, now: datetime, limit: int = 4) ->
 
 async def build_dashboard(db: AsyncSession, *, now: datetime) -> dict:
     now = _aware(now)
+    await study_session_service.expire_stale_sessions(db, now)
     profile = await goal_service.get_or_create_profile(db)
     zone = ZoneInfo(profile.timezone_name)
     local_today = now.astimezone(zone).date()
