@@ -15,13 +15,19 @@ from app.config import Settings
 from app.models.assessment import LearningTask, MistakeRecord, QuizAttempt, QuizRun, QuizSet, WeakKnowledgeState
 from app.models.document import Document
 from app.models.chat import DocumentChunk
-from app.models.learning import Flashcard, KnowledgePoint, QuizQuestion, ReviewLog, StudyActivity, UserProfile
+from app.models.learning import (
+    Flashcard, KnowledgePoint, LearningGoal, QuizQuestion, ReportSuggestion,
+    ReviewLog, StudyActivity, StudySession, UserProfile,
+)
 from app.models.workspace import Workspace
 from app.services.learning_content import LearningGenerationError, generate_document_learning_content
 from app.services.review_service import apply_card_review, build_review_summary, schedule_review
 from app.services.weakness_service import weakness_priority_subquery
 from app.services import assessment_service, assessment_workflows
-from app.services.activity_service import append_card_created, append_mastery_change
+from app.services.activity_service import (
+    ALLOWED_ACTIVITY_TYPES, INTERNAL_EVIDENCE_TYPES, USER_ACTIVITY_TYPES,
+    append_activity, append_card_created, append_mastery_change,
+)
 from app.services import dashboard_service, goal_service, report_service
 from app.services.assessment_ai import AssessmentAIError
 from app.schemas.assessment import QuestionSubmitRequest
@@ -632,7 +638,22 @@ async def submit_quiz(quiz_id: str, payload: QuizSubmitRequest, db: AsyncSession
 
 @router.post("/activities", status_code=201)
 async def create_activity(payload: ActivityCreate, db: AsyncSession = Depends(get_db)) -> dict:
-    row = StudyActivity(**payload.model_dump()); db.add(row); await db.flush(); await db.refresh(row)
+    if payload.activity_type in USER_ACTIVITY_TYPES | INTERNAL_EVIDENCE_TYPES:
+        raise HTTPException(403, "This activity is recorded automatically")
+    if payload.activity_type not in ALLOWED_ACTIVITY_TYPES:
+        raise HTTPException(422, "Unsupported activity type")
+    row = await append_activity(
+        db,
+        event_key=None,
+        activity_type=payload.activity_type,
+        title=payload.title,
+        workspace_id=payload.workspace_id,
+        source_type=None,
+        source_id=None,
+        duration_seconds=payload.duration_seconds,
+        payload=payload.payload,
+    )
+    await db.refresh(row)
     return {"id": row.id, "created_at": _iso(row.created_at)}
 
 
@@ -647,7 +668,12 @@ async def learning_report(days: int = Query(7, ge=1, le=365), db: AsyncSession =
 async def export_learning_data(db: AsyncSession = Depends(get_db)) -> dict:
     """Portable JSON export of learning metadata; original files remain downloadable separately."""
     profile = (await db.execute(select(UserProfile).limit(1))).scalar_one_or_none()
-    profile_data = {"display_name": "学习者", "daily_goal_minutes": 25, "daily_review_target": 10, "preferred_mode": "explain", "reminder_time": "20:00"}
+    profile_data = {
+        "display_name": "学习者", "daily_goal_minutes": 25,
+        "daily_review_target": 10, "weekly_goal_days": 5,
+        "timezone_name": "Asia/Shanghai", "preferred_mode": "explain",
+        "reminder_time": "20:00",
+    }
     if profile is not None:
         profile_data = {key: getattr(profile, key) for key in profile_data}
     workspaces = (await db.execute(select(Workspace))).scalars().all()
@@ -656,17 +682,30 @@ async def export_learning_data(db: AsyncSession = Depends(get_db)) -> dict:
     cards = (await db.execute(select(Flashcard))).scalars().all()
     quizzes = (await db.execute(select(QuizQuestion))).scalars().all()
     activities = (await db.execute(select(StudyActivity))).scalars().all()
+    goals = (await db.execute(select(LearningGoal))).scalars().all()
+    sessions = (await db.execute(select(StudySession))).scalars().all()
+    suggestions = (await db.execute(select(ReportSuggestion))).scalars().all()
     assessment_data = {}
     for key, model in (("quiz_sets", QuizSet), ("quiz_runs", QuizRun), ("quiz_attempts", QuizAttempt),
                        ("mistakes", MistakeRecord), ("weak_knowledge", WeakKnowledgeState), ("learning_tasks", LearningTask)):
         assessment_data[key] = [assessment_workflows.serialize_row(row) for row in (await db.execute(select(model))).scalars()]
     return {
-        "exported_at": _iso(datetime.now(timezone.utc)), "format_version": 1,
+        "exported_at": _iso(datetime.now(timezone.utc)), "format_version": 2,
         "profile": profile_data,
         "knowledge_bases": [{"id": w.id, "name": w.name, "description": w.description, "learning_goal": w.learning_goal, "domain": w.domain, "created_at": _iso(w.created_at)} for w in workspaces],
         "documents": [{"id": d.id, "workspace_id": d.workspace_id, "filename": d.filename, "file_type": d.file_type, "summary": d.summary, "outline": d.outline, "created_at": _iso(d.created_at)} for d in documents],
         "knowledge_points": [_point(p) for p in points], "flashcards": [_card(c) for c in cards],
         "quizzes": [{**_quiz(q, reveal=True), **assessment_workflows.serialize_row(q)} for q in quizzes],
         **assessment_data,
-        "activities": [{"id": a.id, "workspace_id": a.workspace_id, "type": a.activity_type, "title": a.title, "duration_seconds": a.duration_seconds, "payload": a.payload, "created_at": _iso(a.created_at)} for a in activities],
+        "activities": [{
+            "id": a.id, "workspace_id": a.workspace_id, "type": a.activity_type,
+            "title": a.title, "duration_seconds": a.duration_seconds,
+            "payload": a.payload, "event_key": a.event_key,
+            "source_type": a.source_type, "source_id": a.source_id,
+            "occurred_at": _iso(a.occurred_at), "schema_version": a.schema_version,
+            "created_at": _iso(a.created_at),
+        } for a in activities],
+        "learning_goals": [assessment_workflows.serialize_row(row) for row in goals],
+        "study_sessions": [assessment_workflows.serialize_row(row) for row in sessions],
+        "report_suggestions": [assessment_workflows.serialize_row(row) for row in suggestions],
     }

@@ -1,7 +1,7 @@
 """HTTP contracts for phase-six learning insight endpoints."""
 
 import unittest
-from datetime import date
+from datetime import date, datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 from httpx import ASGITransport, AsyncClient
@@ -12,7 +12,9 @@ from app.api.deps import get_db
 from app.main import app
 from app.models.base import Base
 from app.models.document import Document
-from app.models.learning import StudyActivity
+from app.models.learning import (
+    LearningGoal, ReportSuggestion, StudyActivity, StudySession,
+)
 from app.models.workspace import Workspace
 
 
@@ -119,6 +121,60 @@ class LearningInsightsAPITests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(len(second.json()["items"]), 1)
         self.assertIsNone(second.json()["next_cursor"])
+
+    async def test_automatic_activities_cannot_be_forged_by_clients(self):
+        protected = await self.client.post("/api/learning/activities", json={
+            "workspace_id": self.workspace.id,
+            "activity_type": "review_completed",
+            "title": "伪造复习完成",
+        })
+        self.assertEqual(protected.status_code, 403, protected.text)
+        unknown = await self.client.post("/api/learning/activities", json={
+            "activity_type": "mouse_moved",
+            "title": "无效活动",
+        })
+        self.assertEqual(unknown.status_code, 422, unknown.text)
+        self.assertEqual(await self.db.scalar(select(func.count(StudyActivity.id))), 0)
+
+    async def test_export_v2_contains_phase_six_evidence(self):
+        now = datetime(2026, 9, 16, 8, tzinfo=timezone.utc)
+        self.db.add_all([
+            LearningGoal(
+                scope_type="global", metric="daily_minutes", target_value=30,
+                target_date=date(2026, 12, 31),
+            ),
+            StudySession(
+                id="export-session", workspace_id=self.workspace.id,
+                context_type="document", context_id=self.document.id,
+                started_at=now, last_heartbeat_at=now, ended_at=now,
+                active_seconds=180, status="completed", last_sequence=2,
+            ),
+            ReportSuggestion(
+                period_type="week", period_start=now, period_end=now,
+                timezone_name="Asia/Shanghai", stats_hash="export-hash",
+                stats_snapshot={"learning_time": 180}, status="ready",
+                suggestion="保持节奏。", model="test", generated_at=now,
+            ),
+            StudyActivity(
+                activity_type="document_read", title="阅读文档",
+                event_key="activity:study-session:export-session",
+                source_type="document", source_id=self.document.id,
+                occurred_at=now, schema_version=1,
+                payload={"document_id": self.document.id},
+            ),
+        ])
+        await self.db.commit()
+
+        response = await self.client.get("/api/learning/export")
+        self.assertEqual(response.status_code, 200, response.text)
+        payload = response.json()
+        self.assertEqual(payload["format_version"], 2)
+        for field in ("learning_goals", "study_sessions", "report_suggestions"):
+            self.assertIn(field, payload)
+            self.assertEqual(len(payload[field]), 1)
+        activity = payload["activities"][0]
+        for field in ("event_key", "source_type", "source_id", "occurred_at", "schema_version"):
+            self.assertIn(field, activity)
 
     async def test_goal_routes_validate_update_list_and_preserve_deleted_workspace_goal(self):
         invalid = await self.client.put("/api/learning/goals/global", json={
