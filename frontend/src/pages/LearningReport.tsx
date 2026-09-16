@@ -1,7 +1,186 @@
-import React, { useEffect, useState } from 'react';
-import { Col, Row, Segmented, Skeleton, Space, Typography } from 'antd';
-import { BookOutlined, ClockCircleOutlined, ReadOutlined, TrophyOutlined } from '@ant-design/icons';
-import { getLearningReport } from '../services/api';
-const {Title,Text,Paragraph}=Typography;
-const LearningReport:React.FC=()=>{const [days,setDays]=useState(7);const [data,setData]=useState<any>(null);useEffect(()=>{setData(null);getLearningReport(days).then(setData);},[days]);if(!data)return <Skeleton active paragraph={{rows:8}}/>;const daily=[...data.daily];const max=Math.max(1,...daily.map((d:any)=>d.minutes));return <div><Row justify="space-between" align="bottom"><Col><div className="page-eyebrow">Reflection · 看见积累</div><Title className="page-title" level={1}>学习报告</Title><p className="page-lead">不追求每一天都完美，只观察哪些方法真正帮助你理解和记住。</p></Col><Col><Segmented value={days} onChange={v=>setDays(Number(v))} options={[{label:'7 天',value:7},{label:'30 天',value:30},{label:'90 天',value:90}]}/></Col></Row><Row gutter={[16,16]} style={{marginTop:30}}>{[{icon:<ClockCircleOutlined/>,value:data.total_minutes,label:'学习分钟'},{icon:<ReadOutlined/>,value:data.review_count,label:'完成复习'},{icon:<TrophyOutlined/>,value:`${data.quiz_accuracy}%`,label:'练习正确率'},{icon:<BookOutlined/>,value:`${data.mastered_points}/${data.total_points}`,label:'已掌握知识点'}].map(x=><Col xs={12} lg={6} key={x.label}><div className="paper-card" style={{padding:20}}><span style={{color:'#167d8d'}}>{x.icon}</span><div className="metric-number" style={{fontSize:30,fontWeight:700,marginTop:8}}>{x.value}</div><Text type="secondary">{x.label}</Text></div></Col>)}</Row><Row gutter={[20,20]} style={{marginTop:20}}><Col xs={24} lg={16}><section className="paper-card" style={{padding:26}}><Title level={3}>学习节奏</Title><div style={{height:240,display:'flex',alignItems:'end',gap:Math.max(4,Math.min(16,180/days)),paddingTop:25,borderBottom:'1px solid #dfe8eb'}}>{daily.length?daily.map((d:any)=><div key={d.date} title={`${d.date} · ${d.minutes} 分钟`} style={{flex:1,minWidth:5,maxWidth:42,height:`${Math.max(5,(d.minutes/max)*100)}%`,background:'#8bc8c3',borderRadius:'7px 7px 0 0',position:'relative'}}><span style={{position:'absolute',bottom:-24,left:'50%',transform:'translateX(-50%)',fontSize:10,color:'#78909b',whiteSpace:'nowrap'}}>{days<=7?d.date.slice(5):''}</span></div>):<Text type="secondary" style={{margin:'auto'}}>完成一次学习后，这里会出现你的节奏</Text>}</div></section></Col><Col xs={24} lg={8}><section className="soft-panel" style={{padding:26,height:'100%'}}><Text type="secondary">AI 学习建议</Text><Title level={3} style={{marginTop:12}}>下一步，轻一点也没关系</Title><Paragraph style={{fontSize:15,lineHeight:1.8}}>{data.suggestion}</Paragraph><div style={{height:1,background:'#d5e7e5',margin:'24px 0'}}/><Text type="secondary">这段时间共有 {data.activity_count} 次学习活动。持续的小步前进，比偶尔用力更可靠。</Text></section></Col></Row></div>};
-export default LearningReport;
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { App, Button, Segmented, Skeleton, Tag } from 'antd';
+import { BulbOutlined, LeftOutlined, RightOutlined, SettingOutlined } from '@ant-design/icons';
+
+import { EvidenceDrawer } from '../components/report/EvidenceDrawer';
+import { GoalEditor, toGlobalGoalPayload, type GlobalGoalForm, type WorkspaceGoalForm } from '../components/report/GoalEditor';
+import { ReportTrend } from '../components/report/ReportTrend';
+import { WeaknessChanges } from '../components/report/WeaknessChanges';
+import { moveAnchorDate, reportMetricCards, suggestionCopy } from '../features/report/reportViewModel';
+import {
+  deleteWorkspaceGoal, generateReportSuggestion, getLearningGoals, getNaturalLearningReport,
+  getReportEvidence, getWorkspaces, updateGlobalGoals, updateWorkspaceGoal,
+} from '../services/api';
+import type {
+  LearningGoals, LearningReport, PeriodType, ReportEvidenceItem, Workspace,
+} from '../services/api';
+
+const today = () => new Date().toLocaleDateString('sv-SE');
+const futureDate = () => {
+  const date = new Date();
+  date.setFullYear(date.getFullYear() + 1);
+  return date.toLocaleDateString('sv-SE');
+};
+
+const LearningReportPage: React.FC = () => {
+  const { message } = App.useApp();
+  const [period, setPeriod] = useState<PeriodType>('week');
+  const [anchorDate, setAnchorDate] = useState(today);
+  const [report, setReport] = useState<LearningReport | null>(null);
+  const [goals, setGoals] = useState<LearningGoals | null>(null);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [suggesting, setSuggesting] = useState(false);
+  const [goalOpen, setGoalOpen] = useState(false);
+  const [goalSaving, setGoalSaving] = useState(false);
+  const [goalError, setGoalError] = useState<string>();
+  const [evidenceMetric, setEvidenceMetric] = useState<{ metric: string; label: string } | null>(null);
+  const [evidenceItems, setEvidenceItems] = useState<ReportEvidenceItem[]>([]);
+  const [evidenceCursor, setEvidenceCursor] = useState<string | null>();
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
+  const requestVersion = useRef(0);
+  const evidenceVersion = useRef(0);
+
+  const load = useCallback(async () => {
+    const version = ++requestVersion.current;
+    setLoading(true);
+    try {
+      const [nextReport, nextGoals, nextWorkspaces] = await Promise.all([
+        getNaturalLearningReport(period, anchorDate), getLearningGoals(), getWorkspaces(),
+      ]);
+      if (version !== requestVersion.current) return;
+      setReport(nextReport);
+      setGoals(nextGoals);
+      setWorkspaces(nextWorkspaces);
+    } catch {
+      if (version === requestVersion.current) message.error('学习报告暂时没有加载成功');
+    } finally {
+      if (version === requestVersion.current) setLoading(false);
+    }
+  }, [anchorDate, message, period]);
+
+  useEffect(() => { void load(); return () => { requestVersion.current += 1; }; }, [load]);
+
+  const loadEvidence = useCallback(async (cursor?: string | null, append = false) => {
+    if (!evidenceMetric) return;
+    const version = append ? evidenceVersion.current : ++evidenceVersion.current;
+    setEvidenceLoading(true);
+    try {
+      const page = await getReportEvidence(period, anchorDate, evidenceMetric.metric, cursor || undefined);
+      if (version !== evidenceVersion.current) return;
+      setEvidenceItems(current => append ? [...current, ...page.items] : page.items);
+      setEvidenceCursor(page.next_cursor);
+    } catch {
+      if (version === evidenceVersion.current) message.error('指标依据暂时没有加载成功');
+    } finally {
+      if (version === evidenceVersion.current) setEvidenceLoading(false);
+    }
+  }, [anchorDate, evidenceMetric, message, period]);
+
+  useEffect(() => {
+    setEvidenceItems([]);
+    setEvidenceCursor(undefined);
+    if (evidenceMetric) void loadEvidence();
+  }, [evidenceMetric, loadEvidence]);
+
+  const globalInitial = useMemo<GlobalGoalForm>(() => ({
+    minutes: goals?.global.daily_minutes?.target || 25,
+    reviews: goals?.global.daily_reviews?.target || 10,
+    weeklyDays: goals?.global.weekly_days?.target || 5,
+    targetDate: goals?.global.overall_mastery?.target_date || futureDate(),
+    timezoneName: goals?.timezone_name || 'Asia/Shanghai',
+  }), [goals]);
+  const workspaceInitial = useMemo<WorkspaceGoalForm[]>(() => {
+    const byWorkspace = new Map((goals?.workspaces || []).map(item => [item.workspace_id, item]));
+    return workspaces.map(item => {
+      const goal = byWorkspace.get(item.id);
+      return { id: item.id, name: item.name, targetMastery: goal?.target, targetDate: goal?.target_date || undefined };
+    });
+  }, [goals?.workspaces, workspaces]);
+
+  const saveGoals = async (global: GlobalGoalForm, workspaceRows: WorkspaceGoalForm[]) => {
+    setGoalSaving(true);
+    setGoalError(undefined);
+    try {
+      await updateGlobalGoals(toGlobalGoalPayload(global));
+      const originals = new Map(workspaceInitial.map(item => [item.id, item]));
+      const changes = workspaceRows.flatMap(item => {
+        const original = originals.get(item.id);
+        const changed = original?.targetMastery !== item.targetMastery || original?.targetDate !== item.targetDate;
+        if (!changed) return [];
+        if (item.targetMastery == null && !item.targetDate) return original?.targetMastery != null ? [deleteWorkspaceGoal(item.id)] : [];
+        if (item.targetMastery == null || !item.targetDate) throw new Error(`请完整填写「${item.name}」的掌握度和日期`);
+        return [updateWorkspaceGoal(item.id, { target_mastery: item.targetMastery, target_date: item.targetDate })];
+      });
+      await Promise.all(changes);
+      await load();
+      setGoalOpen(false);
+      message.success('学习目标已保存');
+    } catch (reason: any) {
+      setGoalError(reason?.response?.data?.detail || reason?.message || '部分目标没有保存，请检查后重试');
+    } finally {
+      setGoalSaving(false);
+    }
+  };
+
+  const requestSuggestion = async () => {
+    setSuggesting(true);
+    try {
+      const suggestion = await generateReportSuggestion(period, anchorDate);
+      setReport(current => current ? { ...current, suggestion } : current);
+    } catch (error: any) {
+      message.error(error?.response?.data?.detail || '学习建议生成失败，报告数据不受影响');
+      await load();
+    } finally { setSuggesting(false); }
+  };
+
+  if (loading && !report) return <Skeleton active paragraph={{ rows: 12 }} />;
+  if (!report) return <div className="dashboard-load-error"><h2>报告暂时无法显示</h2><Button type="primary" onClick={() => void load()}>重新加载</Button></div>;
+  const cards = reportMetricCards(report);
+
+  return <main className="report-page">
+    <header className="report-heading">
+      <div><span className="page-eyebrow">Reflection · 看见积累</span><h1>学习报告</h1><p>每一个数字都能回到实际学习记录，不从结果倒推过程。</p></div>
+      <Button icon={<SettingOutlined />} onClick={() => setGoalOpen(true)}>调整学习目标</Button>
+    </header>
+    <div className="report-period-bar">
+      <Segmented value={period} onChange={value => setPeriod(value as PeriodType)} options={[
+        { label: '日', value: 'day' }, { label: '周', value: 'week' }, { label: '月', value: 'month' },
+      ]} />
+      <div><Button aria-label="上一周期" icon={<LeftOutlined />} onClick={() => setAnchorDate(value => moveAnchorDate(value, period, -1))} />
+        <span>{report.period.local_start} — {report.period.local_end}<small>{report.period.timezone_name}</small></span>
+        <Button aria-label="下一周期" icon={<RightOutlined />} disabled={anchorDate >= today()} onClick={() => setAnchorDate(value => moveAnchorDate(value, period, 1))} /></div>
+    </div>
+
+    <section className="report-metric-grid">{cards.map(card => <button key={card.metric} onClick={() => setEvidenceMetric({ metric: card.metric, label: card.label })}>
+      <span>{card.label}</span><strong>{card.value}</strong><small className={`is-${card.comparison.tone}`}>{card.comparison.text}</small><i>查看依据 →</i>
+    </button>)}</section>
+
+    <div className="report-main-grid">
+      <ReportTrend trend={report.trend} />
+      <div className="report-side-stack">
+        <WeaknessChanges changes={report.weakness_changes} onOpen={() => setEvidenceMetric({ metric: 'weakness_change', label: '薄弱知识变化' })} />
+        <section className="report-suggestion">
+          <div><span className="dashboard-kicker">AI study note</span><h2>下一步学习建议</h2></div>
+          {report.suggestion?.status === 'ready' ? <p>{report.suggestion.suggestion}</p> : <p>{suggestionCopy(report.suggestion)}</p>}
+          {report.suggestion?.model ? <Tag bordered={false}>{report.suggestion.model}</Tag> : null}
+          {report.suggestion?.status !== 'ready' ? <Button type="primary" icon={<BulbOutlined />} loading={suggesting} onClick={() => void requestSuggestion()}>{report.suggestion?.status === 'failed' ? '重新生成建议' : '生成学习建议'}</Button> : <Button onClick={() => void requestSuggestion()} loading={suggesting}>按当前数据重新生成</Button>}
+        </section>
+      </div>
+    </div>
+
+    <section className="report-goal-strip">
+      <div><span>每日学习</span><strong>{goals?.global.daily_minutes.actual || 0}/{goals?.global.daily_minutes.target || 0} 分钟</strong></div>
+      <div><span>每日复习</span><strong>{goals?.global.daily_reviews.actual || 0}/{goals?.global.daily_reviews.target || 0} 张</strong></div>
+      <div><span>本周学习</span><strong>{goals?.global.weekly_days.actual || 0}/{goals?.global.weekly_days.target || 0} 天</strong></div>
+      <Button type="link" onClick={() => setGoalOpen(true)}>编辑目标</Button>
+    </section>
+
+    <EvidenceDrawer open={Boolean(evidenceMetric)} title={evidenceMetric?.label || ''} items={evidenceItems} loading={evidenceLoading}
+      hasMore={Boolean(evidenceCursor)} onLoadMore={() => void loadEvidence(evidenceCursor, true)} onClose={() => setEvidenceMetric(null)} />
+    <GoalEditor open={goalOpen} initial={globalInitial} workspaces={workspaceInitial} saving={goalSaving} error={goalError}
+      onClose={() => { if (!goalSaving) setGoalOpen(false); }} onSave={(global, workspaceRows) => void saveGoals(global, workspaceRows)} />
+  </main>;
+};
+
+export default LearningReportPage;

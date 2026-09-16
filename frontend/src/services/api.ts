@@ -525,7 +525,7 @@ export const finishStudySessionKeepalive = async (id: string, sequence: number):
   if (!response.ok) throw new Error(`Study session finish failed: ${response.status}`);
   return response.json();
 };
-export interface LearningProfile { id: string; display_name: string; daily_goal_minutes: number; daily_review_target: number; preferred_mode: string; reminder_time?: string }
+export interface LearningProfile { id: string; display_name: string; daily_goal_minutes: number; daily_review_target: number; weekly_goal_days: number; timezone_name: string; preferred_mode: string; reminder_time?: string }
 export const getLearningProfile = async (): Promise<LearningProfile> => (await api.get('/learning/profile')).data;
 export const updateLearningProfile = async (values: Partial<LearningProfile>): Promise<LearningProfile> => (await api.put('/learning/profile', values)).data;
 export const getKnowledgeBaseDetail = async (id: string): Promise<KnowledgeBaseDetail> => (await api.get(`/learning/workspaces/${id}`)).data;
@@ -598,6 +598,48 @@ export const getLearningTasks = async (filters: LearningTaskFilters = {}): Promi
 export const completeLearningTask = async (taskId: string): Promise<LearningTask> =>
   (await api.post(`/learning/tasks/${taskId}/complete`)).data;
 export const getLearningReport = async (days = 7) => (await api.get('/learning/report', { params: { days } })).data;
+export type PeriodType = 'day' | 'week' | 'month';
+export type ReportSuggestion = {
+  id: string; status: 'pending' | 'ready' | 'failed'; suggestion?: string | null;
+  model?: string | null; error_message?: string | null; stats_hash: string; generated_at?: string | null;
+};
+export type ReportComparison = { current: number; previous: number; percent_change: number | null; label: string };
+export type LearningReport = {
+  period: { type: PeriodType; timezone_name: string; local_start: string; local_end: string; utc_start: string; utc_end: string };
+  total_active_seconds: number; activity_count: number; new_knowledge_points: number;
+  review_count: number; quiz_accuracy: number; pending_grading_count: number;
+  mastery_delta: number; weakness_changes: { improved: number; worsened: number; unchanged: number };
+  metrics: Record<string, { value: unknown; evidence_query: { metric: string; period_type: PeriodType; anchor_date: string } }>;
+  comparisons: Record<string, ReportComparison>;
+  trend: Array<{ date: string; active_seconds: number; activities: number; reviews: number; new_knowledge_points: number }>;
+  suggestion?: ReportSuggestion | null;
+};
+export type ReportEvidenceItem = {
+  id: string; kind: string; title: string; duration_seconds: number; occurred_at: string;
+  workspace_id?: string | null; workspace_name?: string | null; activity_type?: string;
+  source_type?: string | null; source_id?: string | null; source_label: string;
+  score?: number | null; max_score?: number; evaluation_status?: string; payload?: Record<string, unknown> | null;
+};
+export type ReportEvidencePage = { items: ReportEvidenceItem[]; next_cursor?: string | null; metric: string };
+export type LearningGoals = {
+  timezone_name: string;
+  global: Record<string, GoalProgress>;
+  workspaces: GoalProgress[];
+};
+export const getNaturalLearningReport = async (period: PeriodType, anchorDate: string): Promise<LearningReport> =>
+  (await api.get(`/learning/reports/${period}`, { params: { anchor_date: anchorDate } })).data;
+export const getReportEvidence = async (period: PeriodType, anchorDate: string, metric: string, cursor?: string): Promise<ReportEvidencePage> =>
+  (await api.get(`/learning/reports/${period}/evidence`, { params: { anchor_date: anchorDate, metric, cursor } })).data;
+export const generateReportSuggestion = async (period: PeriodType, anchorDate: string): Promise<ReportSuggestion> =>
+  (await api.post(`/learning/reports/${period}/suggestion`, undefined, { params: { anchor_date: anchorDate } })).data;
+export const getLearningGoals = async (): Promise<LearningGoals> => (await api.get('/learning/goals')).data;
+export const updateGlobalGoals = async (values: {
+  daily_minutes: number; daily_reviews: number; weekly_days: number; target_completion_date: string; timezone_name: string;
+}): Promise<LearningGoals> => (await api.put('/learning/goals/global', values)).data;
+export const updateWorkspaceGoal = async (workspaceId: string, values: { target_mastery: number; target_date: string }): Promise<GoalProgress> =>
+  (await api.put(`/learning/goals/workspaces/${workspaceId}`, values)).data;
+export const deleteWorkspaceGoal = async (workspaceId: string): Promise<GoalProgress> =>
+  (await api.delete(`/learning/goals/workspaces/${workspaceId}`)).data;
 export const exportLearningData = async () => (await api.get('/learning/export')).data;
 export const createActivity = async (values: { workspace_id?: string; activity_type: string; title: string; duration_seconds?: number; payload?: object }) => (await api.post('/learning/activities', values)).data;
 export const documentContentUrl = (id: string) => `/api/documents/${id}/content`;

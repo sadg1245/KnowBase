@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   App, Typography, Tabs, Form, Input, Select, Button, Space, Card, Spin, Descriptions, Tag, Divider,
 } from 'antd';
@@ -73,6 +74,7 @@ const EMBEDDING_MODELS: Record<string, Array<{ label: string; value: string }>> 
 
 const Settings: React.FC = () => {
   const { message } = App.useApp();
+  const navigate = useNavigate();
   const [llmForm] = Form.useForm();
   const [embedForm] = Form.useForm();
   const [learningForm] = Form.useForm();
@@ -184,9 +186,12 @@ const Settings: React.FC = () => {
                   <Form.Item name="display_name" label="怎么称呼你" rules={[{ required: true }]}><Input /></Form.Item>
                   <Form.Item name="daily_goal_minutes" label="每天计划学习多久"><Select options={[10,15,25,30,45,60,90].map(v => ({ label: `${v} 分钟`, value: v }))} /></Form.Item>
                   <Form.Item name="daily_review_target" label="每天计划复习多少张卡片"><Select options={[5,10,15,20,30,50].map(v => ({ label: `${v} 张`, value: v }))} /></Form.Item>
+                  <Form.Item name="weekly_goal_days" label="每周计划学习多少天"><Select options={[1,2,3,4,5,6,7].map(v => ({ label: `${v} 天`, value: v }))} /></Form.Item>
+                  <Form.Item name="timezone_name" label="学习报告时区" rules={[{ required: true, message: '请输入 IANA 时区' }]}><Input placeholder="Asia/Shanghai" /></Form.Item>
                   <Form.Item name="preferred_mode" label="默认学习方式"><Select options={[{label:'通俗讲解',value:'simple'},{label:'深入学习',value:'deep'},{label:'引导思考',value:'socratic'},{label:'费曼复述',value:'feynman'},{label:'直接回答',value:'direct'}]} /></Form.Item>
                   <Form.Item name="reminder_time" label="飞书每日复习提醒时间"><Input type="time" /></Form.Item>
-                  <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={async () => { try { setSaving(true); await updateLearningProfile(await learningForm.validateFields()); message.success('学习偏好已保存'); } finally { setSaving(false); } }}>保存学习偏好</Button>
+                  <Space wrap><Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={async () => { try { setSaving(true); await updateLearningProfile(await learningForm.validateFields()); message.success('学习偏好已保存'); } finally { setSaving(false); } }}>保存学习偏好</Button>
+                    <Button onClick={() => navigate('/report')}>设置完整学习目标</Button></Space>
                 </Form>
               </Card>
             ),
