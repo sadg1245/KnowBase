@@ -1029,6 +1029,22 @@ class PipelineEventTests(unittest.IsolatedAsyncioTestCase):
             await db.commit()
             return document.id, workspace.id
 
+    async def _events(self, document_id: str):
+        async with self.sessions() as db:
+            return (
+                await db.execute(
+                    select(DocumentPipelineEvent)
+                    .where(DocumentPipelineEvent.document_id == document_id)
+                    .order_by(DocumentPipelineEvent.started_at)
+                )
+            ).scalars().all()
+
+    async def _document(self, document_id: str) -> Document:
+        async with self.sessions() as db:
+            return (
+                await db.execute(select(Document).where(Document.id == document_id))
+            ).scalar_one()
+
     async def test_successful_run_records_four_ordered_nodes_and_stage(self):
         path = str(Path(self.tmp.name) / "notes.txt")
         Path(path).write_text("条件概率的定义与公式。\n\n贝叶斯定理。", encoding="utf-8")
@@ -1042,17 +1058,8 @@ class PipelineEventTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "ready")
         self.assertEqual(vector_store.calls, 1)
 
-        async with self.sessions() as db:
-            events = (
-                await db.execute(
-                    select(DocumentPipelineEvent)
-                    .where(DocumentPipelineEvent.document_id == document_id)
-                    .order_by(DocumentPipelineEvent.started_at)
-                )
-            ).scalars().all()
-            document = (
-                await db.execute(select(Document).where(Document.id == document_id))
-            ).scalar_one()
+        events = await self._events(document_id)
+        document = await self._document(document_id)
 
         self.assertEqual(
             [event.node for event in events],
@@ -1076,17 +1083,8 @@ class PipelineEventTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["status"], "failed")
 
-        async with self.sessions() as db:
-            events = (
-                await db.execute(
-                    select(DocumentPipelineEvent)
-                    .where(DocumentPipelineEvent.document_id == document_id)
-                    .order_by(DocumentPipelineEvent.started_at)
-                )
-            ).scalars().all()
-            document = (
-                await db.execute(select(Document).where(Document.id == document_id))
-            ).scalar_one()
+        events = await self._events(document_id)
+        document = await self._document(document_id)
 
         self.assertEqual([event.node for event in events], ["parsing", "chunking", "embedding"])
         self.assertEqual(events[-1].status, "failed")
