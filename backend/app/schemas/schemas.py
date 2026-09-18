@@ -15,6 +15,9 @@ class WorkspaceCreate(BaseModel):
     description: Optional[str] = Field("", description="Workspace description")
     learning_goal: Optional[str] = ""
     domain: Optional[str] = "未分类"
+    domain_id: Optional[str] = None
+    learning_status: Optional[str] = Field("not_started", pattern="^(not_started|learning|paused|completed)$")
+    cover_url: Optional[str] = None
     accent_color: Optional[str] = "#1f7a8c"
 
 
@@ -23,6 +26,10 @@ class WorkspaceUpdate(BaseModel):
     description: Optional[str] = None
     learning_goal: Optional[str] = None
     domain: Optional[str] = None
+    domain_id: Optional[str] = None
+    learning_status: Optional[str] = Field(None, pattern="^(not_started|learning|paused|completed)$")
+    cover_url: Optional[str] = None
+    clear_cover: bool = False
     accent_color: Optional[str] = None
     archived: Optional[bool] = None
 
@@ -35,8 +42,15 @@ class WorkspaceResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     document_count: int = 0
+    knowledge_point_count: int = 0
+    learning_progress: int = 0
+    last_studied_at: Optional[datetime] = None
     learning_goal: str = ""
+    learning_status: str = "not_started"
     domain: str = "未分类"
+    domain_id: Optional[str] = None
+    cover_kind: str = "none"
+    cover_url: Optional[str] = None
     accent_color: str = "#1f7a8c"
     archived: bool = False
 
@@ -123,7 +137,7 @@ class DocumentSectionDetail(DocumentSectionItem):
 # ---------------------------------------------------------------------------
 
 class ConversationCreate(BaseModel):
-    user_id: str = Field(..., description="User identifier")
+    # 归属由认证状态决定；不再接受客户端提交的 user_id。
     workspace_id: Optional[str] = Field(None, description="Associated workspace")
     role: str = Field(..., pattern="^(user|assistant)$")
     content: str = Field(..., min_length=1)
@@ -148,7 +162,6 @@ class ConversationResponse(BaseModel):
 
 class ChatRequest(BaseModel):
     question: str = Field(..., min_length=1, description="User question")
-    user_id: str = Field("default", min_length=1, description="Conversation owner")
     workspace_id: Optional[str] = Field(
         None, description="Limit search to this workspace"
     )
@@ -233,9 +246,11 @@ class LLMSettings(BaseModel):
     model: str = "deepseek-chat"
     api_key_masked: Optional[str] = None
     base_url: Optional[str] = None
+    configured: bool = False
 
 
 class EmbeddingSettings(BaseModel):
+    provider: str = "local"
     model: str = "BAAI/bge-small-zh-v1.5"
     dimension: Optional[int] = None
 
@@ -259,6 +274,7 @@ class LLMSettingsUpdate(BaseModel):
 
 
 class EmbeddingSettingsUpdate(BaseModel):
+    provider: Optional[str] = None
     model: Optional[str] = None
 
 

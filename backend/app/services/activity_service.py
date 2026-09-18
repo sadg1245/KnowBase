@@ -30,6 +30,7 @@ class InvalidActivityType(ValueError):
 async def append_activity(
     db: AsyncSession,
     *,
+    user_id: str,
     event_key: str | None,
     activity_type: str,
     title: str,
@@ -49,6 +50,7 @@ async def append_activity(
         if existing is not None:
             return existing
     row = StudyActivity(
+        user_id=user_id,
         event_key=event_key,
         activity_type=activity_type,
         title=title,
@@ -66,6 +68,7 @@ async def append_activity(
         else:
             from sqlalchemy.dialects.postgresql import insert
         values = {
+            "user_id": user_id,
             "event_key": event_key, "activity_type": activity_type, "title": title,
             "workspace_id": workspace_id, "source_type": source_type, "source_id": source_id,
             "duration_seconds": row.duration_seconds, "payload": payload,
@@ -84,9 +87,12 @@ def compatible_activity_type(value: str) -> str:
     return {"review": "review_completed", "quiz": "quiz_completed"}.get(value, value)
 
 
-async def append_card_created(db: AsyncSession, card, *, occurred_at: datetime | None = None) -> StudyActivity:
+async def append_card_created(
+    db: AsyncSession, card, *, user_id: str, occurred_at: datetime | None = None
+) -> StudyActivity:
     return await append_activity(
         db,
+        user_id=user_id,
         event_key=f"activity:card:{card.id}",
         activity_type="card_created",
         title="创建了一张知识卡片",
@@ -105,6 +111,7 @@ async def append_mastery_change(
     db: AsyncSession,
     point,
     *,
+    user_id: str,
     before_mastery: float,
     before_status: str,
     reason: str,
@@ -127,6 +134,7 @@ async def append_mastery_change(
     }
     evidence = await append_activity(
         db,
+        user_id=user_id,
         event_key=f"evidence:mastery:{point.id}:{source_type}:{source_id}",
         activity_type="mastery_changed",
         title=f"知识点掌握度发生变化：{point.title}",
@@ -140,6 +148,7 @@ async def append_mastery_change(
     if before_status != "mastered" and after_status == "mastered":
         rows.append(await append_activity(
             db,
+            user_id=user_id,
             event_key=f"activity:mastered:{point.id}:{source_type}:{source_id}",
             activity_type="knowledge_mastered",
             title=f"掌握了知识点：{point.title}",
@@ -166,6 +175,7 @@ async def append_weakness_change(
     db: AsyncSession,
     state,
     *,
+    user_id: str,
     before_score: float | None,
     before_category: str | None,
     reason: str,
@@ -179,6 +189,7 @@ async def append_weakness_change(
     key_time = timestamp.astimezone(timezone.utc).isoformat()
     return await append_activity(
         db,
+        user_id=user_id,
         event_key=f"evidence:weakness:{state.knowledge_point_id}:{key_time}:{after_score}",
         activity_type="weakness_changed",
         title="知识点薄弱度发生变化",

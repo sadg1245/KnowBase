@@ -33,7 +33,12 @@ class ChatSession(Base):
     __tablename__ = "chat_sessions"
 
     id = Column(String(36), primary_key=True, default=_uuid)
-    user_id = Column(String(255), nullable=False, default="default", index=True)
+    user_id = Column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     workspace_id = Column(
         String(36),
         ForeignKey("workspaces.id", ondelete="SET NULL"),
@@ -78,7 +83,11 @@ class ChatFeedback(Base):
 
     id = Column(String(36), primary_key=True, default=_uuid)
     message_id = Column(String(36), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False, index=True)
-    user_id = Column(String(255), nullable=False, default="default")
+    user_id = Column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     helpful = Column(Boolean, nullable=False)
     category = Column(String(30), nullable=True)
     note = Column(Text, nullable=True)

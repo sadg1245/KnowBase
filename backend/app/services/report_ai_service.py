@@ -13,6 +13,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.learning import ReportSuggestion
 from app.services import report_service
 from app.services.assessment_ai import _provider
+from app.services.llm_completion import (
+    call_completion,
+    completion_kwargs,
+    escalate_max_tokens,
+    plan_max_tokens,
+    provider_name,
+    response_content,
+)
+
+# 三条建议本身不长，但推理模型会把思维链记在同一个输出预算里。
+SUGGESTION_MAX_TOKENS = 2_000
 
 
 class ReportAIError(RuntimeError):
@@ -54,21 +65,29 @@ async def _default_completion(settings, prompt: str) -> tuple[str, str]:
     import litellm
 
     model, api_key, api_base = _provider(settings)
-    kwargs = {
-        "model": model,
-        "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.2,
-        "max_tokens": 600,
-        "api_key": api_key,
-        "timeout": 60,
-    }
-    if api_base:
-        kwargs["api_base"] = api_base
-    response = litellm.acompletion(**kwargs)
-    if inspect.isawaitable(response):
-        response = await response
-    content = response.choices[0].message.content
-    return content, model
+    provider = provider_name(settings, model)
+    kwargs = completion_kwargs(
+        model=model,
+        api_key=api_key,
+        api_base=api_base,
+        prompt=prompt,
+        provider=provider,
+        max_tokens=plan_max_tokens(provider, SUGGESTION_MAX_TOKENS),
+    )
+    last_error: Exception | None = None
+    for attempt in range(2):
+        try:
+            response = await call_completion(litellm.acompletion, kwargs)
+            return response_content(response), model
+        except ValueError as exc:
+            # 空响应/被截断：多半是推理占满了预算，放大预算再问一次。
+            last_error = exc
+            if attempt == 0:
+                kwargs = {
+                    **kwargs,
+                    "max_tokens": escalate_max_tokens(provider, int(kwargs["max_tokens"])),
+                }
+    raise last_error if last_error is not None else ValueError("provider returned no suggestion")
 
 
 async def generate_suggestion(
@@ -77,14 +96,18 @@ async def generate_suggestion(
     period_type: str,
     anchor_date: date,
     *,
+    user_id: str,
     completion=None,
 ) -> dict:
     now = datetime.now(timezone.utc)
-    report = await report_service.build_report(db, period_type, anchor_date, now=now)
+    report = await report_service.build_report(
+        db, period_type, anchor_date, now=now, user_id=user_id
+    )
     snapshot = canonical_snapshot(report)
     digest = snapshot_hash(snapshot)
     period_start = datetime.fromisoformat(report["period"]["utc_start"])
     row = await db.scalar(select(ReportSuggestion).where(
+        ReportSuggestion.user_id == user_id,
         ReportSuggestion.period_type == period_type,
         ReportSuggestion.period_start == period_start,
         ReportSuggestion.timezone_name == report["period"]["timezone_name"],
@@ -95,6 +118,7 @@ async def generate_suggestion(
     owns_generation = False
     if row is None:
         values = dict(
+            user_id=user_id,
             period_type=period_type,
             period_start=period_start,
             period_end=datetime.fromisoformat(report["period"]["utc_end"]),
@@ -111,6 +135,7 @@ async def generate_suggestion(
             inserted = await db.execute(insert(ReportSuggestion).values(**values).on_conflict_do_nothing())
             owns_generation = inserted.rowcount == 1
             row = await db.scalar(select(ReportSuggestion).where(
+                ReportSuggestion.user_id == user_id,
                 ReportSuggestion.period_type == period_type,
                 ReportSuggestion.period_start == period_start,
                 ReportSuggestion.timezone_name == report["period"]["timezone_name"],
@@ -158,9 +183,12 @@ async def generate_suggestion(
         raise ReportAIError(str(exc)) from exc
 
 
-async def get_cached_suggestion(db: AsyncSession, report: dict) -> dict | None:
+async def get_cached_suggestion(
+    db: AsyncSession, report: dict, *, user_id: str
+) -> dict | None:
     snapshot = canonical_snapshot(report)
     row = await db.scalar(select(ReportSuggestion).where(
+        ReportSuggestion.user_id == user_id,
         ReportSuggestion.period_type == report["period"]["type"],
         ReportSuggestion.period_start == datetime.fromisoformat(report["period"]["utc_start"]),
         ReportSuggestion.timezone_name == report["period"]["timezone_name"],

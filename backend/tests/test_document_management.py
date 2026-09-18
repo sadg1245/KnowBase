@@ -20,9 +20,9 @@ from app.models.base import Base
 from app.models.chat import DocumentChunk
 from app.models.document import Document
 from app.models.learning import KnowledgePoint, StudyActivity
-from app.models.workspace import Workspace
 from app.schemas.learning import KnowledgePointMerge, KnowledgePointUpdate
 from app.schemas.schemas import DocumentUpdate
+from tests.support import create_user, create_workspace
 
 
 class DocumentManagementTests(unittest.IsolatedAsyncioTestCase):
@@ -36,9 +36,9 @@ class DocumentManagementTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.dispose()
 
     async def _fixture(self, db):
-        workspace = Workspace(name="Docs", slug="docs")
-        db.add(workspace)
-        await db.flush()
+        user = await create_user(db)
+        self.user = user
+        workspace = await create_workspace(db, user, name="Docs", slug="docs")
         document = Document(
             workspace_id=workspace.id,
             filename="book.pdf",
@@ -72,24 +72,27 @@ class DocumentManagementTests(unittest.IsolatedAsyncioTestCase):
                 document.id,
                 DocumentUpdate(filename=" Renamed.pdf ", tags=[" A ", "", "A", "B"]),
                 db,
+                current_user=self.user,
             )
             self.assertEqual(updated.filename, "Renamed.pdf")
             self.assertEqual(updated.tags, ["A", "B"])
 
-            sections = await list_document_sections(document.id, db)
+            sections = await list_document_sections(document.id, db, current_user=self.user)
             self.assertEqual(sections["items"][0]["chunk_id"], f"{document.id}_chunk_0")
             self.assertEqual(sections["outline"][0]["section_path"], ["第一章"])
-            detail = await get_document_section(document.id, f"{document.id}_chunk_0", db)
+            detail = await get_document_section(
+                document.id, f"{document.id}_chunk_0", db, current_user=self.user
+            )
             self.assertIsNone(detail["previous_chunk_id"])
             self.assertEqual(detail["next_chunk_id"], f"{document.id}_chunk_1")
 
             document.status = "processing"
             await db.flush()
             with self.assertRaises(HTTPException) as conflict:
-                await reprocess_document(document.id, db)
+                await reprocess_document(document.id, db, current_user=self.user)
             self.assertEqual(conflict.exception.status_code, 409)
             with self.assertRaises(HTTPException) as not_ready:
-                await regenerate_document_learning(document.id, db)
+                await regenerate_document_learning(document.id, db=db, current_user=self.user)
             self.assertEqual(not_ready.exception.status_code, 400)
 
     async def test_learning_detail_merge_mastery_and_quiz(self):
@@ -106,11 +109,12 @@ class DocumentManagementTests(unittest.IsolatedAsyncioTestCase):
                 summary="B", explanation="EB", tags=["B"], importance=5, is_key=True,
             )
             db.add_all([target, source, StudyActivity(
+                user_id=self.user.id,
                 workspace_id=workspace.id, activity_type="read", title="Read chapter",
             )])
             await db.flush()
 
-            detail = await workspace_learning_detail(workspace.id, db)
+            detail = await workspace_learning_detail(workspace.id, db, current_user=self.user)
             self.assertEqual(detail["recommendations"][0]["type"], "retry_document")
             self.assertEqual(detail["recent_activities"][0]["title"], "Read chapter")
 
@@ -118,18 +122,20 @@ class DocumentManagementTests(unittest.IsolatedAsyncioTestCase):
                 target.id,
                 KnowledgePointUpdate(mastery_status="mastered"),
                 db,
+                current_user=self.user,
             )
             self.assertEqual(mastered["mastery"], 1.0)
             merged = await merge_points(
                 KnowledgePointMerge(target_id=target.id, source_ids=[source.id]),
                 db,
+                current_user=self.user,
             )
             self.assertEqual(set(merged["tags"]), {"A", "B"})
             self.assertTrue(merged["is_key"])
             remaining = (await db.execute(select(KnowledgePoint))).scalars().all()
             self.assertEqual([row.id for row in remaining], [target.id])
 
-            quiz = await point_to_quiz(target.id, db)
+            quiz = await point_to_quiz(target.id, db, current_user=self.user)
             self.assertEqual(quiz["knowledge_point_id"], target.id)
             self.assertNotIn("answer", quiz)
 

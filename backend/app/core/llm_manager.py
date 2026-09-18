@@ -53,18 +53,19 @@ class LLMManager:
         self._default_provider: Optional[str] = None
         self._default_model: Optional[str] = None
 
-        # 尝试从 Settings 加载
+        # 使用应用共享的设置对象：它已经合并了本机持久化的用户配置（含 API Key），
+        # 不能在这里重新构造 Settings()，否则第三方库注入的环境变量会覆盖用户选择。
         try:
-            from app.config import Settings
-            settings = Settings()
+            from app.config import settings
+
             self._default_provider = getattr(settings, "DEFAULT_LLM_PROVIDER", None)
             self._default_model = getattr(settings, "DEFAULT_LLM_MODEL", None)
             logger.info(
-                f"从 Settings 加载 LLM 配置: provider={self._default_provider}, "
+                f"从应用设置加载 LLM 配置: provider={self._default_provider}, "
                 f"model={self._default_model}"
             )
         except Exception:
-            logger.debug("未找到 app.config.Settings，使用环境变量配置")
+            logger.debug("未找到应用设置，使用环境变量配置")
 
         # 环境变量兜底
         if not self._default_provider:

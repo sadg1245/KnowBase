@@ -15,8 +15,10 @@ def enqueue_document_processing(document: Document) -> None:
     )
 
 
-def enqueue_learning_generation(document_id: str) -> None:
+def enqueue_learning_generation(document_id: str, *, overwrite_tags: bool = False) -> None:
     """Queue learning-material generation after parsing is durably ready."""
     from app.collector.tasks import generate_learning_content_task
 
-    generate_learning_content_task.delay(document_id=document_id)
+    generate_learning_content_task.delay(
+        document_id=document_id, overwrite_tags=overwrite_tags
+    )

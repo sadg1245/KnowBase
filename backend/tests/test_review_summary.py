@@ -7,9 +7,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import app.models  # noqa: F401
 from app.models.base import Base
-from app.models.learning import Flashcard, KnowledgePoint, ReviewLog, StudyActivity, UserProfile
-from app.models.workspace import Workspace
+from app.models.learning import Flashcard, KnowledgePoint, ReviewLog, StudyActivity
 from app.services.review_service import build_review_summary, local_day_bounds
+from tests.support import create_preferences, create_user, create_workspace
 
 
 class LocalDayTests(unittest.TestCase):
@@ -33,10 +33,9 @@ class ReviewSummaryTests(unittest.IsolatedAsyncioTestCase):
     async def test_summary_uses_local_day_for_due_completed_overdue_and_streak(self):
         now = datetime(2026, 8, 29, 4, 0, tzinfo=timezone.utc)
         async with self.sessions() as db:
-            workspace = Workspace(name="Review", slug="review")
-            profile = UserProfile(display_name="Learner", daily_review_target=12)
-            db.add_all([workspace, profile])
-            await db.flush()
+            user = await create_user(db, display_name="Learner")
+            await create_preferences(db, user, daily_review_target=12)
+            workspace = await create_workspace(db, user, name="Review", slug="review")
             key_point = KnowledgePoint(
                 workspace_id=workspace.id,
                 title="Key weak point",
@@ -94,12 +93,14 @@ class ReviewSummaryTests(unittest.IsolatedAsyncioTestCase):
                     reviewed_at=datetime(2026, 8, 29, 2, 0, tzinfo=timezone.utc),
                 ),
                 StudyActivity(
+                    user_id=user.id,
                     workspace_id=workspace.id,
                     activity_type="read",
                     title="Yesterday",
                     created_at=datetime(2026, 8, 27, 18, 0, tzinfo=timezone.utc),
                 ),
                 StudyActivity(
+                    user_id=user.id,
                     workspace_id=workspace.id,
                     activity_type="read",
                     title="Two days ago",
@@ -108,7 +109,9 @@ class ReviewSummaryTests(unittest.IsolatedAsyncioTestCase):
             ])
             await db.flush()
 
-            summary = await build_review_summary(db, timezone_offset_minutes=480, now=now)
+            summary = await build_review_summary(
+                db, timezone_offset_minutes=480, now=now, user_id=user.id
+            )
 
             self.assertEqual(summary["due_count"], 2)
             self.assertEqual(summary["new_count"], 1)
@@ -125,9 +128,8 @@ class ReviewSummaryTests(unittest.IsolatedAsyncioTestCase):
     async def test_summary_uses_thirty_second_default_without_review_history(self):
         now = datetime(2026, 8, 29, 4, 0, tzinfo=timezone.utc)
         async with self.sessions() as db:
-            workspace = Workspace(name="Review", slug="review-empty")
-            db.add(workspace)
-            await db.flush()
+            user = await create_user(db)
+            workspace = await create_workspace(db, user, name="Review", slug="review-empty")
             for index in range(3):
                 db.add(Flashcard(
                     workspace_id=workspace.id,
@@ -137,7 +139,9 @@ class ReviewSummaryTests(unittest.IsolatedAsyncioTestCase):
                 ))
             await db.flush()
 
-            summary = await build_review_summary(db, timezone_offset_minutes=0, now=now)
+            summary = await build_review_summary(
+                db, timezone_offset_minutes=0, now=now, user_id=user.id
+            )
 
             self.assertEqual(summary["due_count"], 3)
             self.assertEqual(summary["estimated_minutes"], 2)

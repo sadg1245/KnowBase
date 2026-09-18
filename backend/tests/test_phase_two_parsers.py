@@ -17,6 +17,7 @@ from app.models.chat import DocumentChunk
 from app.models.document import Document
 from app.models.workspace import Workspace
 from app.services.hybrid_retrieval import upsert_document_chunks
+from tests.support import create_user, create_workspace
 
 
 class ParserStructureMetadataTests(unittest.TestCase):
@@ -159,9 +160,10 @@ class ChunkStructurePersistenceTests(unittest.IsolatedAsyncioTestCase):
         session_factory = async_sessionmaker(engine, expire_on_commit=False)
         try:
             async with session_factory() as db:
-                workspace = Workspace(name="Parser Test", slug="parser-test")
-                db.add(workspace)
-                await db.flush()
+                user = await create_user(db)
+                workspace = await create_workspace(
+                    db, user, name="Parser Test", slug="parser-test"
+                )
                 document = Document(
                     workspace_id=workspace.id,
                     filename="book.pdf",
@@ -233,9 +235,10 @@ class ChunkStructurePersistenceTests(unittest.IsolatedAsyncioTestCase):
             pipeline = DocumentPipeline(Embeddings(), vector_store, Splitter())
             pipeline._get_parser = lambda _file_type: Parser()  # type: ignore[method-assign]
             async with session_factory() as db:
-                workspace = Workspace(name="Pipeline Test", slug="pipeline-test")
-                db.add(workspace)
-                await db.flush()
+                user = await create_user(db)
+                workspace = await create_workspace(
+                    db, user, name="Pipeline Test", slug="pipeline-test"
+                )
                 document = Document(
                     workspace_id=workspace.id,
                     filename="book.pdf",

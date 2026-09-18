@@ -7,9 +7,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.assessment import QuizAttempt, QuizRun, QuizSet
 from app.models.base import Base
-from app.models.learning import KnowledgePoint, QuizQuestion, StudyActivity, UserProfile
-from app.models.workspace import Workspace
+from app.models.learning import KnowledgePoint, QuizQuestion, StudyActivity
 from app.services import report_service
+from tests.support import create_preferences, create_user, create_workspace
 
 
 NOW = datetime(2026, 9, 16, 8, tzinfo=timezone.utc)
@@ -22,10 +22,11 @@ class ReportServiceTests(unittest.IsolatedAsyncioTestCase):
             await connection.run_sync(Base.metadata.create_all)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         self.db = self.sessions()
-        self.db.add(UserProfile(timezone_name="Asia/Shanghai"))
-        self.workspace = Workspace(name="Reports", slug="reports")
-        self.db.add(self.workspace)
-        await self.db.flush()
+        self.user = await create_user(self.db)
+        await create_preferences(self.db, self.user, timezone_name="Asia/Shanghai")
+        self.workspace = await create_workspace(
+            self.db, self.user, name="Reports", slug="reports"
+        )
 
     async def asyncTearDown(self):
         await self.db.close()
@@ -52,21 +53,21 @@ class ReportServiceTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_week_report_aggregates_metrics_changes_and_daily_buckets(self):
         self.db.add_all([
-            StudyActivity(activity_type="document_read", title="read", duration_seconds=600,
+            StudyActivity(user_id=self.user.id, activity_type="document_read", title="read", duration_seconds=600,
                           occurred_at=datetime(2026, 9, 15, 2, tzinfo=timezone.utc)),
-            StudyActivity(activity_type="conversation_completed", title="chat", duration_seconds=300,
+            StudyActivity(user_id=self.user.id, activity_type="conversation_completed", title="chat", duration_seconds=300,
                           occurred_at=datetime(2026, 9, 16, 2, tzinfo=timezone.utc)),
-            StudyActivity(activity_type="review_completed", title="r1", source_id="r1",
+            StudyActivity(user_id=self.user.id, activity_type="review_completed", title="r1", source_id="r1",
                           occurred_at=datetime(2026, 9, 15, 3, tzinfo=timezone.utc)),
-            StudyActivity(activity_type="review", title="r2",
+            StudyActivity(user_id=self.user.id, activity_type="review", title="r2",
                           occurred_at=datetime(2026, 9, 16, 3, tzinfo=timezone.utc)),
-            StudyActivity(activity_type="mastery_changed", title="m", payload={
+            StudyActivity(user_id=self.user.id, activity_type="mastery_changed", title="m", payload={
                 "before_mastery": .3, "after_mastery": .6,
             }, occurred_at=datetime(2026, 9, 15, 4, tzinfo=timezone.utc)),
-            StudyActivity(activity_type="weakness_changed", title="w1", payload={
+            StudyActivity(user_id=self.user.id, activity_type="weakness_changed", title="w1", payload={
                 "before_score": 80, "after_score": 50,
             }, occurred_at=datetime(2026, 9, 15, 5, tzinfo=timezone.utc)),
-            StudyActivity(activity_type="weakness_changed", title="w2", payload={
+            StudyActivity(user_id=self.user.id, activity_type="weakness_changed", title="w2", payload={
                 "before_score": 20, "after_score": 40,
             }, occurred_at=datetime(2026, 9, 15, 6, tzinfo=timezone.utc)),
         ])
@@ -77,7 +78,9 @@ class ReportServiceTests(unittest.IsolatedAsyncioTestCase):
         await self._quiz_attempts()
         await self.db.flush()
 
-        report = await report_service.build_report(self.db, "week", date(2026, 9, 16), now=NOW)
+        report = await report_service.build_report(
+            self.db, "week", date(2026, 9, 16), now=NOW, user_id=self.user.id
+        )
 
         self.assertEqual(report["period"]["local_start"], "2026-09-14")
         self.assertEqual(report["total_active_seconds"], 900)
@@ -95,26 +98,32 @@ class ReportServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_day_report_accuracy_excludes_pending_ai_attempts(self):
         await self._quiz_attempts()
         await self.db.flush()
-        report = await report_service.build_report(self.db, "day", date(2026, 9, 15), now=NOW)
+        report = await report_service.build_report(
+            self.db, "day", date(2026, 9, 15), now=NOW, user_id=self.user.id
+        )
         self.assertEqual(report["quiz_accuracy"], 75.0)
         self.assertEqual(report["pending_grading_count"], 1)
 
     async def test_metric_evidence_reconstructs_time_and_labels_legacy_sources(self):
         self.db.add_all([
-            StudyActivity(event_key="activity:study-session:s1", activity_type="document_read",
+            StudyActivity(user_id=self.user.id, event_key="activity:study-session:s1", activity_type="document_read",
                           title="阅读资料", workspace_id=self.workspace.id,
                           source_type="study_session", source_id="s1", duration_seconds=600,
                           occurred_at=datetime(2026, 9, 15, 2, tzinfo=timezone.utc)),
-            StudyActivity(activity_type="organize", title="旧记录", duration_seconds=60,
+            StudyActivity(user_id=self.user.id, activity_type="organize", title="旧记录", duration_seconds=60,
                           occurred_at=datetime(2026, 9, 15, 3, tzinfo=timezone.utc)),
         ])
         await self.db.flush()
-        report = await report_service.build_report(self.db, "day", date(2026, 9, 15), now=NOW)
+        report = await report_service.build_report(
+            self.db, "day", date(2026, 9, 15), now=NOW, user_id=self.user.id
+        )
         first = await report_service.get_metric_evidence(
-            self.db, "day", date(2026, 9, 15), "learning_time", limit=1
+            self.db, "day", date(2026, 9, 15), "learning_time", limit=1,
+            user_id=self.user.id,
         )
         second = await report_service.get_metric_evidence(
-            self.db, "day", date(2026, 9, 15), "learning_time", cursor=first["next_cursor"], limit=5
+            self.db, "day", date(2026, 9, 15), "learning_time", cursor=first["next_cursor"], limit=5,
+            user_id=self.user.id,
         )
         items = first["items"] + second["items"]
         self.assertEqual(sum(item["duration_seconds"] for item in items), report["total_active_seconds"])
@@ -122,16 +131,18 @@ class ReportServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(report_service.InvalidEvidenceCursor):
             await report_service.get_metric_evidence(
                 self.db, "week", date(2026, 9, 15), "learning_time",
-                cursor=first["next_cursor"], limit=5,
+                cursor=first["next_cursor"], limit=5, user_id=self.user.id,
             )
 
     async def test_legacy_rolling_report_preserves_public_keys(self):
         self.db.add(StudyActivity(
-            activity_type="document_read", title="read", duration_seconds=120,
+            user_id=self.user.id, activity_type="document_read", title="read", duration_seconds=120,
             occurred_at=NOW,
         ))
         await self.db.flush()
-        report = await report_service.build_legacy_report(self.db, days=7, now=NOW)
+        report = await report_service.build_legacy_report(
+            self.db, days=7, now=NOW, user_id=self.user.id
+        )
         self.assertEqual(set(report), {
             "days", "total_minutes", "activity_count", "review_count", "quiz_accuracy",
             "mastered_points", "total_points", "daily", "suggestion",

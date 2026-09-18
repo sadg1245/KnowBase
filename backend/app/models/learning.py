@@ -17,22 +17,6 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-class UserProfile(Base):
-    __tablename__ = "user_profiles"
-
-    id = Column(String(36), primary_key=True, default=_uuid)
-    display_name = Column(String(80), nullable=False, default="学习者")
-    daily_goal_minutes = Column(Integer, nullable=False, default=25)
-    daily_review_target = Column(Integer, nullable=False, default=10)
-    weekly_goal_days = Column(Integer, nullable=False, default=5)
-    timezone_name = Column(String(100), nullable=False, default="Asia/Shanghai")
-    preferred_mode = Column(String(30), nullable=False, default="explain")
-    reminder_time = Column(String(5), nullable=True, default="20:00")
-    password_hash = Column(String(255), nullable=True)
-    created_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now(), onupdate=_now)
-
-
 class KnowledgePoint(Base):
     __tablename__ = "knowledge_points"
 
@@ -48,6 +32,8 @@ class KnowledgePoint(Base):
     difficulty = Column(Integer, nullable=False, default=2)
     mastery = Column(Float, nullable=False, default=0.0)
     tags = Column(JSON, nullable=False, default=list)
+    # 人工编辑过标签后置为 True，重新生成学习内容时不得无条件覆盖。
+    tags_locked = Column(Boolean, nullable=False, default=False)
     is_key = Column(Boolean, nullable=False, default=False)
     mastery_status = Column(String(20), nullable=False, default="not_started", index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now())
@@ -140,6 +126,12 @@ class StudyActivity(Base):
     __tablename__ = "study_activities"
 
     id = Column(String(36), primary_key=True, default=_uuid)
+    user_id = Column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True)
     activity_type = Column(String(30), nullable=False, index=True)
     event_key = Column(String(255), nullable=True, unique=True, index=True)
@@ -167,6 +159,12 @@ class StudySession(Base):
     )
 
     id = Column(String(36), primary_key=True, default=_uuid)
+    user_id = Column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True)
     context_type = Column(String(20), nullable=False)
     context_id = Column(String(36), nullable=False, index=True)
@@ -185,6 +183,7 @@ class LearningGoal(Base):
     __table_args__ = (
         Index(
             "uq_learning_goals_global_metric",
+            "user_id",
             "metric",
             unique=True,
             sqlite_where=text("scope_type = 'global'"),
@@ -201,6 +200,12 @@ class LearningGoal(Base):
     )
 
     id = Column(String(36), primary_key=True, default=_uuid)
+    user_id = Column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     scope_type = Column(String(20), nullable=False, index=True)
     workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True, index=True)
     metric = Column(String(30), nullable=False, index=True)
@@ -216,12 +221,18 @@ class ReportSuggestion(Base):
     __tablename__ = "report_suggestions"
     __table_args__ = (
         UniqueConstraint(
-            "period_type", "period_start", "timezone_name", "stats_hash",
+            "user_id", "period_type", "period_start", "timezone_name", "stats_hash",
             name="uq_report_suggestions_snapshot",
         ),
     )
 
     id = Column(String(36), primary_key=True, default=_uuid)
+    user_id = Column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     period_type = Column(String(10), nullable=False, index=True)
     period_start = Column(DateTime(timezone=True), nullable=False, index=True)
     period_end = Column(DateTime(timezone=True), nullable=False)

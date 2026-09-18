@@ -197,10 +197,9 @@ def get_embedding_service() -> EmbeddingService:
     from app.config import settings
 
     provider = settings.DEFAULT_EMBEDDING_PROVIDER  # "local" | "openai"
-    if provider == "local":
-        model_name = settings.DEFAULT_EMBEDDING  # 本地模型名
-    else:
-        model_name = settings.DEFAULT_EMBEDDING_MODEL  # 远程模型名
+    # DEFAULT_EMBEDDING 是用户在设置页选择的模型（本地或远程），优先使用它；
+    # 未选择时再回退到提供商默认模型。
+    model_name = settings.DEFAULT_EMBEDDING or settings.DEFAULT_EMBEDDING_MODEL
 
     _embedding_service_instance = EmbeddingService(
         provider=provider,

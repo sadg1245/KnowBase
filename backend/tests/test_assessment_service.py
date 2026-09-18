@@ -22,7 +22,9 @@ from app.models.base import Base
 from app.models.chat import DocumentChunk
 from app.models.document import Document
 from app.models.learning import KnowledgePoint, QuizQuestion, StudyActivity
+from app.models.user import User
 from app.models.workspace import Workspace
+from tests.support import create_user, create_workspace
 from app.schemas.assessment import PaperSubmitRequest, QuestionSubmitRequest, QuizSetGenerateRequest
 from app.services.assessment_service import (
     AssessmentScopeError,
@@ -84,9 +86,10 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         self.db = self.sessions()
 
-        self.workspace = Workspace(name="Geometry", slug="geometry")
-        self.db.add(self.workspace)
-        await self.db.flush()
+        self.user = await create_user(self.db)
+        self.workspace = await create_workspace(
+            self.db, self.user, name="Geometry", slug="geometry"
+        )
         self.document = Document(
             workspace_id=self.workspace.id,
             filename="geometry.pdf",
@@ -245,9 +248,9 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
         return question
 
     async def test_generation_validates_cross_scope_documents_before_calling_ai(self):
-        other_workspace = Workspace(name="Other", slug="other")
-        self.db.add(other_workspace)
-        await self.db.flush()
+        other_workspace = await create_workspace(
+            self.db, self.user, name="Other", slug="other"
+        )
         other_document = Document(
             workspace_id=other_workspace.id,
             filename="other.pdf",
@@ -696,7 +699,11 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
                     await connection.run_sync(Base.metadata.create_all)
                 async with first_sessions() as setup:
                     setup.add_all([
-                        Workspace(id="shared-workspace", name="Shared", slug="shared"),
+                        User(id="shared-user", username="shared-user"),
+                        Workspace(
+                            id="shared-workspace", owner_id="shared-user",
+                            name="Shared", slug="shared",
+                        ),
                         KnowledgePoint(
                             id="shared-point", workspace_id="shared-workspace",
                             title="Shared point", mastery=0.5, mastery_status="learning",

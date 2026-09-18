@@ -12,6 +12,7 @@ from app.models.conversation import Conversation
 from app.models.chat import ChatFeedback
 from app.models.learning import StudyActivity
 from app.models.workspace import Workspace
+from tests.support import create_user, create_workspace
 
 
 def _load_service():
@@ -74,7 +75,8 @@ class ConversationServiceTests(unittest.IsolatedAsyncioTestCase):
             self.fail("conversation_service is missing")
 
         async with self.session_factory() as db:
-            service = module.ConversationService(db, user_id="default")
+            user = await create_user(db)
+            service = module.ConversationService(db, user_id=user.id)
             first = await service.create_session(
                 workspace_id=None,
                 document_ids=["doc-a"],
@@ -89,7 +91,7 @@ class ConversationServiceTests(unittest.IsolatedAsyncioTestCase):
             )
             await service.update_session(first.id, title="重点复习", is_favorite=True)
             db.add(Conversation(
-                user_id="default:legacy",
+                user_id=user.id,
                 session_id=first.id,
                 role="user",
                 content="问题",
@@ -111,10 +113,11 @@ class ConversationServiceTests(unittest.IsolatedAsyncioTestCase):
         schemas = importlib.import_module("app.schemas.chat")
 
         async with self.session_factory() as db:
-            workspace = Workspace(name="测试", slug="test")
-            db.add(workspace)
-            await db.flush()
-            service = importlib.import_module("app.services.conversation_service").ConversationService(db)
+            user = await create_user(db)
+            workspace = await create_workspace(db, user, name="测试", slug="test")
+            service = importlib.import_module(
+                "app.services.conversation_service"
+            ).ConversationService(db, user.id)
             chat_session = await service.create_session(
                 workspace_id=workspace.id,
                 document_ids=[],
@@ -122,14 +125,14 @@ class ConversationServiceTests(unittest.IsolatedAsyncioTestCase):
                 strict_sources=True,
             )
             user_message = Conversation(
-                user_id="default",
+                user_id=user.id,
                 session_id=chat_session.id,
                 workspace_id=workspace.id,
                 role="user",
                 content="什么是混合检索？",
             )
             assistant_message = Conversation(
-                user_id="default",
+                user_id=user.id,
                 session_id=chat_session.id,
                 workspace_id=workspace.id,
                 role="assistant",
@@ -139,17 +142,24 @@ class ConversationServiceTests(unittest.IsolatedAsyncioTestCase):
             db.add_all([user_message, assistant_message])
             await db.flush()
 
-            note_a = await routes.create_message_note(assistant_message.id, schemas.MessageNoteCreate(), db)
-            note_b = await routes.create_message_note(assistant_message.id, schemas.MessageNoteCreate(), db)
-            card_a = await routes.create_message_card(assistant_message.id, db)
-            card_b = await routes.create_message_card(assistant_message.id, db)
-            mistake_a = await routes.create_message_mistake(assistant_message.id, db)
-            mistake_b = await routes.create_message_mistake(assistant_message.id, db)
-            await routes.update_message_feedback(assistant_message.id, schemas.FeedbackUpdate(helpful=True), db)
+            note_a = await routes.create_message_note(
+                assistant_message.id, schemas.MessageNoteCreate(), db, current_user=user
+            )
+            note_b = await routes.create_message_note(
+                assistant_message.id, schemas.MessageNoteCreate(), db, current_user=user
+            )
+            card_a = await routes.create_message_card(assistant_message.id, db, current_user=user)
+            card_b = await routes.create_message_card(assistant_message.id, db, current_user=user)
+            mistake_a = await routes.create_message_mistake(assistant_message.id, db, current_user=user)
+            mistake_b = await routes.create_message_mistake(assistant_message.id, db, current_user=user)
+            await routes.update_message_feedback(
+                assistant_message.id, schemas.FeedbackUpdate(helpful=True), db, current_user=user
+            )
             feedback = await routes.update_message_feedback(
                 assistant_message.id,
                 schemas.FeedbackUpdate(helpful=False, category="unsupported"),
                 db,
+                current_user=user,
             )
 
             self.assertEqual(note_a["id"], note_b["id"])
@@ -169,10 +179,9 @@ class ConversationServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_record_question_is_idempotent_and_omits_question_text(self):
         module = _load_service()
         async with self.session_factory() as db:
-            workspace = Workspace(name="提问", slug="questions")
-            db.add(workspace)
-            await db.flush()
-            service = module.ConversationService(db)
+            user = await create_user(db)
+            workspace = await create_workspace(db, user, name="提问", slug="questions")
+            service = module.ConversationService(db, user.id)
             session = await service.create_session(
                 workspace_id=workspace.id,
                 document_ids=["doc-1"],
@@ -180,7 +189,7 @@ class ConversationServiceTests(unittest.IsolatedAsyncioTestCase):
                 strict_sources=True,
             )
             message = Conversation(
-                user_id="default", session_id=session.id, workspace_id=workspace.id,
+                user_id=user.id, session_id=session.id, workspace_id=workspace.id,
                 role="user", content="解释一下梯度下降", mode="deep",
             )
             db.add(message)

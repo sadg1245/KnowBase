@@ -20,6 +20,7 @@ from app.models.base import Base
 from app.models.document import Document
 from app.models.workspace import Workspace
 from app.services.learning_content import LearningGenerationError
+from tests.support import create_user, create_workspace
 
 
 class DocumentJobDispatchTests(unittest.IsolatedAsyncioTestCase):
@@ -31,8 +32,9 @@ class DocumentJobDispatchTests(unittest.IsolatedAsyncioTestCase):
             await connection.run_sync(Base.metadata.create_all)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         async with self.sessions() as db:
-            workspace = Workspace(name="Jobs", slug="jobs")
-            db.add(workspace)
+            user = await create_user(db)
+            self.user = user
+            workspace = await create_workspace(db, user, name="Jobs", slug="jobs")
             await db.commit()
             self.workspace_id = workspace.id
         self.settings = Settings.model_construct(
@@ -74,10 +76,11 @@ class DocumentJobDispatchTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(),
             ):
                 await upload_documents(
-                    workspace_id=self.workspace_id,
-                    files=[upload],
-                    db=db,
-                    settings=self.settings,
+            workspace_id=self.workspace_id,
+            files=[upload],
+            db=db,
+            current_user=self.user,
+            settings=self.settings,
                 )
             await db.commit()
 
@@ -102,10 +105,11 @@ class DocumentJobDispatchTests(unittest.IsolatedAsyncioTestCase):
                 ) as inline_processing,
             ):
                 response = await upload_documents(
-                    workspace_id=self.workspace_id,
-                    files=[upload],
-                    db=db,
-                    settings=self.settings,
+            workspace_id=self.workspace_id,
+            files=[upload],
+            db=db,
+            current_user=self.user,
+            settings=self.settings,
                 )
 
             self.assertEqual(response[0]["status"], "failed")
@@ -244,7 +248,7 @@ class LearningGenerationRetryTests(unittest.TestCase):
         )
         attempts = 0
 
-        async def always_timeout(_db, _document_id):
+        async def always_timeout(_db, _document_id, _overwrite_tags=False):
             nonlocal attempts
             attempts += 1
             raise TimeoutError("temporary outage")

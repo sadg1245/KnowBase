@@ -10,15 +10,17 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, get_settings
+from app.api.deps import get_current_user, get_db, get_settings
 from app.config import Settings
+from app.core.tags import TagValidationError, normalize_tags
 from app.models.assessment import LearningTask, MistakeRecord, QuizAttempt, QuizRun, QuizSet, WeakKnowledgeState
 from app.models.document import Document
 from app.models.chat import DocumentChunk
 from app.models.learning import (
     Flashcard, KnowledgePoint, LearningGoal, QuizQuestion, ReportSuggestion,
-    ReviewLog, StudyActivity, StudySession, UserProfile,
+    ReviewLog, StudyActivity, StudySession,
 )
+from app.models.user import User
 from app.models.workspace import Workspace
 from app.services.learning_content import LearningGenerationError, generate_document_learning_content
 from app.services.review_service import apply_card_review, build_review_summary, schedule_review
@@ -27,6 +29,13 @@ from app.services import assessment_service, assessment_workflows
 from app.services.activity_service import ALLOWED_ACTIVITY_TYPES, append_card_created, append_mastery_change
 from app.services import dashboard_service, goal_service, report_service
 from app.services.assessment_ai import AssessmentAIError
+from app.services.ownership import (
+    owned_card,
+    owned_document,
+    owned_point,
+    owned_question,
+    owned_workspace,
+)
 from app.schemas.assessment import QuestionSubmitRequest
 from app.schemas.learning import (
     ActivityCreate, AnalyzeRequest, FlashcardCreate, FlashcardGenerateRequest,
@@ -71,20 +80,24 @@ def _card(row: Flashcard) -> dict:
     }
 
 
-async def _workspace_or_404(db: AsyncSession, workspace_id: str) -> Workspace:
-    workspace = (await db.execute(select(Workspace).where(Workspace.id == workspace_id))).scalar_one_or_none()
-    if not workspace:
-        raise HTTPException(404, "Knowledge base not found")
-    return workspace
+async def _workspace_or_404(db: AsyncSession, workspace_id: str, user: User) -> Workspace:
+    return await owned_workspace(db, workspace_id, user)
 
 
-async def _document_in_workspace(db: AsyncSession, document_id: str, workspace_id: str) -> Document:
-    document = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one_or_none()
-    if not document:
-        raise HTTPException(404, "Document not found")
+async def _document_in_workspace(
+    db: AsyncSession, document_id: str, workspace_id: str, user: User
+) -> Document:
+    document = await owned_document(db, document_id, user)
     if document.workspace_id != workspace_id:
         raise HTTPException(400, "Document does not belong to this knowledge base")
     return document
+
+
+def _tags_or_422(values: list[str] | None) -> list[str] | None:
+    try:
+        return normalize_tags(values) if values is not None else None
+    except TagValidationError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 def _quiz(row: QuizQuestion, reveal: bool = False, *, preserve_legacy_history: bool = False) -> dict:
@@ -105,52 +118,78 @@ def _quiz(row: QuizQuestion, reveal: bool = False, *, preserve_legacy_history: b
     return data
 
 
-async def _profile(db: AsyncSession) -> UserProfile:
-    return await goal_service.get_or_create_profile(db)
+async def _preferences(db: AsyncSession, user: User):
+    return await goal_service.get_or_create_preferences(db, user)
+
+
+def _profile_payload(user: User, preference) -> dict:
+    return {
+        "id": user.id,
+        "display_name": user.display_name,
+        "daily_goal_minutes": preference.daily_goal_minutes,
+        "daily_review_target": preference.daily_review_target,
+        "weekly_goal_days": preference.weekly_goal_days,
+        "timezone_name": preference.timezone_name,
+        "preferred_mode": preference.preferred_mode,
+        "reminder_time": preference.reminder_time,
+    }
 
 
 @router.get("/profile")
-async def get_profile(db: AsyncSession = Depends(get_db)) -> dict:
-    profile = await _profile(db)
-    return {key: getattr(profile, key) for key in (
-        "id", "display_name", "daily_goal_minutes", "daily_review_target",
-        "weekly_goal_days", "timezone_name", "preferred_mode", "reminder_time",
-    )}
+async def get_profile(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    return _profile_payload(current_user, await _preferences(db, current_user))
 
 
 @router.put("/profile")
-async def update_profile(payload: ProfileUpdate, db: AsyncSession = Depends(get_db)) -> dict:
-    profile = await _profile(db)
+async def update_profile(
+    payload: ProfileUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    preference = await _preferences(db, current_user)
     values = payload.model_dump(exclude_none=True)
     goal_fields = {key: value for key, value in values.items() if key in {
         "daily_goal_minutes", "daily_review_target", "weekly_goal_days", "timezone_name"
     }}
     try:
         if goal_fields:
-            profile = await goal_service.sync_legacy_profile_goals(
-                db, goal_fields, now=datetime.now(timezone.utc)
+            preference = await goal_service.sync_preference_values(
+                db, current_user.id, preference, goal_fields, now=datetime.now(timezone.utc)
             )
     except goal_service.GoalValidationError as exc:
         raise HTTPException(422, str(exc)) from exc
     for key, value in values.items():
         if key in goal_fields:
             continue
-        setattr(profile, key, value)
-    profile.updated_at = datetime.now(timezone.utc)
+        if key == "display_name":
+            current_user.display_name = value
+            continue
+        setattr(preference, key, value)
+    preference.updated_at = datetime.now(timezone.utc)
     await db.flush()
-    return await get_profile(db)
+    return _profile_payload(current_user, preference)
 
 
 @router.get("/dashboard")
-async def dashboard(db: AsyncSession = Depends(get_db)) -> dict:
-    return await dashboard_service.build_dashboard(db, now=datetime.now(timezone.utc))
+async def dashboard(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    return await dashboard_service.build_dashboard(
+        db, now=datetime.now(timezone.utc), user_id=current_user.id
+    )
 
 
 @router.get("/workspaces/{workspace_id}")
-async def workspace_learning_detail(workspace_id: str, db: AsyncSession = Depends(get_db)) -> dict:
-    workspace = (await db.execute(select(Workspace).where(Workspace.id == workspace_id))).scalar_one_or_none()
-    if not workspace:
-        raise HTTPException(404, "Knowledge base not found")
+async def workspace_learning_detail(
+    workspace_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    workspace = await _workspace_or_404(db, workspace_id, current_user)
     documents = (await db.execute(select(Document).where(Document.workspace_id == workspace_id).order_by(Document.created_at.desc()))).scalars().all()
     points = (await db.execute(select(KnowledgePoint).where(KnowledgePoint.workspace_id == workspace_id).order_by(KnowledgePoint.importance.desc(), KnowledgePoint.created_at.desc()))).scalars().all()
     activities = (await db.execute(
@@ -225,15 +264,18 @@ async def workspace_learning_detail(workspace_id: str, db: AsyncSession = Depend
 
 
 @router.put("/workspaces/{workspace_id}")
-async def update_workspace_learning(workspace_id: str, payload: WorkspaceLearningUpdate, db: AsyncSession = Depends(get_db)) -> dict:
-    workspace = (await db.execute(select(Workspace).where(Workspace.id == workspace_id))).scalar_one_or_none()
-    if not workspace:
-        raise HTTPException(404, "Knowledge base not found")
+async def update_workspace_learning(
+    workspace_id: str,
+    payload: WorkspaceLearningUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    workspace = await _workspace_or_404(db, workspace_id, current_user)
     for key, value in payload.model_dump(exclude_none=True).items():
         setattr(workspace, key, value)
     workspace.updated_at = datetime.now(timezone.utc)
     await db.flush()
-    return await workspace_learning_detail(workspace_id, db)
+    return await workspace_learning_detail(workspace_id, db, current_user)
 
 
 def _short_answer_matches(actual: str, expected: str) -> bool:
@@ -250,10 +292,14 @@ def _short_answer_matches(actual: str, expected: str) -> bool:
 
 
 @router.post("/workspaces/{workspace_id}/analyze")
-async def analyze_workspace(workspace_id: str, payload: AnalyzeRequest, db: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)) -> dict:
-    workspace = (await db.execute(select(Workspace).where(Workspace.id == workspace_id))).scalar_one_or_none()
-    if not workspace:
-        raise HTTPException(404, "Knowledge base not found")
+async def analyze_workspace(
+    workspace_id: str,
+    payload: AnalyzeRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    workspace = await _workspace_or_404(db, workspace_id, current_user)
     stmt = select(Document).where(Document.workspace_id == workspace_id, Document.status == "ready")
     if payload.document_id:
         stmt = stmt.where(Document.id == payload.document_id)
@@ -269,7 +315,9 @@ async def analyze_workspace(workspace_id: str, payload: AnalyzeRequest, db: Asyn
         if existing and not payload.regenerate:
             continue
         try:
-            material = await generate_document_learning_content(db, document.id, settings)
+            material = await generate_document_learning_content(
+                db, document.id, settings, overwrite_tags=payload.regenerate
+            )
         except LearningGenerationError as exc:
             document.learning_status = "failed"
             document.learning_error_message = str(exc)
@@ -277,30 +325,61 @@ async def analyze_workspace(workspace_id: str, payload: AnalyzeRequest, db: Asyn
             continue
         created += len(material.knowledge_points)
 
-    db.add(StudyActivity(workspace_id=workspace_id, activity_type="organize", title=f"整理了《{workspace.name}》的学习内容", payload={"created_points": created}))
+    db.add(StudyActivity(
+        user_id=current_user.id,
+        workspace_id=workspace_id,
+        activity_type="organize",
+        title=f"整理了《{workspace.name}》的学习内容",
+        payload={"created_points": created},
+    ))
     await db.flush()
-    return {"created_points": created, "detail": await workspace_learning_detail(workspace_id, db)}
+    return {
+        "created_points": created,
+        "detail": await workspace_learning_detail(workspace_id, db, current_user),
+    }
 
 
 @router.get("/knowledge-points")
-async def list_points(workspace_id: str = Query(...), db: AsyncSession = Depends(get_db)) -> list[dict]:
+async def list_points(
+    workspace_id: str = Query(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict]:
+    await _workspace_or_404(db, workspace_id, current_user)
     rows = (await db.execute(select(KnowledgePoint).where(KnowledgePoint.workspace_id == workspace_id).order_by(KnowledgePoint.importance.desc()))).scalars().all()
     return [_point(row) for row in rows]
 
 
 @router.post("/knowledge-points", status_code=201)
-async def create_point(payload: KnowledgePointCreate, db: AsyncSession = Depends(get_db)) -> dict:
-    row = KnowledgePoint(**payload.model_dump())
+async def create_point(
+    payload: KnowledgePointCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    await _workspace_or_404(db, payload.workspace_id, current_user)
+    if payload.document_id:
+        await _document_in_workspace(db, payload.document_id, payload.workspace_id, current_user)
+    values = payload.model_dump()
+    values["tags"] = _tags_or_422(payload.tags) or []
+    values["tags_locked"] = bool(payload.tags)
+    row = KnowledgePoint(**values)
     db.add(row); await db.flush(); await db.refresh(row)
     return _point(row)
 
 
 @router.put("/knowledge-points/{point_id}")
-async def update_point(point_id: str, payload: KnowledgePointUpdate, db: AsyncSession = Depends(get_db)) -> dict:
-    row = (await db.execute(select(KnowledgePoint).where(KnowledgePoint.id == point_id))).scalar_one_or_none()
-    if not row: raise HTTPException(404, "Knowledge point not found")
+async def update_point(
+    point_id: str,
+    payload: KnowledgePointUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    row = await owned_point(db, point_id, current_user)
     before_mastery, before_status = row.mastery, row.mastery_status
     values = payload.model_dump(exclude_none=True)
+    if "tags" in payload.model_fields_set:
+        values["tags"] = _tags_or_422(payload.tags) or []
+        values["tags_locked"] = True
     explicit_status = "mastery_status" in payload.model_fields_set
     for key, value in values.items(): setattr(row, key, value)
     if explicit_status and payload.mastery_status == "mastered":
@@ -309,16 +388,26 @@ async def update_point(point_id: str, payload: KnowledgePointUpdate, db: AsyncSe
         row.mastery_status = "mastered" if payload.mastery >= 1 else ("learning" if payload.mastery > 0 else "not_started")
     await db.flush()
     await append_mastery_change(
-        db, row, before_mastery=before_mastery, before_status=before_status,
+        db, row, user_id=current_user.id,
+        before_mastery=before_mastery, before_status=before_status,
         reason="manual_update", source_type="knowledge_point", source_id=f"manual:{row.updated_at.isoformat()}",
     )
     return _point(row)
 
 
 @router.post("/knowledge-points/merge")
-async def merge_points(payload: KnowledgePointMerge, db: AsyncSession = Depends(get_db)) -> dict:
+async def merge_points(
+    payload: KnowledgePointMerge,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
     ids = list(dict.fromkeys([payload.target_id, *payload.source_ids]))
-    rows = (await db.execute(select(KnowledgePoint).where(KnowledgePoint.id.in_(ids)))).scalars().all()
+    rows = (await db.execute(select(KnowledgePoint).where(
+        KnowledgePoint.id.in_(ids),
+        KnowledgePoint.workspace_id.in_(
+            select(Workspace.id).where(Workspace.owner_id == current_user.id)
+        ),
+    ))).scalars().all()
     by_id = {row.id: row for row in rows}
     target = by_id.get(payload.target_id)
     sources = [by_id.get(point_id) for point_id in payload.source_ids if point_id != payload.target_id]
@@ -332,6 +421,7 @@ async def merge_points(payload: KnowledgePointMerge, db: AsyncSession = Depends(
         return "\n\n".join(dict.fromkeys(value.strip() for value in values if value and value.strip()))
 
     target.tags = list(dict.fromkeys([*(target.tags or []), *(tag for row in typed_sources for tag in (row.tags or []))]))
+    target.tags_locked = target.tags_locked or any(row.tags_locked for row in typed_sources)
     target.summary = unique_text([target.summary, *(row.summary for row in typed_sources)])
     target.explanation = unique_text([target.explanation, *(row.explanation for row in typed_sources)])
     target.importance = max([target.importance, *(row.importance for row in typed_sources)])
@@ -346,10 +436,12 @@ async def merge_points(payload: KnowledgePointMerge, db: AsyncSession = Depends(
 
 
 @router.post("/knowledge-points/{point_id}/quiz", status_code=201)
-async def point_to_quiz(point_id: str, db: AsyncSession = Depends(get_db)) -> dict:
-    point = (await db.execute(select(KnowledgePoint).where(KnowledgePoint.id == point_id))).scalar_one_or_none()
-    if not point:
-        raise HTTPException(404, "Knowledge point not found")
+async def point_to_quiz(
+    point_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    point = await owned_point(db, point_id, current_user)
     label = point.source_heading or (f"第 {point.source_page} 页" if point.source_page else None)
     quiz = QuizQuestion(
         workspace_id=point.workspace_id,
@@ -371,16 +463,22 @@ async def point_to_quiz(point_id: str, db: AsyncSession = Depends(get_db)) -> di
 
 
 @router.delete("/knowledge-points/{point_id}", status_code=200)
-async def delete_point(point_id: str, db: AsyncSession = Depends(get_db)) -> None:
-    row = (await db.execute(select(KnowledgePoint).where(KnowledgePoint.id == point_id))).scalar_one_or_none()
-    if not row: raise HTTPException(404, "Knowledge point not found")
+async def delete_point(
+    point_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    row = await owned_point(db, point_id, current_user)
     await db.delete(row)
 
 
 @router.post("/knowledge-points/{point_id}/card", status_code=201)
-async def point_to_card(point_id: str, db: AsyncSession = Depends(get_db)) -> dict:
-    point = (await db.execute(select(KnowledgePoint).where(KnowledgePoint.id == point_id))).scalar_one_or_none()
-    if not point: raise HTTPException(404, "Knowledge point not found")
+async def point_to_card(
+    point_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    point = await owned_point(db, point_id, current_user)
     existing = (await db.execute(select(Flashcard).where(Flashcard.knowledge_point_id == point.id))).scalar_one_or_none()
     if existing:
         return _card(existing)
@@ -403,7 +501,9 @@ async def point_to_card(point_id: str, db: AsyncSession = Depends(get_db)) -> di
         mastery=point.mastery,
         mastery_status=point.mastery_status,
     )
-    db.add(card); await db.flush(); await append_card_created(db, card); await db.refresh(card)
+    db.add(card); await db.flush()
+    await append_card_created(db, card, user_id=current_user.id)
+    await db.refresh(card)
     return _card(card)
 
 
@@ -412,8 +512,9 @@ async def generate_workspace_cards(
     workspace_id: str,
     payload: FlashcardGenerateRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
-    await _workspace_or_404(db, workspace_id)
+    await _workspace_or_404(db, workspace_id, current_user)
     stmt = select(KnowledgePoint).where(KnowledgePoint.workspace_id == workspace_id)
     if payload.knowledge_point_ids:
         stmt = stmt.where(KnowledgePoint.id.in_(payload.knowledge_point_ids))
@@ -451,7 +552,7 @@ async def generate_workspace_cards(
         )
         db.add(card)
         await db.flush()
-        await append_card_created(db, card)
+        await append_card_created(db, card, user_id=current_user.id)
         created.append(_card(card))
     return {"created_count": len(created), "cards": created}
 
@@ -460,8 +561,11 @@ async def generate_workspace_cards(
 async def review_summary(
     timezone_offset_minutes: int = Query(0, ge=-840, le=840),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
-    return await build_review_summary(db, timezone_offset_minutes)
+    return await build_review_summary(
+        db, timezone_offset_minutes, user_id=current_user.id
+    )
 
 
 @router.get("/cards")
@@ -474,8 +578,11 @@ async def list_cards(
     limit: int = 200,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> list[dict]:
-    stmt = select(Flashcard)
+    stmt = select(Flashcard).where(Flashcard.workspace_id.in_(
+        select(Workspace.id).where(Workspace.owner_id == current_user.id)
+    ))
     if workspace_id: stmt = stmt.where(Flashcard.workspace_id == workspace_id)
     if due_only: stmt = stmt.where(Flashcard.due_at <= datetime.now(timezone.utc))
     if source_type: stmt = stmt.where(Flashcard.source_type == source_type)
@@ -495,18 +602,31 @@ async def list_cards(
 
 
 @router.post("/cards", status_code=201)
-async def create_card(payload: FlashcardCreate, db: AsyncSession = Depends(get_db)) -> dict:
-    await _workspace_or_404(db, payload.workspace_id)
+async def create_card(
+    payload: FlashcardCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    await _workspace_or_404(db, payload.workspace_id, current_user)
     values = payload.model_dump()
     values.update(source_type="manual", source_snapshot=None, knowledge_point_id=None)
     row = Flashcard(**values)
-    db.add(row); await db.flush(); await append_card_created(db, row); await db.refresh(row); return _card(row)
+    db.add(row); await db.flush()
+    await append_card_created(db, row, user_id=current_user.id)
+    await db.refresh(row)
+    return _card(row)
 
 
 @router.post("/cards/from-selection", status_code=201)
-async def selection_to_card(payload: FlashcardSelectionCreate, db: AsyncSession = Depends(get_db)) -> dict:
-    await _workspace_or_404(db, payload.workspace_id)
-    document = await _document_in_workspace(db, payload.document_id, payload.workspace_id)
+async def selection_to_card(
+    payload: FlashcardSelectionCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    await _workspace_or_404(db, payload.workspace_id, current_user)
+    document = await _document_in_workspace(
+        db, payload.document_id, payload.workspace_id, current_user
+    )
     location = payload.source_heading or (f"第 {payload.source_page} 页" if payload.source_page else None)
     source_label = f"{document.filename} · {location}" if location else document.filename
     row = Flashcard(
@@ -525,19 +645,24 @@ async def selection_to_card(payload: FlashcardSelectionCreate, db: AsyncSession 
         tags=payload.tags,
         difficulty=payload.difficulty,
     )
-    db.add(row); await db.flush(); await append_card_created(db, row); await db.refresh(row)
+    db.add(row); await db.flush()
+    await append_card_created(db, row, user_id=current_user.id)
+    await db.refresh(row)
     return _card(row)
 
 
 @router.put("/cards/{card_id}")
-async def update_card(card_id: str, payload: FlashcardUpdate, db: AsyncSession = Depends(get_db)) -> dict:
-    row = (await db.execute(select(Flashcard).where(Flashcard.id == card_id))).scalar_one_or_none()
-    if not row:
-        raise HTTPException(404, "Card not found")
+async def update_card(
+    card_id: str,
+    payload: FlashcardUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    row = await owned_card(db, card_id, current_user)
     values = payload.model_dump(exclude_unset=True)
     next_workspace_id = values.get("workspace_id", row.workspace_id)
     if next_workspace_id != row.workspace_id:
-        await _workspace_or_404(db, next_workspace_id)
+        await _workspace_or_404(db, next_workspace_id, current_user)
         if row.knowledge_point_id:
             point = (await db.execute(select(KnowledgePoint).where(KnowledgePoint.id == row.knowledge_point_id))).scalar_one_or_none()
             if point and point.workspace_id != next_workspace_id:
@@ -550,23 +675,37 @@ async def update_card(card_id: str, payload: FlashcardUpdate, db: AsyncSession =
 
 
 @router.delete("/cards/{card_id}", status_code=204)
-async def delete_card(card_id: str, db: AsyncSession = Depends(get_db)) -> Response:
-    row = (await db.execute(select(Flashcard).where(Flashcard.id == card_id))).scalar_one_or_none()
-    if not row: raise HTTPException(404, "Card not found")
+async def delete_card(
+    card_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    row = await owned_card(db, card_id, current_user)
     await db.delete(row)
     return Response(status_code=204)
 
 
 @router.post("/cards/{card_id}/review")
-async def review_card(card_id: str, payload: ReviewRequest, db: AsyncSession = Depends(get_db)) -> dict:
-    card = (await db.execute(select(Flashcard).where(Flashcard.id == card_id))).scalar_one_or_none()
-    if not card: raise HTTPException(404, "Card not found")
-    change = await apply_card_review(db, card, payload.rating, payload.duration_seconds)
+async def review_card(
+    card_id: str,
+    payload: ReviewRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    card = await owned_card(db, card_id, current_user)
+    change = await apply_card_review(
+        db, card, current_user.id, payload.rating, payload.duration_seconds
+    )
     return {"card": _card(card), "change": change}
 
 
 @router.post("/quizzes/generate")
-async def generate_quiz(payload: QuizGenerateRequest, db: AsyncSession = Depends(get_db)) -> list[dict]:
+async def generate_quiz(
+    payload: QuizGenerateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict]:
+    await _workspace_or_404(db, payload.workspace_id, current_user)
     point_query = select(KnowledgePoint).where(KnowledgePoint.workspace_id == payload.workspace_id)
     if payload.document_ids:
         point_query = point_query.where(KnowledgePoint.document_id.in_(payload.document_ids))
@@ -600,8 +739,16 @@ async def generate_quiz(payload: QuizGenerateRequest, db: AsyncSession = Depends
 
 
 @router.get("/quizzes")
-async def list_quizzes(workspace_id: str | None = None, wrong_only: bool = False, document_ids: list[str] | None = Query(None), db: AsyncSession = Depends(get_db)) -> list[dict]:
-    stmt = select(QuizQuestion)
+async def list_quizzes(
+    workspace_id: str | None = None,
+    wrong_only: bool = False,
+    document_ids: list[str] | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict]:
+    stmt = select(QuizQuestion).where(QuizQuestion.workspace_id.in_(
+        select(Workspace.id).where(Workspace.owner_id == current_user.id)
+    ))
     if workspace_id: stmt = stmt.where(QuizQuestion.workspace_id == workspace_id)
     if document_ids:
         stmt = stmt.join(KnowledgePoint, QuizQuestion.knowledge_point_id == KnowledgePoint.id).where(KnowledgePoint.document_id.in_(document_ids))
@@ -621,9 +768,14 @@ async def list_quizzes(workspace_id: str | None = None, wrong_only: bool = False
 
 
 @router.post("/quizzes/{quiz_id}/submit")
-async def submit_quiz(quiz_id: str, payload: QuizSubmitRequest, db: AsyncSession = Depends(get_db), settings: Settings = Depends(get_settings)) -> dict:
-    row = (await db.execute(select(QuizQuestion).where(QuizQuestion.id == quiz_id))).scalar_one_or_none()
-    if not row: raise HTTPException(404, "Question not found")
+async def submit_quiz(
+    quiz_id: str,
+    payload: QuizSubmitRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    row = await owned_question(db, quiz_id, current_user)
     try:
         attempt = await assessment_workflows.legacy_submission(db, quiz_id, QuestionSubmitRequest(answer=payload.answer), settings)
     except (assessment_service.AssessmentServiceError, AssessmentAIError) as exc:
@@ -641,37 +793,66 @@ async def create_activity(payload: ActivityCreate, db: AsyncSession = Depends(ge
 
 
 @router.get("/report")
-async def learning_report(days: int = Query(7, ge=1, le=365), db: AsyncSession = Depends(get_db)) -> dict:
+async def learning_report(
+    days: int = Query(7, ge=1, le=365),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
     return await report_service.build_legacy_report(
-        db, days=days, now=datetime.now(timezone.utc)
+        db, days=days, now=datetime.now(timezone.utc), user_id=current_user.id
     )
 
 
 @router.get("/export")
-async def export_learning_data(db: AsyncSession = Depends(get_db)) -> dict:
+async def export_learning_data(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
     """Portable JSON export of learning metadata; original files remain downloadable separately."""
-    profile = (await db.execute(select(UserProfile).limit(1))).scalar_one_or_none()
-    profile_data = {
-        "display_name": "学习者", "daily_goal_minutes": 25,
-        "daily_review_target": 10, "weekly_goal_days": 5,
-        "timezone_name": "Asia/Shanghai", "preferred_mode": "explain",
-        "reminder_time": "20:00",
-    }
-    if profile is not None:
-        profile_data = {key: getattr(profile, key) for key in profile_data}
-    workspaces = (await db.execute(select(Workspace))).scalars().all()
-    documents = (await db.execute(select(Document))).scalars().all()
-    points = (await db.execute(select(KnowledgePoint))).scalars().all()
-    cards = (await db.execute(select(Flashcard))).scalars().all()
-    quizzes = (await db.execute(select(QuizQuestion))).scalars().all()
-    activities = (await db.execute(select(StudyActivity))).scalars().all()
-    goals = (await db.execute(select(LearningGoal))).scalars().all()
-    sessions = (await db.execute(select(StudySession))).scalars().all()
-    suggestions = (await db.execute(select(ReportSuggestion))).scalars().all()
+    preference = await _preferences(db, current_user)
+    profile_data = _profile_payload(current_user, preference)
+    owned_workspaces = select(Workspace.id).where(Workspace.owner_id == current_user.id)
+    workspaces = (await db.execute(select(Workspace).where(
+        Workspace.owner_id == current_user.id
+    ))).scalars().all()
+    documents = (await db.execute(select(Document).where(
+        Document.workspace_id.in_(owned_workspaces)
+    ))).scalars().all()
+    points = (await db.execute(select(KnowledgePoint).where(
+        KnowledgePoint.workspace_id.in_(owned_workspaces)
+    ))).scalars().all()
+    cards = (await db.execute(select(Flashcard).where(
+        Flashcard.workspace_id.in_(owned_workspaces)
+    ))).scalars().all()
+    quizzes = (await db.execute(select(QuizQuestion).where(
+        QuizQuestion.workspace_id.in_(owned_workspaces)
+    ))).scalars().all()
+    activities = (await db.execute(select(StudyActivity).where(
+        StudyActivity.user_id == current_user.id
+    ))).scalars().all()
+    goals = (await db.execute(select(LearningGoal).where(
+        LearningGoal.user_id == current_user.id
+    ))).scalars().all()
+    sessions = (await db.execute(select(StudySession).where(
+        StudySession.user_id == current_user.id
+    ))).scalars().all()
+    suggestions = (await db.execute(select(ReportSuggestion).where(
+        ReportSuggestion.user_id == current_user.id
+    ))).scalars().all()
     assessment_data = {}
     for key, model in (("quiz_sets", QuizSet), ("quiz_runs", QuizRun), ("quiz_attempts", QuizAttempt),
                        ("mistakes", MistakeRecord), ("weak_knowledge", WeakKnowledgeState), ("learning_tasks", LearningTask)):
-        assessment_data[key] = [assessment_workflows.serialize_row(row) for row in (await db.execute(select(model))).scalars()]
+        if hasattr(model, "workspace_id"):
+            scope = model.workspace_id.in_(owned_workspaces)
+        else:
+            # QuizRun 与 QuizAttempt 通过所属测验集间接归属用户。
+            scope = model.quiz_set_id.in_(
+                select(QuizSet.id).where(QuizSet.workspace_id.in_(owned_workspaces))
+            )
+        assessment_data[key] = [
+            assessment_workflows.serialize_row(row)
+            for row in (await db.execute(select(model).where(scope))).scalars()
+        ]
     return {
         "exported_at": _iso(datetime.now(timezone.utc)), "format_version": 2,
         "profile": profile_data,

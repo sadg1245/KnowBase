@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.assessment import LearningTask, MistakeRecord, QuizAttempt, WeakKnowledgeState
 from app.models.learning import Flashcard, KnowledgePoint, QuizQuestion, ReviewLog, StudyActivity
+from app.models.workspace import Workspace
 from app.services.activity_service import append_weakness_change, weakness_category
 
 
@@ -287,9 +288,15 @@ async def recalculate_knowledge_point(
     state.recommended_actions = _recommended_actions(point, score)
     state.calculated_at = current
     await db.flush()
+    owner_id = await db.scalar(
+        select(Workspace.owner_id).where(Workspace.id == point.workspace_id)
+    )
+    if not owner_id:
+        raise ValueError(f"Workspace {point.workspace_id} has no owner")
     await append_weakness_change(
         db,
         state,
+        user_id=owner_id,
         before_score=before_score,
         before_category=before_category,
         reason="recalculation",

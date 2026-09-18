@@ -1,0 +1,1306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KnowBase Code Wiki</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: #f5f5f5;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            min-height: 100vh;
+        }
+        
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem;
+            text-align: center;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        
+        header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        header p {
+            font-size: 1.1rem;
+            opacity: 0.95;
+        }
+        
+        nav {
+            background: #2c3e50;
+            padding: 1rem 2rem;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        nav ul {
+            list-style: none;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+        }
+        
+        nav a {
+            color: white;
+            text-decoration: none;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            transition: background 0.3s;
+        }
+        
+        nav a:hover {
+            background: rgba(255,255,255,0.1);
+        }
+        
+        main {
+            padding: 2rem;
+        }
+        
+        section {
+            margin-bottom: 3rem;
+            padding: 2rem;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        h2 {
+            color: #667eea;
+            font-size: 2rem;
+            margin-bottom: 1.5rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 3px solid #667eea;
+        }
+        
+        h3 {
+            color: #764ba2;
+            font-size: 1.5rem;
+            margin-top: 2rem;
+            margin-bottom: 1rem;
+        }
+        
+        h4 {
+            color: #555;
+            font-size: 1.2rem;
+            margin-top: 1.5rem;
+            margin-bottom: 0.8rem;
+        }
+        
+        p {
+            margin-bottom: 1rem;
+        }
+        
+        code {
+            background: #f4f4f4;
+            padding: 0.2rem 0.5rem;
+            border-radius: 3px;
+            font-family: "Courier New", Courier, monospace;
+            color: #e83e86;
+        }
+        
+        pre {
+            background: #2c3e50;
+            color: #ecf0f1;
+            padding: 1rem;
+            border-radius: 6px;
+            overflow-x: auto;
+            margin: 1rem 0;
+        }
+        
+        pre code {
+            background: none;
+            color: inherit;
+            padding: 0;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 1rem 0;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        th {
+            background: #667eea;
+            color: white;
+            padding: 0.8rem;
+            text-align: left;
+            font-weight: 600;
+        }
+        
+        td {
+            padding: 0.8rem;
+            border-bottom: 1px solid #e0e0e0;
+        }
+        
+        tr:hover {
+            background: #f9f9f9;
+        }
+        
+        ul, ol {
+            margin: 1rem 0;
+            padding-left: 2rem;
+        }
+        
+        li {
+            margin-bottom: 0.5rem;
+        }
+        
+        blockquote {
+            border-left: 4px solid #667eea;
+            padding-left: 1rem;
+            margin: 1rem 0;
+            color: #666;
+            font-style: italic;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            border-radius: 12px;
+            font-size: 0.85rem;
+            font-weight: 600;
+            margin-right: 0.5rem;
+        }
+        
+        .badge-blue { background: #e3f2fd; color: #1976d2; }
+        .badge-green { background: #e8f5e9; color: #388e3c; }
+        .badge-purple { background: #f3e5f5; color: #7b1fa2; }
+        .badge-orange { background: #fff3e0; color: #f57c00; }
+        
+        footer {
+            background: #2c3e50;
+            color: white;
+            text-align: center;
+            padding: 2rem;
+            margin-top: 3rem;
+        }
+        
+        @media (max-width: 768px) {
+            header h1 { font-size: 1.8rem; }
+            main { padding: 1rem; }
+            section { padding: 1rem; }
+            nav ul { flex-direction: column; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📚 KnowBase Code Wiki</h1>
+            <p>私人知识数据库系统 - 完整技术文档</p>
+        </header>
+        
+        <nav>
+            <ul>
+                <li><a href="#overview">项目概述</a></li>
+                <li><a href="#architecture">系统架构</a></li>
+                <li><a href="#backend">后端详解</a></li>
+                <li><a href="#frontend">前端详解</a></li>
+                <li><a href="#feishu-bot">飞书机器人</a></li>
+                <li><a href="#deployment">部署指南</a></li>
+                <li><a href="#api">API 文档</a></li>
+            </ul>
+        </nav>
+        
+        <main id="content">
+            <!-- 内容将通过 JavaScript 动态加载 -->
+        </main>
+        
+        <footer>
+            <p>KnowBase Code Wiki - 基于 RAG 的私人知识数据库系统</p>
+            <p>生成时间: 2026-07-05</p>
+        </footer>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script>
+        // Markdown 内容
+        const markdownContent = `
+# 项目概述
+
+## 简介
+
+**KnowBase** 是一个基于 RAG（检索增强生成）的自托管私人知识数据库系统。核心理念是 **"你的知识，随时可问"**。
+
+用户可以将本地的 Word、PDF、PPT、Markdown 等格式文件导入系统，系统自动完成文档解析、向量化存储和索引构建。当用户通过手机飞书向机器人提问时，系统基于知识库进行 RAG 检索增强生成，返回精准答案并标注来源引用。
+
+## 核心能力
+
+- ✅ 支持 **9 种文档格式** 导入（PDF、DOCX、PPTX、Markdown、TXT、XLSX、CSV、HTML、DOC）
+- ✅ **飞书机器人 WebSocket 长连接**，无需公网 IP，本地即可运行
+- ✅ **多模型 LLM 灵活切换**（DeepSeek、OpenAI、通义千问、智谱 GLM、Ollama 本地模型）
+- ✅ **中文优化的 Embedding 模型**（BGE-small-zh），检索精度高
+- ✅ **RAG 流式回答**，实时生成，附带来源文件引用
+- ✅ **工作区隔离**，支持按主题分类管理知识
+- ✅ **Web 管理界面**，文件上传、文档管理、检索测试一站式操作
+- ✅ **Docker Compose 一键部署**
+
+## 技术栈总览
+
+### 后端（Python 3.11+）
+
+| 组件 | 技术 | 说明 |
+|------|------|------|
+| Web 框架 | FastAPI | 异步原生，自动 OpenAPI 文档 |
+| 任务队列 | Celery + Redis | 文档解析/向量化异步处理 |
+| 文档解析 | PyMuPDF / python-docx / python-pptx / BeautifulSoup | 9 种格式全覆盖 |
+| 文本切片 | 自研 TextSplitter | 递归字符切分，中文标点感知 |
+| Embedding | sentence-transformers (BGE-small-zh-v1.5) | 中文优化，本地运行，可切换 OpenAI |
+| 向量数据库 | ChromaDB | 轻量开箱即用，每工作区独立 collection |
+| 关系数据库 | SQLite / PostgreSQL | SQLAlchemy ORM，可无缝切换 |
+| LLM 接入 | LiteLLM | 统一代理调用 OpenAI/DeepSeek/通义千问/GLM/Ollama |
+| 日志 | Loguru | 结构化日志，全链路追踪 |
+
+### 前端
+
+| 组件 | 技术 | 说明 |
+|------|------|------|
+| 框架 | React 18 + TypeScript | 类型安全 |
+| UI 库 | Ant Design 5.x | 中文友好，企业级组件 |
+| 构建工具 | Vite | 快速 HMR 开发体验 |
+| 状态管理 | Zustand | 轻量无 boilerplate |
+| 文件上传 | react-dropzone | 拖拽上传 + 进度显示 |
+
+### 飞书机器人
+
+| 组件 | 技术 | 说明 |
+|------|------|------|
+| SDK | lark-oapi | 飞书官方 Python SDK |
+| 连接方式 | WebSocket 长连接 | 无需公网 IP 和域名 |
+| HTTP 客户端 | httpx | 异步 HTTP 调用 |
+| 缓存 | Redis | Token 缓存 + 用户状态 |
+
+### 基础设施
+
+| 组件 | 技术 | 说明 |
+|------|------|------|
+| 容器化 | Docker + Docker Compose | 一键启动全部 6 个服务 |
+| 反向代理 | Nginx | SPA 路由 + API 代理 |
+| 缓存/队列 | Redis 7 | 会话管理 + Celery 消息代理 |
+
+---
+
+# 系统架构
+
+## 整体架构图
+
+\`\`\`
+┌─────────────────────────────────────────────────────────────┐
+│                        用户层                                │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐       │
+│  │  Web 前端    │  │  飞书机器人   │  │  API 客户端   │       │
+│  │  (React)     │  │  (WebSocket) │  │  (REST)      │       │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘       │
+└─────────┼──────────────────┼──────────────────┼─────────────┘
+          │                  │                  │
+          └──────────────────┴──────────────────┘
+                             │
+┌────────────────────────────┼───────────────────────────────┐
+│                     应用服务层                               │
+│  ┌─────────────────────────┴─────────────────────────┐     │
+│  │              FastAPI Backend (端口 8000)            │     │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────┐ │     │
+│  │  │  API Routes  │  │  RAG Engine  │  │  LLM Mgr │ │     │
+│  │  └──────────────┘  └──────────────┘  └──────────┘ │     │
+│  └───────────────────────────────────────────────────┘     │
+│                             │                               │
+│  ┌──────────────────────────┴──────────────────────────┐   │
+│  │              Celery Worker (异步任务)                 │   │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────┐  │   │
+│  │  │ 文档解析      │  │  向量化       │  │ 索引构建  │  │   │
+│  │  └──────────────┘  └──────────────┘  └──────────┘  │   │
+│  └────────────────────────────────────────────────────┘   │
+└────────────────────────────┬───────────────────────────────┘
+                             │
+┌────────────────────────────┼───────────────────────────────┐
+│                      数据层                                  │
+│  ┌──────────────┐  ┌──────┴───────┐  ┌──────────────┐      │
+│  │  ChromaDB    │  │    Redis     │  │   SQLite     │      │
+│  │  (向量存储)   │  │  (缓存/队列)  │  │  (关系数据)   │      │
+│  │  端口 8001   │  │  端口 6379   │  │              │      │
+│  └──────────────┘  └──────────────┘  └──────────────┘      │
+└─────────────────────────────────────────────────────────────┘
+\`\`\`
+
+## 核心数据流
+
+### 文档处理流程
+
+\`\`\`
+用户上传文件
+    ↓
+文件保存 (UPLOAD_DIR)
+    ↓
+Document 记录创建 (status=pending)
+    ↓
+文档解析 (Parser) → 提取文本和元数据
+    ↓
+文本切片 (TextSplitter) → 生成多个 chunk
+    ↓
+向量化 (EmbeddingService) → 生成 embedding 向量
+    ↓
+存储到 ChromaDB (VectorStore)
+    ↓
+更新 Document 状态 (status=ready)
+\`\`\`
+
+### RAG 查询流程
+
+\`\`\`
+用户提问
+    ↓
+问题向量化 (EmbeddingService.embed_query)
+    ↓
+向量检索 (VectorStore.search) → 获取 top-K 相关文档
+    ↓
+构建上下文 (RAGEngine._build_context)
+    ↓
+构建 Prompt (系统提示 + 对话历史 + 上下文 + 用户问题)
+    ↓
+LLM 生成 (LLMManager.generate_stream)
+    ↓
+SSE 流式返回 → 前端实时显示
+\`\`\`
+
+## 模块职责
+
+### 后端核心模块
+
+| 模块 | 文件路径 | 职责 |
+|------|---------|------|
+| **FastAPI 入口** | \`backend/app/main.py\` | 应用生命周期管理、路由挂载、CORS 配置 |
+| **配置管理** | \`backend/app/config.py\` | 环境变量加载、配置项定义 |
+| **API 路由** | \`backend/app/api/routes/\` | RESTful API 端点定义 |
+| **RAG 引擎** | \`backend/app/core/rag_engine.py\` | 检索→上下文组装→LLM 生成编排 |
+| **LLM 管理器** | \`backend/app/core/llm_manager.py\` | 多模型统一调用（LiteLLM） |
+| **Embedding 服务** | \`backend/app/core/embedding.py\` | 文本向量化（本地/远程） |
+| **向量存储** | \`backend/app/core/vector_store.py\` | ChromaDB 操作封装 |
+| **文本切片器** | \`backend/app/core/text_splitter.py\` | 中文感知递归切分 |
+| **文档处理流水线** | \`backend/app/collector/pipeline.py\` | 解析→切片→向量化→入库 |
+| **文档解析器** | \`backend/app/collector/parsers/\` | 各格式文件解析 |
+| **数据模型** | \`backend/app/models/\` | SQLAlchemy ORM 模型 |
+| **Pydantic 模型** | \`backend/app/schemas/\` | 请求/响应数据验证 |
+
+### 前端核心模块
+
+| 模块 | 文件路径 | 职责 |
+|------|---------|------|
+| **应用入口** | \`frontend/src/main.tsx\` | React 渲染入口 |
+| **主布局** | \`frontend/src/App.tsx\` | 侧边导航 + 路由配置 |
+| **仪表盘** | \`frontend/src/pages/Dashboard.tsx\` | 统计概览 |
+| **工作区管理** | \`frontend/src/pages/Workspaces.tsx\` | 工作区 CRUD |
+| **文档管理** | \`frontend/src/pages/Documents.tsx\` | 文档列表与状态 |
+| **文件上传** | \`frontend/src/pages/Upload.tsx\` | 拖拽上传 |
+| **检索测试** | \`frontend/src/pages/SearchTest.tsx\` | RAG 检索与对话 |
+| **系统设置** | \`frontend/src/pages/Settings.tsx\` | LLM/Embedding 配置 |
+| **API 层** | \`frontend/src/services/api.ts\` | Axios 封装 |
+| **状态管理** | \`frontend/src/stores/appStore.ts\` | Zustand 全局状态 |
+
+### 飞书机器人模块
+
+| 模块 | 文件路径 | 职责 |
+|------|---------|------|
+| **入口** | \`feishu-bot/bot/main.py\` | WebSocket 长连接启动 |
+| **消息处理** | \`feishu-bot/bot/handler.py\` | 消息解析与分发 |
+| **指令路由** | \`feishu-bot/bot/commands.py\` | 指令解析与执行 |
+| **卡片构建** | \`feishu-bot/bot/cards.py\` | 飞书消息卡片生成 |
+| **Token 管理** | \`feishu-bot/bot/auth.py\` | 自动刷新 tenant_access_token |
+| **配置** | \`feishu-bot/bot/config.py\` | Bot 配置加载 |
+
+---
+
+# 后端详解
+
+## 项目结构
+
+\`\`\`
+backend/
+├── app/
+│   ├── main.py                 # FastAPI 应用入口
+│   ├── config.py               # 配置管理（pydantic-settings）
+│   ├── api/
+│   │   ├── deps.py             # 依赖注入（DB Session、Settings）
+│   │   └── routes/
+│   │       ├── workspaces.py   # 工作区 CRUD API
+│   │       ├── documents.py    # 文档上传与管理 API
+│   │       ├── search.py       # RAG 检索与对话 API（SSE 流式）
+│   │       └── settings.py     # 系统设置 API（LLM/Embedding 配置）
+│   ├── core/
+│   │   ├── rag_engine.py       # RAG 引擎（检索 → 上下文组装 → LLM 生成）
+│   │   ├── llm_manager.py      # 多模型 LLM 管理器（LiteLLM 统一代理）
+│   │   ├── embedding.py        # Embedding 服务（本地 BGE / OpenAI）
+│   │   ├── vector_store.py     # ChromaDB 向量存储操作
+│   │   └── text_splitter.py    # 中文感知文本切片器
+│   ├── collector/
+│   │   ├── pipeline.py         # 文档处理流水线（解析→切片→向量化→入库）
+│   │   ├── tasks.py            # Celery 异步任务定义
+│   │   └── parsers/
+│   │       ├── base.py         # 解析器抽象基类
+│   │       ├── pdf_parser.py   # PDF 解析（PyMuPDF）
+│   │       ├── docx_parser.py  # Word 解析（python-docx）
+│   │       ├── pptx_parser.py  # PPT 解析（python-pptx）
+│   │       └── markdown_parser.py  # Markdown 解析
+│   ├── models/                 # SQLAlchemy 数据模型
+│   │   ├── base.py             # 异步引擎与会话管理
+│   │   ├── workspace.py        # 工作区模型
+│   │   ├── document.py         # 文档模型
+│   │   └── conversation.py     # 对话历史模型
+│   └── schemas/
+│       └── schemas.py          # Pydantic 请求/响应模型
+├── Dockerfile
+└── requirements.txt
+\`\`\`
+
+## 配置管理
+
+### Settings 类
+
+使用 \`pydantic-settings\` 的 \`BaseSettings\`，从 \`.env\` 文件加载配置。
+
+\`\`\`python
+class Settings(BaseSettings):
+    # 数据库
+    DATABASE_URL: str = "sqlite+aiosqlite:///./data/sqlite/knowbase.db"
+    
+    # Redis
+    REDIS_URL: str = "redis://localhost:6379/0"
+    
+    # ChromaDB
+    CHROMA_HOST: str = "localhost"
+    CHROMA_PORT: int = 8000
+    
+    # 文件上传
+    UPLOAD_DIR: str = "./data/uploads"
+    UPLOAD_MAX_SIZE_MB: int = 50
+    
+    # 文本切片
+    CHUNK_SIZE: int = 1000
+    CHUNK_OVERLAP: int = 200
+    
+    # RAG 配置
+    RAG_TOP_K: int = 5
+    
+    # LLM 默认配置
+    DEFAULT_LLM_PROVIDER: str = "deepseek"
+    DEFAULT_LLM_MODEL: str = "deepseek-chat"
+    DEFAULT_EMBEDDING: str = "BAAI/bge-small-zh-v1.5"
+    
+    # 对话历史
+    CONVERSATION_HISTORY_LIMIT: int = 10
+    
+    # API Keys（可选）
+    OPENAI_API_KEY: Optional[str] = None
+    DEEPSEEK_API_KEY: Optional[str] = None
+    DASHSCOPE_API_KEY: Optional[str] = None
+    ZHIPU_API_KEY: Optional[str] = None
+    OLLAMA_BASE_URL: Optional[str] = None
+    
+    # 飞书集成
+    FEISHU_APP_ID: Optional[str] = None
+    FEISHU_APP_SECRET: Optional[str] = None
+    
+    # 认证
+    JWT_SECRET: str = "knowbase-secret-key-change-in-production"
+\`\`\`
+
+## 数据模型
+
+### Workspace（工作区）
+
+\`\`\`python
+class Workspace(Base):
+    __tablename__ = "workspaces"
+    
+    id = Column(String(36), primary_key=True)  # UUID
+    name = Column(String(255), nullable=False)
+    description = Column(Text, default="")
+    slug = Column(String(255), unique=True, index=True)
+    created_at = Column(DateTime(timezone=True))
+    updated_at = Column(DateTime(timezone=True))
+    
+    # 关系
+    documents = relationship("Document", cascade="all, delete-orphan", lazy="selectin")
+\`\`\`
+
+### Document（文档）
+
+\`\`\`python
+class Document(Base):
+    __tablename__ = "documents"
+    
+    id = Column(String(36), primary_key=True)  # UUID
+    workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"))
+    filename = Column(String(512))
+    file_path = Column(String(1024))
+    file_type = Column(String(50))  # 文件扩展名
+    file_size = Column(Integer, default=0)
+    chunk_count = Column(Integer, default=0)
+    status = Column(String(20), index=True)  # pending/processing/ready/failed
+    error_message = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True))
+    updated_at = Column(DateTime(timezone=True))
+\`\`\`
+
+### Conversation（对话历史）
+
+\`\`\`python
+class Conversation(Base):
+    __tablename__ = "conversations"
+    
+    id = Column(String(36), primary_key=True)
+    user_id = Column(String(255), index=True)
+    workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="SET NULL"))
+    role = Column(String(20))  # "user" 或 "assistant"
+    content = Column(Text)
+    sources = Column(JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True))
+\`\`\`
+
+## 核心模块详解
+
+### RAG 引擎 (rag_engine.py)
+
+**职责：** 协调向量化、检索、LLM 生成三大环节
+
+**核心方法：**
+
+- \`query(question, workspace_id, history, top_k)\` - 普通查询
+- \`query_stream(...)\` - 流式查询（SSE）
+
+**工作流程：**
+
+1. 向量化问题 → \`embedding_service.embed_query()\`
+2. 检索相关文档 → \`vector_store.search()\`
+3. 构建上下文 → \`_build_context()\`
+4. 构建 Prompt → \`_build_prompt()\`
+5. LLM 生成 → \`llm_manager.generate()\`
+
+**置信度计算：**
+
+\`\`\`python
+avg_distance = sum(distances) / len(distances)
+confidence = math.exp(-avg_distance)  # 指数衰减归一化到 [0, 1]
+\`\`\`
+
+### LLM 管理器 (llm_manager.py)
+
+**职责：** 通过 LiteLLM 统一调用多家 LLM 提供商
+
+**支持的提供商：**
+
+| Provider | 模型示例 | API Base |
+|----------|---------|----------|
+| openai | gpt-4o, gpt-4o-mini | 默认 |
+| deepseek | deepseek-chat, deepseek-reasoner | https://api.deepseek.com/v1 |
+| qwen | qwen-turbo, qwen-plus, qwen-max | https://dashscope.aliyuncs.com/compatible-mode/v1 |
+| glm | glm-4-flash, glm-4-plus | https://open.bigmodel.cn/api/paas/v4 |
+| ollama | 自定义模型 | 从 OLLAMA_BASE_URL 读取 |
+
+**核心方法：**
+
+- \`generate(messages, provider, model, temperature, max_tokens)\` - 异步生成
+- \`generate_stream(...)\` - 流式生成
+- \`test_connection(provider, model)\` - 测试连通性
+- \`get_available_providers()\` - 获取已配置的提供商列表
+
+### Embedding 服务 (embedding.py)
+
+**职责：** 文本向量化
+
+**支持的提供商：**
+
+- **local**: sentence-transformers 本地模型（默认 BAAI/bge-small-zh-v1.5，512 维）
+- **openai**: OpenAI API（text-embedding-3-small，1536 维）
+
+**核心方法：**
+
+- \`embed_texts(texts)\` - 批量向量化
+- \`embed_query(query)\` - 单条查询向量化
+- \`get_dimension()\` - 获取向量维度
+
+**本地模型特点：**
+
+- 延迟加载（首次调用时才加载）
+- 使用 \`run_in_executor\` 在线程池中运行，避免阻塞事件循环
+- 启用 \`normalize_embeddings=True\` 归一化
+
+### 向量存储 (vector_store.py)
+
+**职责：** 封装 ChromaDB 操作
+
+**Collection 命名规则：**
+
+\`\`\`python
+f"ws_{workspace_id}".replace("-", "_")
+\`\`\`
+
+**核心方法：**
+
+- \`get_or_create_collection(workspace_id)\` - 获取/创建 collection
+- \`add_documents(workspace_id, doc_ids, texts, metadatas, embeddings)\` - 添加文档
+- \`search(workspace_id, query_embedding, top_k)\` - 向量搜索
+- \`delete_documents(workspace_id, doc_ids)\` - 删除文档
+- \`delete_collection(workspace_id)\` - 删除整个 collection
+- \`get_collection_stats(workspace_id)\` - 获取统计信息
+
+**注意事项：**
+
+- metadata 中的 \`None\` 值必须过滤（ChromaDB 不允许）
+- 空 metadata 替换为 \`{"empty": True}\`
+
+### 文本切片器 (text_splitter.py)
+
+**职责：** 中文感知的递归字符切片
+
+**默认分隔符优先级：**
+
+\`\`\`python
+["\\n\\n", "\\n", "。", ".", "！", "!", "？", "?", "；", ";", " ", ""]
+\`\`\`
+
+**核心算法：**
+
+1. 按当前优先级分隔符切分
+2. 合并过短的片段（不超过 chunk_size）
+3. 超长片段递归使用下一优先级分隔符
+4. 最终兜底：硬字符截断 \`_force_split()\`
+
+**重叠处理：**
+
+\`\`\`python
+# 将前一个 chunk 的最后 chunk_overlap 个字符拼到当前 chunk 开头
+overlap_text = prev_chunk[-self.chunk_overlap:]
+overlapped = overlap_text + current_chunk
+\`\`\`
+
+## 文档处理流水线
+
+### Pipeline (pipeline.py)
+
+**六步流水线：**
+
+1. 更新状态 → \`status="processing"\`
+2. 解析文档 → \`parser.parse(file_path)\` → \`[{content, metadata}]\`
+3. 文本切片 → \`text_splitter.split_documents(raw_chunks)\`
+4. 向量化 → \`embedding_service.embed_texts(texts)\`
+5. 存储到 ChromaDB → \`vector_store.add_documents(...)\`
+6. 更新状态 → \`status="ready"\`, \`chunk_count=N\`
+
+### 解析器
+
+**BaseParser 抽象基类：**
+
+\`\`\`python
+class BaseParser(ABC):
+    @abstractmethod
+    def parse(self, file_path: str) -> list[dict]:
+        # 返回 [{content: str, metadata: {page_num, heading, source_file}}]
+        pass
+\`\`\`
+
+**支持的解析器：**
+
+| 格式 | 解析器 | 技术 |
+|------|--------|------|
+| PDF | PDFParser | PyMuPDF 逐页提取 |
+| DOCX | DocxParser | python-docx 段落和表格 |
+| PPTX | PptxParser | python-pptx 逐 slide |
+| Markdown | MarkdownParser | 按标题分段，保留代码块 |
+| TXT | _TxtParser | chardet 编码检测 |
+| XLSX | _XlsxParser | openpyxl 每行转键值对 |
+| CSV | _CsvParser | csv.reader 表头+数据行 |
+| HTML | _HtmlParser | BeautifulSoup 提取正文 |
+
+---
+
+# 前端详解
+
+## 项目结构
+
+\`\`\`
+frontend/
+├── src/
+│   ├── main.tsx                # React 入口
+│   ├── App.tsx                 # 主布局（侧边导航 + 路由）
+│   ├── pages/
+│   │   ├── Dashboard.tsx       # 仪表盘（统计概览）
+│   │   ├── Workspaces.tsx      # 工作区管理
+│   │   ├── Documents.tsx       # 文档列表与状态
+│   │   ├── Upload.tsx          # 文件拖拽上传
+│   │   ├── SearchTest.tsx      # RAG 检索测试
+│   │   └── Settings.tsx        # 系统设置
+│   ├── components/
+│   │   ├── FileUploader.tsx    # 文件上传组件
+│   │   └── SourceCard.tsx      # 来源引用卡片
+│   ├── services/
+│   │   └── api.ts              # Axios API 调用层
+│   └── stores/
+│       └── appStore.ts         # Zustand 状态管理
+├── Dockerfile
+├── nginx.conf
+├── package.json
+├── vite.config.ts
+└── tsconfig.json
+\`\`\`
+
+## 路由配置
+
+| 路径 | 页面 | 菜单名 |
+|------|------|--------|
+| \`/\` | Dashboard | 仪表盘 |
+| \`/workspaces\` | Workspaces | 工作区 |
+| \`/workspaces/:id/documents\` | Documents | — |
+| \`/upload\` | Upload | 文件上传 |
+| \`/search\` | SearchTest | 检索测试 |
+| \`/settings\` | Settings | 系统设置 |
+
+## 核心页面功能
+
+### Dashboard（仪表盘）
+
+- Statistic 卡片展示：工作区总数 / 文档总数 / 知识片段总数
+- 快速操作按钮：上传文件 / 测试搜索
+- 最近活动列表
+
+### Workspaces（工作区管理）
+
+- Table 列出工作区（名称/描述/文档数/创建时间）
+- 创建 Modal（name + description）
+- 删除确认
+- 点击行跳转文档列表
+
+### Documents（文档管理）
+
+- 从 URL params 获取 workspace_id
+- Table 展示文档（文件名/类型/大小/切片数/状态/时间）
+- 状态标签：
+  - \`pending\` = orange
+  - \`processing\` = blue（带 Spin）
+  - \`ready\` = green
+  - \`failed\` = red
+- processing 状态自动轮询刷新
+
+### Upload（文件上传）
+
+- react-dropzone 拖拽区域
+- accept 限制文件类型
+- Workspace 下拉选择器
+- 文件列表带 Progress 进度条
+- 顺序上传，每文件显示状态
+
+### SearchTest（检索测试）
+
+- 双模式转换：
+  - **知识检索**：仅返回相关文档片段
+  - **对话问答**：RAG 流式回答
+- Workspace 筛选（可选）
+- 输入问题
+- 展示结果：
+  - 回答文本
+  - 来源卡片列表（文件名/页码/内容预览/相关度评分）
+  - 耗时统计
+
+### Settings（系统设置）
+
+- Tabs 分三个标签页：
+  - **LLM 设置**：provider / model / api_key / test 连接
+  - **Embedding 设置**：provider / model
+  - **系统信息**：版本/文档数/工作区数/存储用量
+
+## API 层 (api.ts)
+
+**Axios 实例配置：**
+
+\`\`\`typescript
+const api = axios.create({
+  baseURL: '/api',
+  timeout: 60000,
+});
+\`\`\`
+
+**核心接口：**
+
+\`\`\`typescript
+interface Workspace {
+  id: string;
+  name: string;
+  description: string;
+  document_count: number;
+  created_at: string;
+}
+
+interface Document {
+  id: string;
+  workspace_id: string;
+  filename: string;
+  file_type: string;
+  file_size: number;
+  chunk_count: number;
+  status: 'pending' | 'processing' | 'ready' | 'failed';
+  created_at: string;
+}
+
+interface SearchResult {
+  answer: string;
+  sources: SourceItem[];
+  timing: number;
+}
+
+interface SourceItem {
+  filename: string;
+  page_number: number;
+  content: string;
+  score: number;
+}
+\`\`\`
+
+**SSE 聊天：**
+
+\`\`\`typescript
+// chatQuery 返回 URL 字符串，消费端用 EventSource 处理流式事件
+const eventSource = new EventSource(url);
+eventSource.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  // 处理 {token: "..."} / {sources: [...]} / {done: true}
+};
+\`\`\`
+
+## 状态管理 (appStore.ts)
+
+**Zustand Store：**
+
+\`\`\`typescript
+interface AppStore {
+  currentWorkspace: Workspace | null;
+  workspaces: Workspace[];
+  documents: Document[];
+  settings: LLMSettings;
+  
+  actions: {
+    fetchWorkspaces: () => Promise<void>;
+    setCurrentWorkspace: (ws: Workspace) => void;
+    fetchDocuments: (workspaceId: string) => Promise<void>;
+  };
+}
+\`\`\`
+
+---
+
+# 飞书机器人
+
+## 架构设计
+
+**连接方式：** WebSocket 长连接（无需公网 IP）
+
+**核心组件：**
+
+- \`main.py\` - WebSocket 客户端启动
+- \`handler.py\` - 消息处理与分发
+- \`commands.py\` - 指令解析与路由
+- \`cards.py\` - 飞书消息卡片构建
+- \`auth.py\` - Token 管理（自动刷新）
+
+## 启动流程
+
+\`\`\`python
+# 1. 加载 BotConfig
+# 2. 创建 asyncio event loop
+# 3. 初始化：Redis → TokenManager → CommandRouter → MessageHandler
+# 4. 构建 event dispatcher，注册 im.message.receive_v1 回调
+# 5. lark.ws.Client(app_id, app_secret, event_handler=dispatcher).start()
+# 6. SDK 回调是同步的，用 asyncio.run_coroutine_threadsafe 桥接到 async handler
+# 7. SIGINT/SIGTERM 优雅关闭所有组件
+\`\`\`
+
+## 指令系统
+
+| 指令 | 格式 | 功能 |
+|------|------|------|
+| 直接提问 | \`Python 装饰器怎么用？\` | 基于知识库 RAG 回答 |
+| 搜索 | \`/search 关键词\` | 仅检索，返回相关文档片段 |
+| 知识库状态 | \`/status\` | 查看文档数量、最近更新等 |
+| 切换工作区 | \`/ws 工作区名称\` | 切换当前查询的知识库工作区 |
+| 帮助 | \`/help\` | 显示所有可用指令 |
+
+## Token 管理
+
+**TokenManager 类：**
+
+- 管理 \`tenant_access_token\` 生命周期
+- API: \`POST https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal\`
+- 内存缓存 token，在到期前 5 分钟自动刷新
+- \`async get_token() → str\`
+
+## 消息卡片
+
+**卡片类型：**
+
+| 函数 | 标题颜色 | 内容 |
+|------|---------|------|
+| \`build_answer_card\` | 蓝色 | 回答 + 来源引用 + 置信度 + 反馈按钮 |
+| \`build_help_card\` | 绿色 | 指令列表说明 |
+| \`build_status_card\` | 紫色 | 工作区数/文档数/切片数/最近更新 |
+| \`build_not_found_card\` | 灰色 | 未找到提示 + 建议 |
+| \`build_error_card\` | 红色 | 错误信息 + 排查建议 |
+
+**置信度颜色：**
+
+- ≥0.8 绿色
+- ≥0.5 橙色
+- <0.5 红色
+
+---
+
+# 部署指南
+
+## Docker Compose 部署（推荐）
+
+### 前置条件
+
+- Docker 和 Docker Compose 已安装
+
+### 部署步骤
+
+\`\`\`bash
+# 1. 进入项目目录
+cd E:\\anything_llm
+
+# 2. 配置环境变量
+cp .env.example .env
+# 编辑 .env，填入飞书 App ID/Secret 和 LLM API Key
+
+# 3. 一键启动所有服务
+docker compose up -d
+
+# 4. 访问服务
+# Web 管理界面:  http://localhost:3000
+# API 文档:      http://localhost:8000/docs
+# 飞书机器人:    在飞书中搜索你的机器人名称开始对话
+\`\`\`
+
+### 服务说明
+
+| 服务 | 端口 | 说明 |
+|------|------|------|
+| frontend | 3000 | Web 管理界面 |
+| backend | 8000 | FastAPI 后端 API |
+| chromadb | 8001 | ChromaDB 向量数据库 |
+| redis | 6379 | Redis 缓存/队列 |
+| feishu-bot | — | 飞书机器人（无端口，WebSocket 出站连接） |
+| worker | — | Celery 异步任务 Worker |
+
+## 本地开发部署
+
+### 前置条件
+
+- Python 3.11+
+- Node.js 18+
+- Redis
+- ChromaDB
+
+### 1. 启动基础设施
+
+\`\`\`bash
+# 启动 Redis
+docker run -d --name knowbase-redis -p 6379:6379 redis:7-alpine
+
+# 启动 ChromaDB
+docker run -d --name knowbase-chroma -p 8001:8000 chromadb/chroma:latest
+\`\`\`
+
+### 2. 启动后端
+
+\`\`\`bash
+cd backend
+
+# 创建虚拟环境
+python -m venv venv
+venv\\Scripts\\activate        # Windows
+# source venv/bin/activate   # macOS/Linux
+
+# 安装依赖
+pip install -r requirements.txt
+
+# 配置环境变量
+cp ../.env.example ../.env
+# 编辑 .env 填入配置
+
+# 启动开发服务器（热重载）
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+\`\`\`
+
+后端启动后访问 http://localhost:8000/docs 查看 API 文档。
+
+### 3. 启动前端
+
+\`\`\`bash
+cd frontend
+
+# 安装依赖
+npm install
+
+# 启动开发服务器
+npm run dev
+\`\`\`
+
+前端启动后访问 http://localhost:5173，API 请求自动代理到后端。
+
+### 4. 启动飞书机器人（可选）
+
+\`\`\`bash
+cd feishu-bot
+
+# 安装依赖
+pip install -r requirements.txt
+
+# 启动 Bot（确保 .env 中已配置 FEISHU_APP_ID 和 FEISHU_APP_SECRET）
+python -m bot.main
+\`\`\`
+
+## 飞书机器人配置
+
+1. 登录 [飞书开放平台](https://open.feishu.cn/)，进入开发者后台
+2. 创建「自建应用」，获取 \`App ID\` 和 \`App Secret\`
+3. 在「应用功能」中启用「机器人」能力
+4. 配置 API 权限：\`im:message\`、\`im:message:send_as_bot\`、\`im:chat\`、\`im:resource\`
+5. 在「事件与回调」中选择「使用长连接接收事件」，订阅 \`im.message.receive_v1\`
+6. 发布应用版本
+
+---
+
+# API 文档
+
+## 工作区管理
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | \`/api/workspaces\` | 获取所有工作区 |
+| POST | \`/api/workspaces\` | 创建工作区 |
+| GET | \`/api/workspaces/{id}\` | 工作区详情（含文档计数） |
+| PUT | \`/api/workspaces/{id}\` | 更新工作区 |
+| DELETE | \`/api/workspaces/{id}\` | 删除工作区（级联删除文档） |
+
+## 文档管理
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | \`/api/workspaces/{id}/documents\` | 上传文件（multipart，支持多文件） |
+| GET | \`/api/workspaces/{id}/documents\` | 获取文档列表（可选 status/file_type 过滤） |
+| GET | \`/api/documents/{id}\` | 文档详情 |
+| GET | \`/api/documents/{id}/status\` | 处理状态 |
+| DELETE | \`/api/documents/{id}\` | 删除文档（文件+DB+向量） |
+
+## 检索与对话
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | \`/api/search\` | RAG 知识检索，返回 top-K 文档片段 |
+| POST | \`/api/chat\` | 完整 RAG 问答，SSE 流式回答 |
+
+## 系统设置
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | \`/api/settings/llm\` | 获取 LLM 配置（API Key 脱敏显示） |
+| PUT | \`/api/settings/llm\` | 更新 LLM provider/model/key |
+| POST | \`/api/settings/llm/test\` | 测试模型连通性 |
+| GET | \`/api/settings/embedding\` | 获取 Embedding 配置 |
+| PUT | \`/api/settings/embedding\` | 更新 Embedding 模型 |
+| GET | \`/api/settings/system\` | 系统信息（文档数/工作区数/存储用量） |
+
+## 支持的文件格式
+
+| 格式 | 解析器 | 说明 |
+|------|--------|------|
+| PDF | PyMuPDF | 支持扫描件 OCR 提示 |
+| Word (.docx) | python-docx | 保留段落结构和标题层级 |
+| Word (.doc) | 转换后解析 | 旧格式 |
+| PPT (.pptx) | python-pptx | 逐页提取文本+备注 |
+| Markdown | 内置解析 | 按标题分段，保留代码块 |
+| TXT | chardet + 直读 | 自动检测编码 |
+| Excel (.xlsx) | openpyxl | 每行转为键值对文本 |
+| CSV | 内置 csv 模块 | 表头+数据行配对 |
+| HTML | BeautifulSoup | 去除标签，保留正文 |
+
+---
+
+# 关键设计决策
+
+## 1. ChromaDB Collection 命名
+
+统一为 \`ws_{workspace_id}\`（短横线替换为下划线），所有模块必须保持一致。
+
+## 2. Metadata 规范
+
+必须包含 \`source_file\` 键（RAG 引擎用它引用来源文件名）。
+
+## 3. ChromaDB Space 配置
+
+创建 collection 时设置 \`metadata={"hnsw:space": "cosine"}\`。
+
+## 4. Redis 数据库隔离
+
+- 飞书 Bot 使用 Redis DB 1
+- 后端使用 Redis DB 0
+- 避免键冲突
+
+## 5. 文档处理方式
+
+当前采用内联同步执行（在 documents.py 的 \`_process_document\` 中），Celery Worker 定义了但未实际使用，后续可替换。
+
+## 6. 错误处理
+
+所有外部服务调用（ChromaDB/LLM/飞书 API）必须有 try/except 和 loguru 日志。
+
+## 7. LLM 调用统一
+
+通过 litellm 统一调用，不直接调用各家 SDK。
+
+## 8. Embedding 模型延迟加载
+
+本地模型延迟加载，避免启动时阻塞。
+
+## 9. 中文优先
+
+所有用户可见的文本（Prompt/卡片/UI）使用中文。
+
+## 10. Python 版本
+
+要求 3.11+，3.14 可能存在兼容性问题。
+
+---
+
+# 环境变量配置
+
+## 飞书机器人配置
+
+| 变量 | 说明 | 示例 |
+|------|------|------|
+| \`FEISHU_APP_ID\` | 飞书应用 App ID | \`cli_xxxxxxxxxx\` |
+| \`FEISHU_APP_SECRET\` | 飞书应用 App Secret | \`xxxxxxxxxxxxxxxxxx\` |
+| \`FEISHU_VERIFICATION_TOKEN\` | 事件订阅验证 Token | \`your_verification_token\` |
+| \`FEISHU_ENCRYPT_KEY\` | Encrypt Key（可选） | — |
+
+## LLM API Keys
+
+| 变量 | 说明 | 示例 |
+|------|------|------|
+| \`OPENAI_API_KEY\` | OpenAI API Key | \`sk-xxxxxxxx\` |
+| \`DEEPSEEK_API_KEY\` | DeepSeek API Key | \`sk-xxxxxxxx\` |
+| \`DASHSCOPE_API_KEY\` | 通义千问 API Key | \`sk-xxxxxxxx\` |
+| \`ZHIPU_API_KEY\` | 智谱 API Key | \`xxxxxxxx\` |
+
+## 默认 LLM 配置
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| \`DEFAULT_LLM_PROVIDER\` | 默认 LLM 提供商 | \`deepseek\` |
+| \`DEFAULT_LLM_MODEL\` | 默认模型名称 | \`deepseek-chat\` |
+| \`DEFAULT_EMBEDDING_PROVIDER\` | Embedding 提供商 | \`openai\` |
+| \`DEFAULT_EMBEDDING_MODEL\` | Embedding 模型 | \`text-embedding-3-small\` |
+
+## Ollama 本地模型配置
+
+| 变量 | 说明 | 示例 |
+|------|------|------|
+| \`OLLAMA_BASE_URL\` | Ollama 服务地址 | \`http://localhost:11434\` |
+
+## 文档处理配置
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| \`CHUNK_SIZE\` | 文本切片大小（字符） | \`500\` |
+| \`CHUNK_OVERLAP\` | 分块重叠大小（字符） | \`50\` |
+| \`RAG_TOP_K\` | 检索返回条数 | \`5\` |
+
+## 系统配置
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| \`BACKEND_PORT\` | 后端服务端口 | \`8000\` |
+| \`FRONTEND_PORT\` | 前端服务端口 | \`3000\` |
+| \`LOG_LEVEL\` | 日志级别 | \`INFO\` |
+| \`MAX_UPLOAD_SIZE\` | 上传文件大小限制（MB） | \`50\` |
+| \`DATA_DIR\` | 文件存储路径 | \`/app/data\` |
+| \`UPLOAD_DIR\` | 上传文件路径 | \`/app/uploads\` |
+
+## Redis 配置
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| \`REDIS_URL\` | Redis 连接 URL | \`redis://redis:6379/0\` |
+
+## ChromaDB 配置
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| \`CHROMA_HOST\` | ChromaDB 主机 | \`chromadb\` |
+| \`CHROMA_PORT\` | ChromaDB 端口 | \`8000\` |
+
+---
+
+# 成本估算
+
+## 最低成本方案（推荐起步）
+
+| 项目 | 费用 |
+|------|------|
+| 服务器 | 自有电脑 / 轻量云服务器 ≈ 0-50 元/月 |
+| Embedding | BGE 本地模型 = 免费 |
+| LLM | DeepSeek ≈ 10-30 元/月 |
+| 向量数据库 | ChromaDB 本地 = 免费 |
+| 飞书机器人 | 免费 |
+| **月均总计** | **约 10-80 元** |
+
+---
+
+# 总结
+
+KnowBase 是一个功能完整、架构清晰的私人知识数据库系统，具有以下特点：
+
+✅ **完整的 RAG 流程** - 从文档上传到智能问答的全链路覆盖  
+✅ **多模型支持** - 灵活切换不同 LLM 提供商  
+✅ **中文优化** - 针对中文场景的 Embedding 和文本切片  
+✅ **易于部署** - Docker Compose 一键启动  
+✅ **飞书集成** - 移动端随时可问  
+✅ **Web 管理** - 可视化管理界面  
+
+适合个人或小团队构建私有知识库，实现"你的知识，随时可问"。
+        `;
+        
+        // 渲染 Markdown
+        document.getElementById('content').innerHTML = marked.parse(markdownContent);
+        
+        // 平滑滚动
+        document.querySelectorAll('nav a').forEach(anchor => {
+            anchor.addEventListener('click', function (e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                }
+            });
+        });
+    </script>
+</body>
+</html>

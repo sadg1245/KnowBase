@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import inspect
 import json
 from datetime import datetime, timezone
 from typing import Annotated, Any, Awaitable, Callable
@@ -15,6 +14,14 @@ from app.config import Settings
 from app.models.chat import DocumentChunk
 from app.models.document import Document
 from app.models.learning import KnowledgePoint
+from app.services.llm_completion import (
+    call_completion,
+    completion_kwargs,
+    escalate_max_tokens,
+    plan_max_tokens,
+    provider_name,
+    response_content,
+)
 
 
 class LearningGenerationError(RuntimeError):
@@ -62,6 +69,9 @@ class LearningMaterial(BaseModel):
     knowledge_points: list[LearningKnowledgePoint] = Field(min_length=1, max_length=20)
 
 Completion = Callable[..., Awaitable[Any] | Any]
+
+# 学习资料要一次产出多组结构化字段，推理模型的思维链也走同一个预算。
+MATERIAL_MAX_TOKENS = 12_000
 
 
 def resolve_provider_configuration(settings: Settings) -> tuple[str, str, str | None]:
@@ -138,57 +148,74 @@ def _first_json_object(content: str) -> dict[str, Any]:
     raise LearningGenerationError("The learning model did not return a valid JSON object")
 
 
-def _response_content(response: Any) -> str:
-    try:
-        choice = response.choices[0]
-        message = choice.message
-        content = message.content
-    except (AttributeError, IndexError, KeyError, TypeError) as exc:
-        raise LearningGenerationError("The learning model returned an invalid response") from exc
-    if not isinstance(content, str) or not content.strip():
-        raise LearningGenerationError("The learning model returned an empty response")
-    return content
-
-
 async def build_learning_material(
     chunks: list[DocumentChunk], settings: Settings, completion: Completion | None = None,
 ) -> LearningMaterial:
-    """Call LiteLLM and validate its first JSON object against the material contract."""
+    """Call LiteLLM and validate its first JSON object against the material contract.
+
+    推理模型会先花掉一部分输出预算思考，预算不足时接口仍返回 200 但正文为空或
+    被截断；这里用更大的预算重试一次，并把真实原因带进错误信息。
+    """
     if not chunks:
         raise LearningGenerationError("Cannot generate learning material without document chunks")
 
     try:
         model, api_key, api_base = _provider_configuration(settings)
-        if completion is None:
-            import litellm
-            completion = litellm.acompletion
-        kwargs: dict[str, Any] = {
-            "model": model,
-            "messages": [{"role": "user", "content": _generation_prompt(chunks)}],
-            "temperature": 0.2,
-            "max_tokens": 4000,
-            "api_key": api_key,
-            "timeout": 60,
-        }
-        if api_base:
-            kwargs["api_base"] = api_base
-        response = completion(**kwargs)
-        if inspect.isawaitable(response):
-            response = await response
-        payload = _first_json_object(_response_content(response))
-        return LearningMaterial.model_validate(payload)
     except LearningGenerationError:
         raise
-    except (ValidationError, json.JSONDecodeError) as exc:
-        raise LearningGenerationError("The learning model returned invalid structured material") from exc
-    except Exception as exc:
-        raise LearningGenerationError("Learning generation failed") from exc
+    if completion is None:
+        try:
+            import litellm
+            completion = litellm.acompletion
+        except Exception as exc:
+            raise LearningGenerationError("Learning generation failed") from exc
+
+    provider = provider_name(settings, model)
+    prompt = _generation_prompt(chunks)
+    kwargs = completion_kwargs(
+        model=model,
+        api_key=api_key,
+        api_base=api_base,
+        prompt=prompt,
+        provider=provider,
+        max_tokens=plan_max_tokens(provider, MATERIAL_MAX_TOKENS),
+        json_mode=True,
+    )
+    invalid_reason = ""
+    for attempt in range(2):
+        try:
+            response = await call_completion(completion, kwargs)
+            payload = _first_json_object(response_content(response))
+            return LearningMaterial.model_validate(payload)
+        except (ValidationError, ValueError, LearningGenerationError) as exc:
+            invalid_reason = str(exc)
+            if attempt == 0:
+                kwargs = {
+                    **kwargs,
+                    "max_tokens": escalate_max_tokens(provider, int(kwargs["max_tokens"])),
+                    "messages": [{"role": "user", "content": (
+                        prompt + "\n\nYour previous response was invalid: "
+                        + invalid_reason + ". Return corrected JSON only."
+                    )}],
+                }
+                continue
+            raise LearningGenerationError(
+                "The learning model returned invalid structured material: " + invalid_reason
+            ) from exc
+        except Exception as exc:
+            raise LearningGenerationError(str(exc)) from exc
+    raise LearningGenerationError("The learning model returned invalid structured material")
 
 
 async def replace_document_learning_content(
     db: AsyncSession, document: Document, material: LearningMaterial,
+    *, overwrite_tags: bool = False,
 ) -> None:
-    """Atomically replace only one document's generated learning content."""
+    """Atomically replace only one document's generated learning content.
+
+    人工编辑过的知识点标签（`tags_locked`）默认保留；
+    只有调用方明确要求覆盖时才使用 AI 生成标签。
+    """
     chunks = (await db.execute(
         select(DocumentChunk).where(DocumentChunk.document_id == document.id)
         .order_by(DocumentChunk.chunk_index),
@@ -201,9 +228,19 @@ async def replace_document_learning_content(
     if unknown_indices:
         raise LearningGenerationError("Learning material references unknown document chunks")
 
+    existing_rows = (await db.execute(
+        select(KnowledgePoint).where(KnowledgePoint.document_id == document.id)
+    )).scalars().all()
+    manual_tags: dict[str, list[str]] = {}
+    if not overwrite_tags:
+        for row in existing_rows:
+            if row.tags_locked:
+                manual_tags.setdefault(_tag_key(row.title), list(row.tags or []))
+
     await db.execute(delete(KnowledgePoint).where(KnowledgePoint.document_id == document.id))
     for point in material.knowledge_points:
         source = chunks_by_index.get(point.source_chunk_index)
+        preserved = manual_tags.get(_tag_key(point.title))
         db.add(KnowledgePoint(
             workspace_id=document.workspace_id,
             document_id=document.id,
@@ -214,7 +251,8 @@ async def replace_document_learning_content(
             source_heading=source.heading if source else None,
             importance=point.importance,
             difficulty=point.difficulty,
-            tags=point.tags,
+            tags=list(preserved) if preserved else point.tags,
+            tags_locked=bool(preserved),
         ))
 
     document.summary = material.summary
@@ -233,7 +271,7 @@ async def replace_document_learning_content(
 
 
 async def generate_document_learning_content(
-    db: AsyncSession, document_id: str, settings: Settings,
+    db: AsyncSession, document_id: str, settings: Settings, *, overwrite_tags: bool = False,
 ) -> LearningMaterial:
     """Generate and persist learning material using only durable database chunks."""
     document = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one_or_none()
@@ -244,5 +282,12 @@ async def generate_document_learning_content(
         .order_by(DocumentChunk.chunk_index),
     )).scalars().all()
     material = await build_learning_material(chunks, settings)
-    await replace_document_learning_content(db, document, material)
+    await replace_document_learning_content(
+        db, document, material, overwrite_tags=overwrite_tags
+    )
     return material
+
+
+def _tag_key(title: str) -> str:
+    """人工标签按规范化标题匹配，避免大小写或空白差异导致丢失。"""
+    return " ".join((title or "").split()).casefold()

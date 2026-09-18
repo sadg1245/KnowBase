@@ -18,6 +18,7 @@ from app.services.learning_content import (
     _provider_configuration,
     replace_document_learning_content,
 )
+from tests.support import create_user, create_workspace
 
 
 def material_payload(**overrides):
@@ -87,9 +88,8 @@ class LearningContentReplacementTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_replace_learning_content_is_idempotent(self):
         async with self.session_factory() as db:
-            workspace = Workspace(name="Test", slug="test")
-            db.add(workspace)
-            await db.flush()
+            user = await create_user(db)
+            workspace = await create_workspace(db, user, name="Test", slug="test")
             document = Document(
                 workspace_id=workspace.id,
                 filename="notes.txt",
@@ -126,9 +126,8 @@ class LearningContentReplacementTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_replace_rejects_unknown_source_before_deleting_existing_points(self):
         async with self.session_factory() as db:
-            workspace = Workspace(name="Test", slug="source-validation")
-            db.add(workspace)
-            await db.flush()
+            user = await create_user(db)
+            workspace = await create_workspace(db, user, name="Test", slug="source-validation")
             document = Document(
                 workspace_id=workspace.id,
                 filename="notes.txt",

@@ -14,6 +14,7 @@ from app.models.base import Base
 from app.models.chat import DocumentChunk
 from app.models.document import Document
 from app.models.workspace import Workspace
+from tests.support import create_user, create_workspace
 
 
 def _load_filter():
@@ -164,9 +165,8 @@ class DocumentPipelineContentBoundaryTests(unittest.IsolatedAsyncioTestCase):
         pipeline._get_parser = lambda _file_type: _StaticParser(raw_chunks)  # type: ignore[method-assign]
 
         async with self.session_factory() as db:
-            workspace = Workspace(name="测试", slug="body-filter")
-            db.add(workspace)
-            await db.flush()
+            user = await create_user(db)
+            workspace = await create_workspace(db, user, name="测试", slug="body-filter")
             document = Document(
                 workspace_id=workspace.id,
                 filename="book.pdf",
@@ -202,9 +202,8 @@ class DocumentPipelineContentBoundaryTests(unittest.IsolatedAsyncioTestCase):
         ])  # type: ignore[method-assign]
 
         async with self.session_factory() as db:
-            workspace = Workspace(name="空正文", slug="empty-body")
-            db.add(workspace)
-            await db.flush()
+            user = await create_user(db)
+            workspace = await create_workspace(db, user, name="空正文", slug="empty-body")
             document = Document(
                 workspace_id=workspace.id,
                 filename="notice.pdf",

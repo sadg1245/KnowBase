@@ -63,6 +63,11 @@ async def _create_components(config: BotConfig):
         redis_client=redis_client,
         access_token=config.BACKEND_ACCESS_TOKEN,
     )
+    if not config.BACKEND_ACCESS_TOKEN:
+        logger.warning(
+            "BACKEND_ACCESS_TOKEN 为空：后端会以 401 拒绝机器人的私人数据请求。"
+            "请在 .env 中把 SERVICE_TOKEN 与 BACKEND_ACCESS_TOKEN 设为同一个随机值。"
+        )
     logger.info(f"CommandRouter initialized (backend: {config.BACKEND_URL})")
 
     # 消息处理器

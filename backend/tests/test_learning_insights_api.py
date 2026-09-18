@@ -8,14 +8,14 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.api.deps import get_db
+from app.api.deps import get_current_user, get_db
 from app.main import app
 from app.models.base import Base
 from app.models.document import Document
 from app.models.learning import (
     LearningGoal, ReportSuggestion, StudyActivity, StudySession,
 )
-from app.models.workspace import Workspace
+from tests.support import create_user, create_workspace
 
 
 class LearningInsightsAPITests(unittest.IsolatedAsyncioTestCase):
@@ -25,9 +25,10 @@ class LearningInsightsAPITests(unittest.IsolatedAsyncioTestCase):
             await connection.run_sync(Base.metadata.create_all)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         self.db = self.sessions()
-        self.workspace = Workspace(name="API", slug="phase-six-api")
-        self.db.add(self.workspace)
-        await self.db.flush()
+        self.user = await create_user(self.db)
+        self.workspace = await create_workspace(
+            self.db, self.user, name="API", slug="phase-six-api"
+        )
         self.document = Document(
             workspace_id=self.workspace.id,
             filename="api.pdf",
@@ -42,6 +43,7 @@ class LearningInsightsAPITests(unittest.IsolatedAsyncioTestCase):
             await self.db.commit()
 
         app.dependency_overrides[get_db] = database
+        app.dependency_overrides[get_current_user] = lambda: self.user
         self.client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
     async def asyncTearDown(self):
@@ -95,13 +97,16 @@ class LearningInsightsAPITests(unittest.IsolatedAsyncioTestCase):
     async def test_activity_listing_filters_type_and_pages_with_cursor(self):
         for index in range(3):
             self.db.add(StudyActivity(
+                user_id=self.user.id,
                 event_key=f"activity:card:{index}",
                 activity_type="card_created",
                 title=f"卡片 {index}",
                 source_type="flashcard",
                 source_id=str(index),
             ))
-        self.db.add(StudyActivity(activity_type="review", title="旧复习"))
+        self.db.add(StudyActivity(
+            user_id=self.user.id, activity_type="review", title="旧复习"
+        ))
         await self.db.commit()
 
         first = await self.client.get(
@@ -144,22 +149,26 @@ class LearningInsightsAPITests(unittest.IsolatedAsyncioTestCase):
         now = datetime(2026, 9, 16, 8, tzinfo=timezone.utc)
         self.db.add_all([
             LearningGoal(
+                user_id=self.user.id,
                 scope_type="global", metric="daily_minutes", target_value=30,
                 target_date=date(2026, 12, 31),
             ),
             StudySession(
+                user_id=self.user.id,
                 id="export-session", workspace_id=self.workspace.id,
                 context_type="document", context_id=self.document.id,
                 started_at=now, last_heartbeat_at=now, ended_at=now,
                 active_seconds=180, status="completed", last_sequence=2,
             ),
             ReportSuggestion(
+                user_id=self.user.id,
                 period_type="week", period_start=now, period_end=now,
                 timezone_name="Asia/Shanghai", stats_hash="export-hash",
                 stats_snapshot={"learning_time": 180}, status="ready",
                 suggestion="保持节奏。", model="test", generated_at=now,
             ),
             StudyActivity(
+                user_id=self.user.id,
                 activity_type="document_read", title="阅读文档",
                 event_key="activity:study-session:export-session",
                 source_type="document", source_id=self.document.id,

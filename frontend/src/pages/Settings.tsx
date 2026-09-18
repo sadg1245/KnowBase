@@ -1,76 +1,20 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  App, Typography, Tabs, Form, Input, Select, Button, Space, Card, Spin, Descriptions, Tag, Divider,
+  App, Typography, Tabs, Form, Input, Select, Button, Space, Card, Spin, Descriptions, Tag, Divider, Avatar, Upload,
 } from 'antd';
 import {
-  SaveOutlined, ApiOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, DownloadOutlined,
+  SaveOutlined, ApiOutlined, InfoCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, DownloadOutlined, UploadOutlined, UserOutlined,
 } from '@ant-design/icons';
 import {
-  LLMSettings, SystemInfo,
+  CurrentUser, LLMSettings, SystemInfo,
+  clearAvatar, getMe, updateMe, uploadAvatar,
   getLLMSettings, updateLLMSettings, testLLM, getSystemInfo,
   getEmbeddingSettings, updateEmbeddingSettings, exportLearningData, getLearningProfile, updateLearningProfile,
 } from '../services/api';
+import { EMBEDDING_MODELS, MODELS, PROVIDERS } from '../features/account/llmProviders';
 
 const { Title, Text } = Typography;
-
-const PROVIDERS = [
-  { label: 'OpenAI', value: 'openai' },
-  { label: 'DeepSeek', value: 'deepseek' },
-  { label: '阿里通义 (DashScope)', value: 'dashscope' },
-  { label: '智谱 AI (GLM)', value: 'zhipu' },
-  { label: 'Ollama (本地)', value: 'ollama' },
-];
-
-const MODELS: Record<string, Array<{ label: string; value: string }>> = {
-  openai: [
-    { label: 'GPT-4o', value: 'gpt-4o' },
-    { label: 'GPT-4o Mini', value: 'gpt-4o-mini' },
-    { label: 'GPT-4-Turbo', value: 'gpt-4-turbo' },
-    { label: 'GPT-3.5-Turbo', value: 'gpt-3.5-turbo' },
-  ],
-  deepseek: [
-    { label: 'DeepSeek V4 Flash', value: 'deepseek-v4-flash' },
-    { label: 'DeepSeek V4 Pro', value: 'deepseek-v4-pro' },
-    { label: 'DeepSeek-Chat', value: 'deepseek-chat' },
-    { label: 'DeepSeek-Coder', value: 'deepseek-coder' },
-  ],
-  dashscope: [
-    { label: 'Qwen-Max', value: 'qwen-max' },
-    { label: 'Qwen-Plus', value: 'qwen-plus' },
-    { label: 'Qwen-Turbo', value: 'qwen-turbo' },
-  ],
-  zhipu: [
-    { label: 'GLM-4', value: 'glm-4' },
-    { label: 'GLM-4-Flash', value: 'glm-4-flash' },
-    { label: 'GLM-3-Turbo', value: 'glm-3-turbo' },
-  ],
-  ollama: [
-    { label: 'qwen2:7b', value: 'qwen2:7b' },
-    { label: 'llama3:8b', value: 'llama3:8b' },
-    { label: 'mistral:7b', value: 'mistral:7b' },
-    { label: '自定义模型', value: 'custom' },
-  ],
-};
-
-const EMBEDDING_MODELS: Record<string, Array<{ label: string; value: string }>> = {
-  local: [
-    { label: 'BGE Small 中文 v1.5', value: 'BAAI/bge-small-zh-v1.5' },
-  ],
-  openai: [
-    { label: 'text-embedding-3-small', value: 'text-embedding-3-small' },
-    { label: 'text-embedding-3-large', value: 'text-embedding-3-large' },
-    { label: 'text-embedding-ada-002', value: 'text-embedding-ada-002' },
-  ],
-  dashscope: [
-    { label: 'text-embedding-v2', value: 'text-embedding-v2' },
-    { label: 'text-embedding-v3', value: 'text-embedding-v3' },
-  ],
-  ollama: [
-    { label: 'nomic-embed-text', value: 'nomic-embed-text' },
-    { label: 'mxbai-embed-large', value: 'mxbai-embed-large' },
-  ],
-};
 
 const Settings: React.FC = () => {
   const { message } = App.useApp();
@@ -78,6 +22,10 @@ const Settings: React.FC = () => {
   const [llmForm] = Form.useForm();
   const [embedForm] = Form.useForm();
   const [learningForm] = Form.useForm();
+  const [profileForm] = Form.useForm();
+  const [profile, setProfile] = useState<CurrentUser | null>(null);
+  const [avatarUrl, setAvatarUrl] = useState('');
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -90,11 +38,12 @@ const Settings: React.FC = () => {
     const fetchData = async () => {
       setLoading(true);
       try {
-        const [settings, embedding, info, profile] = await Promise.all([
+        const [settings, embedding, info, learningProfile, account] = await Promise.all([
           getLLMSettings(),
           getEmbeddingSettings(),
           getSystemInfo(),
           getLearningProfile(),
+          getMe(),
         ]);
         llmForm.setFieldsValue(settings);
         setSelectedProvider(settings.provider || 'openai');
@@ -104,7 +53,10 @@ const Settings: React.FC = () => {
         });
         setSelectedEmbedProvider('local');
         setSystemInfo(info);
-        learningForm.setFieldsValue(profile);
+        learningForm.setFieldsValue(learningProfile);
+        setProfile(account);
+        profileForm.setFieldsValue({ display_name: account.display_name });
+        setAvatarUrl(account.avatar_url || '');
       } catch {
         message.error('加载设置失败');
       } finally {
@@ -181,6 +133,73 @@ const Settings: React.FC = () => {
             key: 'learning',
             label: '学习偏好',
             children: (
+              <Space direction="vertical" size={16} style={{ width: '100%' }}>
+              <Card title="个人资料">
+                <Space align="start" size={20} wrap>
+                  <Avatar size={72} src={avatarUrl || undefined} icon={<UserOutlined />} style={{ background: '#dff4f1', color: '#126a76' }} />
+                  <Space direction="vertical" size={10}>
+                    <Form form={profileForm} layout="vertical" style={{ maxWidth: 420 }}>
+                      <Form.Item name="display_name" label="昵称" rules={[{ required: true, message: '请输入昵称' }]}>
+                        <Input />
+                      </Form.Item>
+                      <Form.Item label="头像外链（https）">
+                        <Input
+                          placeholder="https://example.com/avatar.png"
+                          value={avatarUrl.startsWith('data:') ? '' : avatarUrl}
+                          onChange={event => setAvatarUrl(event.target.value)}
+                        />
+                      </Form.Item>
+                    </Form>
+                    <Space wrap>
+                      <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={async () => {
+                        try {
+                          const values = await profileForm.validateFields();
+                          setSaving(true);
+                          const updated = await updateMe({ display_name: values.display_name, avatar_url: avatarUrl || undefined });
+                          setProfile(updated);
+                          setAvatarUrl(updated.avatar_url || '');
+                          message.success('个人资料已保存');
+                        } catch (error: any) {
+                          if (!error?.errorFields) message.error(error?.response?.data?.detail || '保存个人资料失败');
+                        } finally {
+                          setSaving(false);
+                        }
+                      }}>保存资料</Button>
+                      <Upload
+                        accept="image/png,image/jpeg,image/webp,image/gif"
+                        showUploadList={false}
+                        beforeUpload={async file => {
+                          setUploadingAvatar(true);
+                          try {
+                            const updated = await uploadAvatar(file as File);
+                            setProfile(updated);
+                            setAvatarUrl(updated.avatar_url || '');
+                            message.success('头像已更新');
+                          } catch (error: any) {
+                            message.error(error?.response?.data?.detail || '头像上传失败');
+                          } finally {
+                            setUploadingAvatar(false);
+                          }
+                          return false;
+                        }}
+                      >
+                        <Button icon={<UploadOutlined />} loading={uploadingAvatar}>上传头像</Button>
+                      </Upload>
+                      <Button onClick={async () => {
+                        try {
+                          const updated = await clearAvatar();
+                          setProfile(updated);
+                          setAvatarUrl('');
+                          message.success('头像已清除');
+                        } catch {
+                          message.error('清除头像失败');
+                        }
+                      }}>清除头像</Button>
+                    </Space>
+                    <Text type="secondary">账号：{profile?.username || '-'}（本部署只允许一个账号，创建后只能登录与退出）</Text>
+                  </Space>
+                </Space>
+              </Card>
               <Card>
                 <Form form={learningForm} layout="vertical" style={{ maxWidth: 600 }}>
                   <Form.Item name="display_name" label="怎么称呼你" rules={[{ required: true }]}><Input /></Form.Item>
@@ -194,6 +213,7 @@ const Settings: React.FC = () => {
                     <Button onClick={() => navigate('/report')}>设置完整学习目标</Button></Space>
                 </Form>
               </Card>
+              </Space>
             ),
           },
           {

@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.assessment import QuizAttempt
+from app.models.assessment import QuizAttempt, QuizSet
 from app.models.learning import KnowledgePoint, StudyActivity
 from app.models.workspace import Workspace
 from app.services import goal_service, study_session_service
@@ -56,8 +56,9 @@ def _unique_activities(rows: list[StudyActivity]) -> list[StudyActivity]:
     return result
 
 
-async def _period_stats(db: AsyncSession, bounds) -> dict:
+async def _period_stats(db: AsyncSession, bounds, user_id: str) -> dict:
     activities = _unique_activities(list(await db.scalars(select(StudyActivity).where(
+        StudyActivity.user_id == user_id,
         StudyActivity.occurred_at >= bounds.utc_start,
         StudyActivity.occurred_at < bounds.utc_end,
     ).order_by(StudyActivity.occurred_at, StudyActivity.id))))
@@ -68,6 +69,11 @@ async def _period_stats(db: AsyncSession, bounds) -> dict:
         for row in review_rows
     }
     attempts = list(await db.scalars(select(QuizAttempt).where(
+        QuizAttempt.quiz_set_id.in_(
+            select(QuizSet.id).where(QuizSet.workspace_id.in_(
+                select(Workspace.id).where(Workspace.owner_id == user_id)
+            ))
+        ),
         QuizAttempt.submitted_at >= bounds.utc_start,
         QuizAttempt.submitted_at < bounds.utc_end,
     )))
@@ -76,6 +82,9 @@ async def _period_stats(db: AsyncSession, bounds) -> dict:
     max_score = sum(float(row.max_score) for row in graded)
     accuracy = round(total_score / max_score * 100, 2) if max_score else 0.0
     new_points = list(await db.scalars(select(KnowledgePoint).where(
+        KnowledgePoint.workspace_id.in_(
+            select(Workspace.id).where(Workspace.owner_id == user_id)
+        ),
         KnowledgePoint.created_at >= bounds.utc_start,
         KnowledgePoint.created_at < bounds.utc_end,
     )))
@@ -116,15 +125,15 @@ def _comparison(current: float, previous: float) -> dict:
 
 
 async def build_report(
-    db: AsyncSession, period_type: str, anchor_date: date, *, now: datetime
+    db: AsyncSession, period_type: str, anchor_date: date, *, now: datetime, user_id: str
 ) -> dict:
-    await study_session_service.expire_stale_sessions(db, now)
-    profile = await goal_service.get_or_create_profile(db)
-    bounds = period_bounds(period_type, anchor_date, profile.timezone_name)
+    await study_session_service.expire_stale_sessions(db, user_id=user_id, now=now)
+    preference = await goal_service.get_or_create_preferences_by_id(db, user_id)
+    bounds = period_bounds(period_type, anchor_date, preference.timezone_name)
     previous = previous_period(bounds)
-    stats = await _period_stats(db, bounds)
-    previous_stats = await _period_stats(db, previous)
-    zone = ZoneInfo(profile.timezone_name)
+    stats = await _period_stats(db, bounds, user_id)
+    previous_stats = await _period_stats(db, previous, user_id)
+    zone = ZoneInfo(preference.timezone_name)
     buckets = {bucket: {"date": bucket.isoformat(), "active_seconds": 0, "activities": 0,
                         "reviews": 0, "new_knowledge_points": 0} for bucket in daily_buckets(bounds)}
     for row in stats["user_activities"]:
@@ -135,6 +144,9 @@ async def build_report(
             if row.activity_type in REVIEW_TYPES:
                 buckets[bucket]["reviews"] += 1
     points = list(await db.scalars(select(KnowledgePoint).where(
+        KnowledgePoint.workspace_id.in_(
+            select(Workspace.id).where(Workspace.owner_id == user_id)
+        ),
         KnowledgePoint.created_at >= bounds.utc_start,
         KnowledgePoint.created_at < bounds.utc_end,
     )))
@@ -154,7 +166,7 @@ async def build_report(
     return {
         "period": {
             "type": period_type,
-            "timezone_name": profile.timezone_name,
+            "timezone_name": preference.timezone_name,
             "local_start": bounds.local_start.date().isoformat(),
             "local_end": bounds.local_end.date().isoformat(),
             "utc_start": bounds.utc_start.isoformat(),
@@ -210,19 +222,24 @@ async def get_metric_evidence(
     anchor_date: date,
     metric: str,
     *,
+    user_id: str,
     cursor: str | None = None,
     limit: int = 30,
 ) -> dict:
-    await study_session_service.expire_stale_sessions(db, datetime.now(timezone.utc))
+    await study_session_service.expire_stale_sessions(
+        db, user_id=user_id, now=datetime.now(timezone.utc)
+    )
     if metric not in EVIDENCE_METRICS:
         raise ValueError(f"Unsupported report metric: {metric}")
-    profile = await goal_service.get_or_create_profile(db)
-    bounds = period_bounds(period_type, anchor_date, profile.timezone_name)
+    preference = await goal_service.get_or_create_preferences_by_id(db, user_id)
+    bounds = period_bounds(period_type, anchor_date, preference.timezone_name)
     signature = _cursor_signature(period_type, anchor_date, metric)
     offset = _decode_cursor(cursor, signature)
     items: list[dict] = []
+    owned_workspaces = select(Workspace.id).where(Workspace.owner_id == user_id)
     if metric in {"learning_time", "activity_count", "review_count", "mastery_change", "weakness_change"}:
         query = select(StudyActivity).where(
+            StudyActivity.user_id == user_id,
             StudyActivity.occurred_at >= bounds.utc_start,
             StudyActivity.occurred_at < bounds.utc_end,
         )
@@ -250,6 +267,7 @@ async def get_metric_evidence(
             })
     elif metric == "new_knowledge_points":
         rows = list(await db.scalars(select(KnowledgePoint).where(
+            KnowledgePoint.workspace_id.in_(owned_workspaces),
             KnowledgePoint.created_at >= bounds.utc_start,
             KnowledgePoint.created_at < bounds.utc_end,
         ).order_by(KnowledgePoint.created_at.desc(), KnowledgePoint.id.desc())))
@@ -261,6 +279,9 @@ async def get_metric_evidence(
         } for row in rows]
     else:
         rows = list(await db.scalars(select(QuizAttempt).where(
+            QuizAttempt.quiz_set_id.in_(
+                select(QuizSet.id).where(QuizSet.workspace_id.in_(owned_workspaces))
+            ),
             QuizAttempt.submitted_at >= bounds.utc_start,
             QuizAttempt.submitted_at < bounds.utc_end,
             QuizAttempt.evaluation_status == "graded",
@@ -278,21 +299,27 @@ async def get_metric_evidence(
     return {"items": page, "next_cursor": next_cursor, "metric": metric}
 
 
-async def build_legacy_report(db: AsyncSession, *, days: int, now: datetime) -> dict:
+async def build_legacy_report(
+    db: AsyncSession, *, days: int, now: datetime, user_id: str
+) -> dict:
     """Adapt the shared evidence calculations to the old rolling-window response."""
-    await study_session_service.expire_stale_sessions(db, now)
-    profile = await goal_service.get_or_create_profile(db)
+    await study_session_service.expire_stale_sessions(db, user_id=user_id, now=now)
+    preference = await goal_service.get_or_create_preferences_by_id(db, user_id)
     end = _aware(now) + timedelta(microseconds=1)
     start = _aware(now) - timedelta(days=days)
-    stats = await _period_stats(db, SimpleNamespace(utc_start=start, utc_end=end))
-    zone = ZoneInfo(profile.timezone_name)
+    stats = await _period_stats(db, SimpleNamespace(utc_start=start, utc_end=end), user_id)
+    zone = ZoneInfo(preference.timezone_name)
     daily: dict[str, dict] = {}
     for row in stats["user_activities"]:
         key = _aware(row.occurred_at).astimezone(zone).date().isoformat()
         daily.setdefault(key, {"date": key, "minutes": 0.0, "activities": 0})
         daily[key]["minutes"] = round(daily[key]["minutes"] + (row.duration_seconds or 0) / 60, 1)
         daily[key]["activities"] += 1
-    points = list(await db.scalars(select(KnowledgePoint)))
+    points = list(await db.scalars(select(KnowledgePoint).where(
+        KnowledgePoint.workspace_id.in_(
+            select(Workspace.id).where(Workspace.owner_id == user_id)
+        )
+    )))
     return {
         "days": days,
         "total_minutes": round(stats["total_active_seconds"] / 60),

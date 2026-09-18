@@ -1,13 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { App, Alert, Button, Empty, Input, Progress, Radio, Select, Space, Tag } from 'antd';
-import { ArrowLeftOutlined, CheckCircleOutlined, CloseCircleOutlined, HistoryOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, CheckCircleOutlined, CloseCircleOutlined, HistoryOutlined, UnorderedListOutlined } from '@ant-design/icons';
 
 import { PracticeBuilder, type PracticeSection } from '../components/practice/PracticeBuilder';
 import { QuizRunner } from '../components/practice/QuizRunner';
+import { QuizHistoryPanel } from '../components/practice/QuizHistoryPanel';
 import { MistakeNotebook } from '../components/practice/MistakeNotebook';
 import { WeakKnowledgePanel } from '../components/practice/WeakKnowledgePanel';
-import type { AssessmentListScope, MistakeFilters, MistakeRecord, PracticeAnswer, PracticeSessionState, QuizAttempt, QuizSetGenerateRequest, QuizRunView, WeakKnowledgeState } from '../features/practice/types';
+import type { AssessmentAnswerMode, AssessmentListScope, MistakeFilters, MistakeRecord, PracticeAnswer, PracticeSessionState, QuizAttempt, QuizSetGenerateRequest, QuizSetHistoryItem, QuizSetHistoryScope, QuizRunView, WeakKnowledgeState } from '../features/practice/types';
 import {
   clearPracticeSessionDraft,
   createPracticeSession,
@@ -28,6 +29,7 @@ import {
   getWeakKnowledge,
   getWorkspaces,
   KnowledgePoint,
+  listQuizSets,
   QuizQuestion,
   retryAttemptGrading,
   recalculateWeakKnowledge,
@@ -128,7 +130,7 @@ export const LegacyPracticeView: React.FC<LegacyPracticeViewProps> = ({
         <h1 className="page-title">历史错题重练</h1>
         <p className="page-lead">旧练习记录会继续保留；逐题重答，重新检验当时没掌握的内容。</p>
       </div>
-      <Button href="/practice" icon={<ArrowLeftOutlined />}>返回新测验</Button>
+      <Button href={practiceNotebookHref(workspaceId)} icon={<ArrowLeftOutlined />}>返回</Button>
     </header>
     <div className="practice-legacy-scope">
       <Select
@@ -197,6 +199,19 @@ export const LegacyPracticeView: React.FC<LegacyPracticeViewProps> = ({
   </div>;
 };
 
+const practiceHref = (workspaceId: string | undefined, params: Record<string, string>): string => {
+  const query = new URLSearchParams(params);
+  if (workspaceId) query.set('workspace', workspaceId);
+  const suffix = query.toString();
+  return suffix ? `/practice?${suffix}` : '/practice';
+};
+
+/** 返回上一级：错题笔记的上一级是练习与测验。 */
+export const practiceRootHref = (workspaceId?: string): string => practiceHref(workspaceId, {});
+
+/** 返回上一级：历史错题重练的上一级是错题笔记。 */
+export const practiceNotebookHref = (workspaceId?: string): string => practiceHref(workspaceId, { wrong: '1' });
+
 export const PracticeHistoryActions: React.FC<{ workspaceId?: string }> = ({ workspaceId }) => {
   const history = new URLSearchParams({ wrong: '1', history: '1' });
   if (workspaceId) history.set('workspace', workspaceId);
@@ -251,6 +266,14 @@ const Practice: React.FC = () => {
   const [weakFilters, setWeakFilters] = useState<AssessmentListScope>({ limit: 20, offset: 0 });
   const [weakLoading, setWeakLoading] = useState(false);
   const [weakRecalculating, setWeakRecalculating] = useState(false);
+  const [historyMode, setHistoryMode] = useState<AssessmentAnswerMode>('sequential');
+  const [historyItems, setHistoryItems] = useState<QuizSetHistoryItem[]>([]);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyCounts, setHistoryCounts] = useState<Record<AssessmentAnswerMode, number>>({ sequential: 0, full_paper: 0 });
+  const [historyFilters, setHistoryFilters] = useState<QuizSetHistoryScope>({ limit: 10, offset: 0 });
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyOperation, setHistoryOperation] = useState<{ token: number; quizSetId: string }>();
+  const [historyRefreshKey, setHistoryRefreshKey] = useState(0);
 
   const scopeRequestGuard = useRef(createPracticeRequestGuard());
   const sessionRequestGuard = useRef(createPracticeRequestGuard());
@@ -259,6 +282,7 @@ const Practice: React.FC = () => {
   const mistakeRequestGuard = useRef(createPracticeRequestGuard());
   const redoRequestGuard = useRef(createPracticeRequestGuard());
   const weakRequestGuard = useRef(createPracticeRequestGuard());
+  const historyRequestGuard = useRef(createPracticeRequestGuard());
   const readyDocuments = readyPracticeDocuments(documents);
   const effectiveDocumentIds = resolvePracticeDocumentIds(documents, documentIds);
   const effectiveDocumentScopeKey = effectiveDocumentIds.join('\u0000');
@@ -268,6 +292,8 @@ const Practice: React.FC = () => {
   const mistakeFilterKey = JSON.stringify(visibleMistakeFilters);
   const visibleWeakFilters = { ...weakFilters, workspace_id: workspaceId };
   const weakFilterKey = JSON.stringify(visibleWeakFilters);
+  const visibleHistoryFilters: QuizSetHistoryScope = { ...historyFilters, workspace_id: workspaceId, answer_mode: historyMode };
+  const historyFilterKey = JSON.stringify(visibleHistoryFilters);
 
   useEffect(() => {
     let active = true;
@@ -446,6 +472,31 @@ const Practice: React.FC = () => {
     return () => { weakRequestGuard.current.invalidate(); };
   }, [wrongOnly, session?.run.id, workspaceId, scopeLoading, weakFilterKey]);
 
+  useEffect(() => {
+    historyRequestGuard.current.invalidate();
+    setHistoryOperation(undefined);
+    if (wrongOnly || session || !workspaceId || scopeLoading) {
+      setHistoryItems([]);
+      setHistoryTotal(0);
+      setHistoryLoading(false);
+      return () => { historyRequestGuard.current.invalidate(); };
+    }
+    const token = historyRequestGuard.current.start();
+    setHistoryLoading(true);
+    listQuizSets(visibleHistoryFilters)
+      .then(page => {
+        if (!historyRequestGuard.current.isCurrent(token)) return;
+        setHistoryItems(page.items);
+        setHistoryTotal(page.total);
+        setHistoryCounts(page.mode_counts);
+      })
+      .catch(() => {
+        if (historyRequestGuard.current.isCurrent(token)) setPageError('历史出题记录加载失败，请稍后重试。');
+      })
+      .finally(() => { if (historyRequestGuard.current.isCurrent(token)) setHistoryLoading(false); });
+    return () => { historyRequestGuard.current.invalidate(); };
+  }, [wrongOnly, session?.run.id, workspaceId, scopeLoading, historyFilterKey, historyRefreshKey]);
+
   useEffect(() => () => {
     scopeRequestGuard.current.invalidate();
     sessionRequestGuard.current.invalidate();
@@ -540,6 +591,7 @@ const Practice: React.FC = () => {
         next.set('quiz_set', quizSet.id);
         return next;
       }, { replace: true });
+      setHistoryRefreshKey(key => key + 1);
       message.success('测验已生成，可以开始作答');
     } catch (error) {
       if (sessionRequestGuard.current.isCurrent(token)) setPageError(errorDetail(error, error instanceof Error ? error.message : '测验生成失败，请稍后重试。'));
@@ -748,6 +800,35 @@ const Practice: React.FC = () => {
     }
   };
 
+  const openHistoryItem = async (item: QuizSetHistoryItem) => {
+    const token = historyRequestGuard.current.start();
+    setHistoryOperation({ token, quizSetId: item.id });
+    setPageError(undefined);
+    try {
+      // 沿用这份题单自己的作答方式；若已有未提交的一轮则直接续答。
+      const created = await createQuizRun(item.id, { answer_mode: item.answer_mode, resume_unsubmitted: true })
+        .catch(() => createQuizRun(item.id, { resume_unsubmitted: true }));
+      if (!historyRequestGuard.current.isCurrent(token)) return;
+      const started = await startQuizRun(created.id);
+      if (!historyRequestGuard.current.isCurrent(token)) return;
+      const resumed = createPracticeSession(started, started.quiz_set.questions, Date.now(), loadPracticeSessionDraft(started.id));
+      setSession(resumed);
+      savePracticeSessionDraft(resumed);
+      setParams(current => {
+        const next = new URLSearchParams(current);
+        next.delete('wrong');
+        next.set('workspace', item.workspace_id);
+        next.set('quiz_set', item.id);
+        return next;
+      }, { replace: true });
+      message.success(item.run && item.run.status === 'in_progress' ? '已回到这一轮练习' : '题单已就绪，可以开始作答');
+    } catch (error) {
+      if (historyRequestGuard.current.isCurrent(token)) setPageError(errorDetail(error, '打开这次出题失败，请稍后重试。'));
+    } finally {
+      setHistoryOperation(current => finishMatchingPracticeOperation(current, token));
+    }
+  };
+
   if (historyOnly) {
     return <LegacyPracticeView
       workspaces={workspaces}
@@ -774,7 +855,10 @@ const Practice: React.FC = () => {
   if (wrongOnly) return <div className="practice-page">
     <header className="practice-page-heading">
       <div><div className="page-eyebrow">ERROR LEDGER · 可追踪的错题复盘</div><h1 className="page-title">错题笔记</h1><p className="page-lead">保留每次错误、重做与掌握变化；旧版历史题也仍然可以打开。</p></div>
-      <PracticeHistoryActions workspaceId={workspaceId} />
+      <Space wrap className="practice-heading-actions">
+        <Button href={practiceRootHref(workspaceId)} icon={<ArrowLeftOutlined />}>返回练习与测验</Button>
+        <PracticeHistoryActions workspaceId={workspaceId} />
+      </Space>
     </header>
     {pageError ? <Alert className="practice-page-alert" type="error" showIcon message={pageError} closable onClose={() => setPageError(undefined)} /> : null}
     <MistakeNotebook
@@ -802,7 +886,7 @@ const Practice: React.FC = () => {
         <h1 className="page-title">练习与测验</h1>
         <p className="page-lead">像批阅一份学习手稿那样，找到“以为会了”和“真的会了”之间的距离。</p>
       </div>
-      <Space wrap>{!session ? <Button href="/practice?wrong=1" icon={<HistoryOutlined />}>打开错题笔记</Button> : null}{session ? <Button onClick={() => {
+      <Space wrap>{!session ? <Button href="#quiz-history-title" icon={<UnorderedListOutlined />}>历史出题</Button> : null}{!session ? <Button href="/practice?wrong=1" icon={<HistoryOutlined />}>打开错题笔记</Button> : null}{session ? <Button onClick={() => {
         sessionRequestGuard.current.invalidate();
         setSessionOperation(undefined);
         setGradingOperation(undefined);
@@ -842,6 +926,18 @@ const Practice: React.FC = () => {
       onKnowledgePointChange={changeKnowledgePoints}
       onSectionChange={changeSections}
       onGenerate={generate}
+    /><QuizHistoryPanel
+      mode={historyMode}
+      counts={historyCounts}
+      items={historyItems}
+      total={historyTotal}
+      filters={visibleHistoryFilters}
+      loading={historyLoading}
+      busyId={historyOperation?.quizSetId}
+      onModeChange={mode => { setHistoryMode(mode); setHistoryFilters(current => ({ ...current, offset: 0 })); setPageError(undefined); }}
+      onFiltersChange={filters => { setHistoryFilters({ limit: filters.limit ?? 10, offset: filters.offset ?? 0 }); setPageError(undefined); }}
+      onOpen={openHistoryItem}
+      onRefresh={() => setHistoryRefreshKey(key => key + 1)}
     /><WeakKnowledgePanel
       items={weakItems}
       total={weakTotal}

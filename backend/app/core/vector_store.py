@@ -4,6 +4,7 @@ VectorStore — 基于 ChromaDB 的向量存储与检索服务
 每个 workspace 拥有独立的 collection，支持文档的增删查及语义搜索。
 """
 
+import os
 import time
 from typing import Optional
 
@@ -54,7 +55,10 @@ class VectorStore:
             import chromadb
 
             if self.host == "local":
-                self._client = chromadb.PersistentClient(path="./data/chromadb")
+                from app.config import settings
+
+                os.makedirs(settings.CHROMA_DIR, exist_ok=True)
+                self._client = chromadb.PersistentClient(path=settings.CHROMA_DIR)
                 logger.info("ChromaDB 本地持久化模式连接成功")
             else:
                 self._client = chromadb.HttpClient(

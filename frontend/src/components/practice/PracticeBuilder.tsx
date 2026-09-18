@@ -29,6 +29,18 @@ const QUESTION_TYPES: Array<{ label: string; value: AssessmentQuestionType }> = 
 
 const DEFAULT_QUESTION_TYPES = QUESTION_TYPES.map(item => item.value);
 
+/** 常用限时时长；选择“自定义”时由用户直接输入分钟数。 */
+export const DURATION_PRESETS = [5, 10, 15, 20, 30, 45, 60, 90, 120] as const;
+export const CUSTOM_DURATION_KEY = 'custom';
+export const CUSTOM_DURATION_MIN = 1;
+export const CUSTOM_DURATION_MAX = 600;
+
+export const resolveDurationMinutes = (choice: string, customMinutes: number | null): number => (
+  choice === CUSTOM_DURATION_KEY
+    ? Math.min(CUSTOM_DURATION_MAX, Math.max(CUSTOM_DURATION_MIN, Math.round(customMinutes ?? CUSTOM_DURATION_MIN)))
+    : Number(choice)
+);
+
 export interface QuizSetRequestValues {
   workspaceId: string;
   documents: Pick<Document, 'id' | 'status'>[];
@@ -114,7 +126,10 @@ export const PracticeBuilder: React.FC<PracticeBuilderProps> = ({
   const [strictSources, setStrictSources] = useState(true);
   const [answerMode, setAnswerMode] = useState<AssessmentAnswerMode>('sequential');
   const [timed, setTimed] = useState(false);
-  const [durationMinutes, setDurationMinutes] = useState(20);
+  const [durationChoice, setDurationChoice] = useState<string>('20');
+  const [customDurationMinutes, setCustomDurationMinutes] = useState(20);
+  const durationMinutes = resolveDurationMinutes(durationChoice, customDurationMinutes);
+  const customDuration = durationChoice === CUSTOM_DURATION_KEY;
   const readyDocuments = readyPracticeDocuments(documents);
   const effectiveDocumentIds = resolvePracticeDocumentIds(documents, selectedDocumentIds);
   const effectiveDocumentSet = new Set(effectiveDocumentIds);
@@ -279,15 +294,31 @@ export const PracticeBuilder: React.FC<PracticeBuilderProps> = ({
         <span>限时</span>
         <div>
           <Switch checked={timed} onChange={setTimed} />
-          <InputNumber
-            min={1}
-            max={240}
-            value={durationMinutes}
+          <Select
+            aria-label="限时时长"
+            value={durationChoice}
             disabled={!timed}
-            onChange={value => setDurationMinutes(value ?? 20)}
+            onChange={setDurationChoice}
+            popupMatchSelectWidth={false}
+            options={[
+              ...DURATION_PRESETS.map(minutes => ({ label: `${minutes} 分钟`, value: String(minutes) })),
+              { label: '自定义', value: CUSTOM_DURATION_KEY },
+            ]}
           />
-          <em>分钟</em>
+          {customDuration ? <>
+            <InputNumber
+              aria-label="自定义限时分钟数"
+              min={CUSTOM_DURATION_MIN}
+              max={CUSTOM_DURATION_MAX}
+              precision={0}
+              value={customDurationMinutes}
+              disabled={!timed}
+              onChange={value => setCustomDurationMinutes(value ?? CUSTOM_DURATION_MIN)}
+            />
+            <em>分钟</em>
+          </> : null}
         </div>
+        {customDuration ? <small>可输入 {CUSTOM_DURATION_MIN}–{CUSTOM_DURATION_MAX} 分钟</small> : null}
       </div>
     </div>
 

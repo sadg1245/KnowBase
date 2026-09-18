@@ -6,13 +6,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db
+from app.api.deps import get_current_user, get_db
 from app.models.chat import ChatFeedback, ChatSession, LearningNote
 from app.models.conversation import Conversation
 from app.models.learning import Flashcard, QuizQuestion
+from app.models.user import User
 from app.schemas.chat import ChatSessionCreate, ChatSessionUpdate, FeedbackUpdate, MessageNoteCreate, SummaryNoteCreate
 from app.services.conversation_service import ConversationService
 from app.services.activity_service import append_card_created
+from app.services.ownership import owned_chat_session, owned_workspace
 
 
 router = APIRouter(prefix="/chat", tags=["chat sessions"])
@@ -54,7 +56,9 @@ def _message(row: Conversation) -> dict:
     }
 
 
-async def _owned_assistant_message(db: AsyncSession, message_id: str, user_id: str = "default") -> tuple[Conversation, ChatSession]:
+async def _owned_assistant_message(
+    db: AsyncSession, message_id: str, user_id: str
+) -> tuple[Conversation, ChatSession]:
     stmt = (
         select(Conversation, ChatSession)
         .join(ChatSession, Conversation.session_id == ChatSession.id)
@@ -85,14 +89,23 @@ async def list_sessions(
     workspace_id: str | None = None,
     favorite: bool | None = Query(None),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> list[dict]:
-    rows = await ConversationService(db).list_sessions(workspace_id=workspace_id, favorite=favorite)
+    rows = await ConversationService(db, current_user.id).list_sessions(
+        workspace_id=workspace_id, favorite=favorite
+    )
     return [_session(row) for row in rows]
 
 
 @router.post("/sessions", status_code=201)
-async def create_session(payload: ChatSessionCreate, db: AsyncSession = Depends(get_db)) -> dict:
-    row = await ConversationService(db).create_session(
+async def create_session(
+    payload: ChatSessionCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    if payload.workspace_id:
+        await owned_workspace(db, payload.workspace_id, current_user)
+    row = await ConversationService(db, current_user.id).create_session(
         workspace_id=payload.workspace_id,
         document_ids=payload.document_ids,
         mode=payload.mode,
@@ -103,40 +116,57 @@ async def create_session(payload: ChatSessionCreate, db: AsyncSession = Depends(
 
 
 @router.get("/sessions/{session_id}")
-async def get_session(session_id: str, db: AsyncSession = Depends(get_db)) -> dict:
-    service = ConversationService(db)
-    row = await service.get_session(session_id)
-    if row is None:
-        raise HTTPException(404, "Learning session not found")
+async def get_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    service = ConversationService(db, current_user.id)
+    row = await owned_chat_session(db, session_id, current_user)
     return {**_session(row), "messages": [_message(item) for item in await service.messages(session_id)]}
 
 
 @router.patch("/sessions/{session_id}")
-async def update_session(session_id: str, payload: ChatSessionUpdate, db: AsyncSession = Depends(get_db)) -> dict:
+async def update_session(
+    session_id: str,
+    payload: ChatSessionUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    await owned_chat_session(db, session_id, current_user)
     changes = payload.model_dump(exclude_unset=True)
     if "document_ids" in changes:
         changes["selected_document_ids"] = changes.pop("document_ids")
     if "mode" in changes:
         changes["preferred_mode"] = changes.pop("mode")
-    row = await ConversationService(db).update_session(session_id, **changes)
+    if changes.get("workspace_id"):
+        await owned_workspace(db, changes["workspace_id"], current_user)
+    row = await ConversationService(db, current_user.id).update_session(session_id, **changes)
     if row is None:
         raise HTTPException(404, "Learning session not found")
     return _session(row)
 
 
 @router.delete("/sessions/{session_id}", status_code=204)
-async def delete_session(session_id: str, db: AsyncSession = Depends(get_db)) -> Response:
-    if not await ConversationService(db).delete_session(session_id):
+async def delete_session(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Response:
+    if not await ConversationService(db, current_user.id).delete_session(session_id):
         raise HTTPException(404, "Learning session not found")
     return Response(status_code=204)
 
 
 @router.post("/sessions/{session_id}/summary-note", status_code=201)
-async def create_summary_note(session_id: str, payload: SummaryNoteCreate, db: AsyncSession = Depends(get_db)) -> dict:
-    service = ConversationService(db)
-    session = await service.get_session(session_id)
-    if session is None:
-        raise HTTPException(404, "Learning session not found")
+async def create_summary_note(
+    session_id: str,
+    payload: SummaryNoteCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    service = ConversationService(db, current_user.id)
+    session = await owned_chat_session(db, session_id, current_user)
     messages = await service.messages(session_id)
     content = payload.content or "\n\n".join(f"{'我' if item.role == 'user' else 'AI'}：{item.content}" for item in messages[-12:])
     if not content.strip():
@@ -154,8 +184,12 @@ async def create_summary_note(session_id: str, payload: SummaryNoteCreate, db: A
 
 
 @router.post("/messages/{message_id}/card", status_code=201)
-async def create_message_card(message_id: str, db: AsyncSession = Depends(get_db)) -> dict:
-    message, session = await _owned_assistant_message(db, message_id)
+async def create_message_card(
+    message_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    message, session = await _owned_assistant_message(db, message_id, current_user.id)
     existing = (await db.execute(select(Flashcard).where(Flashcard.origin_message_id == message_id))).scalar_one_or_none()
     if existing is None:
         if not session.workspace_id:
@@ -171,7 +205,7 @@ async def create_message_card(message_id: str, db: AsyncSession = Depends(get_db
         )
         db.add(existing)
         await db.flush()
-        await append_card_created(db, existing)
+        await append_card_created(db, existing, user_id=current_user.id)
     elif existing.source_type == "manual":
         existing.source_type = "answer"
         existing.source_snapshot = message.sources or []
@@ -186,8 +220,13 @@ async def create_message_card(message_id: str, db: AsyncSession = Depends(get_db
 
 
 @router.post("/messages/{message_id}/note", status_code=201)
-async def create_message_note(message_id: str, payload: MessageNoteCreate, db: AsyncSession = Depends(get_db)) -> dict:
-    message, session = await _owned_assistant_message(db, message_id)
+async def create_message_note(
+    message_id: str,
+    payload: MessageNoteCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    message, session = await _owned_assistant_message(db, message_id, current_user.id)
     note = (await db.execute(select(LearningNote).where(LearningNote.message_id == message_id))).scalar_one_or_none()
     if note is None:
         note = LearningNote(
@@ -204,8 +243,12 @@ async def create_message_note(message_id: str, payload: MessageNoteCreate, db: A
 
 
 @router.post("/messages/{message_id}/mistake", status_code=201)
-async def create_message_mistake(message_id: str, db: AsyncSession = Depends(get_db)) -> dict:
-    message, session = await _owned_assistant_message(db, message_id)
+async def create_message_mistake(
+    message_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    message, session = await _owned_assistant_message(db, message_id, current_user.id)
     quiz = (await db.execute(select(QuizQuestion).where(QuizQuestion.origin_message_id == message_id))).scalar_one_or_none()
     if quiz is None:
         if not session.workspace_id:
@@ -228,11 +271,19 @@ async def create_message_mistake(message_id: str, db: AsyncSession = Depends(get
 
 
 @router.put("/messages/{message_id}/feedback")
-async def update_message_feedback(message_id: str, payload: FeedbackUpdate, db: AsyncSession = Depends(get_db)) -> dict:
-    await _owned_assistant_message(db, message_id)
-    feedback = (await db.execute(select(ChatFeedback).where(ChatFeedback.message_id == message_id, ChatFeedback.user_id == "default"))).scalar_one_or_none()
+async def update_message_feedback(
+    message_id: str,
+    payload: FeedbackUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    await _owned_assistant_message(db, message_id, current_user.id)
+    feedback = (await db.execute(select(ChatFeedback).where(
+        ChatFeedback.message_id == message_id,
+        ChatFeedback.user_id == current_user.id,
+    ))).scalar_one_or_none()
     if feedback is None:
-        feedback = ChatFeedback(message_id=message_id, user_id="default", helpful=payload.helpful)
+        feedback = ChatFeedback(message_id=message_id, user_id=current_user.id, helpful=payload.helpful)
         db.add(feedback)
     feedback.helpful = payload.helpful
     feedback.category = payload.category

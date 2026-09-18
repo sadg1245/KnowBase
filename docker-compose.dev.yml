@@ -13,7 +13,8 @@ services:
       - ./backend:/app
       - /app/__pycache__
       - /app/.pytest_cache
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    # 升级数据库结构后再启动 API；迁移失败则不启动。
+    command: sh -c "python -m app.cli migrate && exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
     environment:
       - LOG_LEVEL=DEBUG
     ports: !override

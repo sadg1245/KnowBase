@@ -5,7 +5,10 @@ import { renderToStaticMarkup } from 'react-dom/server';
 
 import {
   buildQuizSetGenerateRequest,
+  CUSTOM_DURATION_KEY,
+  DURATION_PRESETS,
   PracticeBuilder,
+  resolveDurationMinutes,
 } from '../src/components/practice/PracticeBuilder';
 import {
   answerIsPresent,
@@ -21,7 +24,7 @@ import {
   assessmentSourceHref,
   QuizResults,
 } from '../src/components/practice/QuizResults';
-import { LegacyPracticeView } from '../src/pages/Practice';
+import { LegacyPracticeView, practiceNotebookHref, practiceRootHref } from '../src/pages/Practice';
 
 
 const workspace = {
@@ -92,15 +95,37 @@ test('builder exposes every phase five configuration control and legacy history 
     onGenerate={() => undefined}
   />);
 
-  for (const label of ['知识库', '章节或知识点', '题目数量', '难度', '单项选择题', '多项选择题', '判断题', '填空题', '简答题', '解释概念题', '严格依据资料', '逐题答题', '整卷答题', '限时', '历史错题']) {
+  for (const label of ['知识库', '章节或知识点', '题目数量', '难度', '单项选择题', '多项选择题', '判断题', '填空题', '简答题', '解释概念题', '严格依据资料', '逐题答题', '整卷答题', '限时', '自定义', '历史错题']) {
     assert.match(html, new RegExp(label));
   }
   assert.match(html, /aria-label="章节"/);
   assert.match(html, /aria-label="知识点"/);
+  assert.match(html, /aria-label="限时时长"/);
   assert.match(html, /href="\/practice\?wrong=1"/);
   const defaultCount = Number(html.match(/role="spinbutton"[^>]*value="(\d+)"/)?.[1]);
   const selectedTypes = (html.match(/type="checkbox"[^>]*checked=""/g) ?? []).length;
   assert.ok(defaultCount >= selectedTypes && selectedTypes === 6, 'default generation covers every selected type');
+});
+
+test('限时可选择常用时长，也可切换到自定义由用户输入分钟数', () => {
+  assert.ok(DURATION_PRESETS.includes(20));
+  assert.equal(resolveDurationMinutes('20', null), 20);
+  assert.equal(resolveDurationMinutes('120', 5), 120);
+  assert.equal(resolveDurationMinutes(CUSTOM_DURATION_KEY, 7), 7);
+  assert.equal(resolveDurationMinutes(CUSTOM_DURATION_KEY, 12.6), 13);
+  assert.equal(resolveDurationMinutes(CUSTOM_DURATION_KEY, 0), 1);
+  assert.equal(resolveDurationMinutes(CUSTOM_DURATION_KEY, null), 1);
+  assert.equal(resolveDurationMinutes(CUSTOM_DURATION_KEY, 999), 600);
+  assert.equal(
+    buildQuizSetGenerateRequest({
+      workspaceId: workspace.id, documents: [readyDocument], selectedDocumentIds: [],
+      selectedKnowledgePointIds: [], selectedSectionFilters: [], count: 6,
+      difficulty: 'medium', questionTypes: ['single_choice', 'fill_blank'] as any,
+      strictSources: true, answerMode: 'sequential',
+      durationMinutes: resolveDurationMinutes(CUSTOM_DURATION_KEY, 7),
+    }).duration_limit_seconds,
+    420,
+  );
 });
 
 test('builder rejects impossible counts and counts distinct selected types', () => {
@@ -362,5 +387,13 @@ test('legacy wrong-question mode remains available at the original query route',
 
   assert.match(html, /历史错题重练/);
   assert.match(html, /旧练习记录会继续保留/);
-  assert.match(html, /href="\/practice"/);
+  assert.match(html, /href="\/practice\?wrong=1&amp;workspace=workspace-1"/);
+  assert.match(html, />返回</);
+});
+
+test('上一级返回入口按层级指回练习与测验和错题笔记并保留知识库范围', () => {
+  assert.equal(practiceRootHref(), '/practice');
+  assert.equal(practiceRootHref(workspace.id), '/practice?workspace=workspace-1');
+  assert.equal(practiceNotebookHref(), '/practice?wrong=1');
+  assert.equal(practiceNotebookHref(workspace.id), '/practice?wrong=1&workspace=workspace-1');
 });

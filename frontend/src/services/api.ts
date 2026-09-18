@@ -13,6 +13,8 @@ import type {
   QuestionSubmitRequest,
   QuizRunCreateRequest,
   QuizRunView,
+  QuizSetHistoryPage,
+  QuizSetHistoryScope,
   QuizSetGenerateRequest,
   QuizSetView,
   WeakKnowledgeRecalculation,
@@ -42,6 +44,10 @@ export type {
   QuizRunCreateRequest,
   QuizRunSummary,
   QuizRunView,
+  QuizSetHistoryItem,
+  QuizSetHistoryPage,
+  QuizSetHistoryRun,
+  QuizSetHistoryScope,
   QuizSetGenerateRequest,
   QuizSetView,
   WeakKnowledgeRecalculation,
@@ -71,12 +77,71 @@ export interface Workspace {
   id: string;
   name: string;
   description: string;
+  slug?: string;
   document_count: number;
+  knowledge_point_count?: number;
+  learning_progress?: number;
+  last_studied_at?: string | null;
   created_at: string;
+  updated_at?: string;
   learning_goal?: string;
+  learning_status?: LearningStatus;
   domain?: string;
+  domain_id?: string | null;
+  cover_kind?: 'upload' | 'url' | 'none';
+  cover_url?: string | null;
   accent_color?: string;
   archived?: boolean;
+}
+
+export type LearningStatus = 'not_started' | 'learning' | 'paused' | 'completed';
+
+export const LEARNING_STATUS_LABELS: Record<LearningStatus, string> = {
+  not_started: '未开始',
+  learning: '学习中',
+  paused: '已暂停',
+  completed: '已完成',
+};
+
+export interface WorkspaceDraft {
+  name: string;
+  description?: string;
+  learning_goal?: string;
+  learning_status?: LearningStatus;
+  domain_id?: string | null;
+  domain?: string;
+  cover_url?: string | null;
+  clear_cover?: boolean;
+  accent_color?: string;
+  archived?: boolean;
+}
+
+export interface LearningDomain {
+  id: string;
+  name: string;
+  description: string;
+  color: string;
+  workspace_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CurrentUser {
+  id: string;
+  username: string;
+  display_name: string;
+  avatar_kind: 'upload' | 'url' | 'none';
+  avatar_url?: string | null;
+  created_at?: string | null;
+}
+
+export interface LearningPreferences {
+  daily_goal_minutes: number;
+  daily_review_target: number;
+  weekly_goal_days: number;
+  timezone_name: string;
+  preferred_mode: string;
+  reminder_time?: string | null;
 }
 
 export interface Document {
@@ -180,6 +245,8 @@ export interface LLMSettings {
   api_key?: string;
   api_key_masked?: string;
   base_url?: string;
+  /** 后端是否已经具备可用的模型凭证（Ollama 无需 Key 也算已配置） */
+  configured?: boolean;
 }
 
 export interface SystemInfo {
@@ -191,6 +258,7 @@ export interface SystemInfo {
 }
 
 export interface EmbeddingSettings {
+  provider?: string;
   model: string;
   dimension?: number | null;
 }
@@ -202,9 +270,64 @@ export const getWorkspaces = async (): Promise<Workspace[]> => {
   return res.data;
 };
 
-export const createWorkspace = async (name: string, description: string): Promise<Workspace> => {
-  const res = await api.post('/workspaces', { name, description });
+export interface WorkspaceListQuery {
+  includeArchived?: boolean;
+  archivedOnly?: boolean;
+}
+
+export const getWorkspaceList = async (query: WorkspaceListQuery = {}): Promise<Workspace[]> => {
+  const params: Record<string, boolean> = {};
+  if (query.includeArchived) params.include_archived = true;
+  if (query.archivedOnly) params.archived_only = true;
+  const res = await api.get('/workspaces', { params });
   return res.data;
+};
+
+export const createWorkspace = async (
+  name: string,
+  description: string,
+  extra: Omit<WorkspaceDraft, 'name' | 'description'> = {},
+): Promise<Workspace> => {
+  const res = await api.post('/workspaces', { name, description, ...extra });
+  return res.data;
+};
+
+export const updateWorkspace = async (id: string, values: WorkspaceDraft | Partial<WorkspaceDraft>): Promise<Workspace> => {
+  const res = await api.put(`/workspaces/${id}`, values);
+  return res.data;
+};
+
+export const uploadWorkspaceCover = async (id: string, file: File): Promise<Workspace> => {
+  const formData = new FormData();
+  formData.append('file', file);
+  const res = await api.post(`/workspaces/${id}/cover`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return res.data;
+};
+
+export const clearWorkspaceCover = async (id: string): Promise<Workspace> => {
+  const res = await api.delete(`/workspaces/${id}/cover`);
+  return res.data;
+};
+
+export const getLearningDomains = async (): Promise<LearningDomain[]> => {
+  const res = await api.get('/learning-domains');
+  return res.data;
+};
+
+export const createLearningDomain = async (values: { name: string; description?: string; color?: string }): Promise<LearningDomain> => {
+  const res = await api.post('/learning-domains', values);
+  return res.data;
+};
+
+export const updateLearningDomain = async (id: string, values: { name?: string; description?: string; color?: string }): Promise<LearningDomain> => {
+  const res = await api.patch(`/learning-domains/${id}`, values);
+  return res.data;
+};
+
+export const deleteLearningDomain = async (id: string): Promise<void> => {
+  await api.delete(`/learning-domains/${id}`);
 };
 
 export const deleteWorkspace = async (id: string): Promise<void> => {
@@ -255,8 +378,10 @@ export const getDocumentSection = async (documentId: string, chunkId: string): P
   (await api.get(`/documents/${documentId}/sections/${encodeURIComponent(chunkId)}`)).data;
 export const reprocessDocument = async (id: string): Promise<Document> =>
   (await api.post(`/documents/${id}/reprocess`)).data;
-export const regenerateDocumentLearning = async (id: string): Promise<Document> =>
-  (await api.post(`/documents/${id}/regenerate-learning`)).data;
+export const regenerateDocumentLearning = async (id: string, overwriteTags = false): Promise<Document> =>
+  (await api.post(`/documents/${id}/regenerate-learning`, null, {
+    params: overwriteTags ? { overwrite_tags: true } : {},
+  })).data;
 
 // ============ 检索接口 ============
 
@@ -567,7 +692,10 @@ export const getQuizzes = async (wrongOnly = false, workspaceId?: string, docume
 export const submitQuiz = async (id: string, answer: string): Promise<{ correct: boolean; reference_answer: string; explanation: string; source_label?: string; question: QuizQuestion }> => (await api.post(`/learning/quizzes/${id}/submit`, { answer })).data;
 
 export const generateQuizSet = async (values: QuizSetGenerateRequest): Promise<QuizSetView> =>
-  (await api.post('/learning/quiz-sets/generate', values)).data;
+  // 出题要走一次完整的模型生成（推理模型可能思考较久），给足等待时间。
+  (await api.post('/learning/quiz-sets/generate', values, { timeout: 300000 })).data;
+export const listQuizSets = async (scope: QuizSetHistoryScope = {}): Promise<QuizSetHistoryPage> =>
+  (await api.get('/learning/quiz-sets', { params: scope })).data;
 export const getQuizSet = async (quizSetId: string): Promise<QuizSetView> =>
   (await api.get(`/learning/quiz-sets/${quizSetId}`)).data;
 export const createQuizRun = async (quizSetId: string, values: QuizRunCreateRequest = {}): Promise<QuizRunView> =>
@@ -580,7 +708,8 @@ export const submitQuizQuestion = async (
   values: QuestionSubmitRequest,
 ): Promise<AttemptResult> => (await api.post(`/learning/quiz-runs/${runId}/questions/${questionId}/submit`, values)).data;
 export const submitQuizPaper = async (runId: string, values: PaperSubmitRequest = {}): Promise<QuizRunView> =>
-  (await api.post(`/learning/quiz-runs/${runId}/submit`, values)).data;
+  // 整卷提交可能触发多道主观题的逐个评分，同样需要更长的等待时间。
+  (await api.post(`/learning/quiz-runs/${runId}/submit`, values, { timeout: 300000 })).data;
 export const retryQuizRun = async (runId: string): Promise<QuizRunView> =>
   (await api.post(`/learning/quiz-runs/${runId}/retry`)).data;
 export const retryAttemptGrading = async (attemptId: string): Promise<AttemptResult> =>
@@ -648,12 +777,42 @@ export const getDocumentObjectUrl = async (id: string): Promise<string> => {
   return URL.createObjectURL(response.data);
 };
 
-export interface AuthStatus { enabled: boolean; configured: boolean }
+export interface AuthStatus { configured: boolean; setup_required: boolean; login_required: boolean }
 export const getAuthStatus = async (): Promise<AuthStatus> => (await api.get('/auth/status')).data;
-export const unlockVault = async (password: string, setup = false, displayName?: string): Promise<void> => {
-  const response = await api.post(setup ? '/auth/setup' : '/auth/login', { password, display_name: displayName });
-  localStorage.setItem('knowbase_session', response.data.token);
+
+const storeSession = (payload: { token: string; user: CurrentUser }): CurrentUser => {
+  localStorage.setItem('knowbase_session', payload.token);
+  return payload.user;
 };
+
+export const setupAccount = async (values: { username: string; password: string; display_name?: string }): Promise<CurrentUser> =>
+  storeSession((await api.post('/auth/setup', values)).data);
+
+export const loginAccount = async (values: { username: string; password: string }): Promise<CurrentUser> =>
+  storeSession((await api.post('/auth/login', values)).data);
+
+export const logoutAccount = async (): Promise<void> => {
+  try {
+    await api.post('/auth/logout');
+  } finally {
+    localStorage.removeItem('knowbase_session');
+  }
+};
+
+export const getMe = async (): Promise<CurrentUser> => (await api.get('/me')).data;
+export const updateMe = async (values: { display_name?: string; avatar_url?: string; clear_avatar?: boolean }): Promise<CurrentUser> =>
+  (await api.patch('/me', values)).data;
+export const uploadAvatar = async (file: File): Promise<CurrentUser> => {
+  const formData = new FormData();
+  formData.append('file', file);
+  return (await api.post('/me/avatar', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })).data;
+};
+export const clearAvatar = async (): Promise<CurrentUser> => (await api.delete('/me/avatar')).data;
+export const getPreferences = async (): Promise<LearningPreferences> => (await api.get('/me/preferences')).data;
+export const updatePreferences = async (values: Partial<LearningPreferences>): Promise<LearningPreferences> =>
+  (await api.put('/me/preferences', values)).data;
 
 // ============ 大模型设置接口 ============
 
@@ -676,8 +835,11 @@ export const getEmbeddingSettings = async (): Promise<EmbeddingSettings> => {
   return res.data;
 };
 
-export const updateEmbeddingSettings = async (model: string): Promise<EmbeddingSettings> => {
-  const res = await api.put('/settings/embedding', { model });
+export const updateEmbeddingSettings = async (
+  values: { provider?: string; model?: string } | string,
+): Promise<EmbeddingSettings> => {
+  const payload = typeof values === 'string' ? { model: values } : values;
+  const res = await api.put('/settings/embedding', payload);
   return res.data;
 };
 

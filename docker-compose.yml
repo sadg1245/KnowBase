@@ -1,3 +1,13 @@
+# 后端与 worker 共用同一套容器内路径约定：
+# 数据库、上传原文与受控媒体（头像/封面）都落在 backend_data 卷里，便于整卷备份与迁移。
+# 这些值默认与卷挂载点一致；如需改用 PostgreSQL 等外部数据库，在 .env 里设置 DATABASE_URL 即可覆盖。
+x-backend-environment: &backend-environment
+  # 应用主目录：密钥、备份与本机偏好都放在这里，必须落在持久化卷上
+  DATA_ROOT: ${DATA_ROOT:-/app/data}
+  DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:////app/data/sqlite/knowbase.db}
+  UPLOAD_DIR: ${UPLOAD_DIR:-/app/uploads}
+  MEDIA_DIR: ${MEDIA_DIR:-/app/data/media}
+
 services:
   # ============ Backend API ============
   backend:
@@ -12,12 +22,13 @@ services:
     env_file:
       - .env
     environment:
-      - REDIS_URL=redis://redis:6379/0
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/1
-      - CHROMA_HOST=chromadb
-      - CHROMA_PORT=8000
-      - HF_HOME=/opt/huggingface
+      <<: *backend-environment
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: "8000"
+      HF_HOME: /opt/huggingface
     depends_on:
       redis:
         condition: service_healthy
@@ -49,13 +60,17 @@ services:
     env_file:
       - .env
     environment:
-      - REDIS_URL=redis://redis:6379/0
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/1
-      - CHROMA_HOST=chromadb
-      - CHROMA_PORT=8000
-      - HF_HOME=/opt/huggingface
+      <<: *backend-environment
+      REDIS_URL: redis://redis:6379/0
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: "8000"
+      HF_HOME: /opt/huggingface
     depends_on:
+      # worker 写入文档、知识点与学习活动，必须等 backend 的迁移跑完再启动。
+      backend:
+        condition: service_healthy
       redis:
         condition: service_healthy
       chromadb:
@@ -79,6 +94,9 @@ services:
     environment:
       - BACKEND_URL=http://backend:8000
       - REDIS_URL=redis://redis:6379/1
+      # 服务令牌是后端与机器人之间的共享密钥：这里直接跟随 SERVICE_TOKEN，
+      # 避免两个值不一致导致机器人拿到 401。
+      - BACKEND_ACCESS_TOKEN=${SERVICE_TOKEN:-}
     depends_on:
       backend:
         condition: service_healthy

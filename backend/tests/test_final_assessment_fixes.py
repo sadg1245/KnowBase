@@ -210,7 +210,7 @@ class FinalRecoveryFixTests(unittest.IsolatedAsyncioTestCase):
             knowledge_point_id=self.point.id, correct_answer_snapshot="Three")
         self.db.add(record)
         await self.db.commit()
-        with patch("app.services.assessment_ai._complete", side_effect=RuntimeError("offline")):
+        with patch("app.services.assessment_ai.call_completion", side_effect=RuntimeError("offline")):
             response = await self.request("POST", f"/mistakes/{record.id}/redo", json={"answer": "saved original answer"})
         self.assertEqual(response.status_code, 200, response.text)
         attempt = response.json()["attempt"]
@@ -219,7 +219,7 @@ class FinalRecoveryFixTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(recovered)
         self.assertEqual(recovered["id"], attempt["id"])
         self.assertEqual(recovered["user_answer"], "saved original answer")
-        with patch("app.services.assessment_ai._complete", return_value=_response(evaluation(True))):
+        with patch("app.services.assessment_ai.call_completion", return_value=_response(evaluation(True))):
             retried = await self.request("POST", f"/attempts/{recovered['id']}/retry-grading")
         self.assertEqual(retried.status_code, 200, retried.text)
         self.assertEqual(await self.db.scalar(select(func.count(QuizRun.id))), 1)

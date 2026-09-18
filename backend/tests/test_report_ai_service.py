@@ -8,8 +8,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.models.base import Base
-from app.models.learning import ReportSuggestion, UserProfile
+from app.models.learning import ReportSuggestion
 from app.services import report_ai_service
+from tests.support import create_preferences, create_user
 
 
 class ReportAIServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -19,8 +20,8 @@ class ReportAIServiceTests(unittest.IsolatedAsyncioTestCase):
             await connection.run_sync(Base.metadata.create_all)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         self.db = self.sessions()
-        self.db.add(UserProfile(timezone_name="Asia/Shanghai"))
-        await self.db.flush()
+        self.user = await create_user(self.db)
+        await create_preferences(self.db, self.user, timezone_name="Asia/Shanghai")
         self.settings = SimpleNamespace(DEFAULT_LLM_PROVIDER="test", DEFAULT_LLM_MODEL="model-x")
 
     async def asyncTearDown(self):
@@ -38,9 +39,11 @@ class ReportAIServiceTests(unittest.IsolatedAsyncioTestCase):
 
         first = await report_ai_service.generate_suggestion(
             self.db, self.settings, "week", date(2026, 9, 16), completion=completion
+            , user_id=self.user.id
         )
         second = await report_ai_service.generate_suggestion(
             self.db, self.settings, "week", date(2026, 9, 16), completion=completion
+            , user_id=self.user.id
         )
         self.assertEqual(first["id"], second["id"])
         self.assertEqual(calls, 1)
@@ -53,6 +56,7 @@ class ReportAIServiceTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(report_ai_service.ReportAIError):
             await report_ai_service.generate_suggestion(
                 self.db, self.settings, "day", date(2026, 9, 15), completion=failure
+                , user_id=self.user.id
             )
         await self.db.rollback()
         row = await self.db.scalar(select(ReportSuggestion))
@@ -64,12 +68,14 @@ class ReportAIServiceTests(unittest.IsolatedAsyncioTestCase):
 
         retried = await report_ai_service.generate_suggestion(
             self.db, self.settings, "day", date(2026, 9, 15), completion=success
+            , user_id=self.user.id
         )
         self.assertEqual(retried["id"], row.id)
         self.assertEqual(retried["status"], "ready")
 
     async def test_existing_pending_generation_has_one_owner(self):
         self.db.add(ReportSuggestion(
+            user_id=self.user.id,
             period_type="week", period_start=datetime(2026, 9, 13, 16, tzinfo=timezone.utc),
             period_end=datetime(2026, 9, 20, 16, tzinfo=timezone.utc),
             timezone_name="Asia/Shanghai", stats_hash="placeholder",
@@ -78,7 +84,8 @@ class ReportAIServiceTests(unittest.IsolatedAsyncioTestCase):
         await self.db.commit()
         # Use the actual snapshot identity so this row represents a concurrent owner.
         report = await report_ai_service.report_service.build_report(
-            self.db, "week", date(2026, 9, 16), now=datetime.now(timezone.utc)
+            self.db, "week", date(2026, 9, 16), now=datetime.now(timezone.utc),
+            user_id=self.user.id,
         )
         row = await self.db.scalar(select(ReportSuggestion))
         row.period_start = datetime.fromisoformat(report["period"]["utc_start"])
@@ -94,6 +101,7 @@ class ReportAIServiceTests(unittest.IsolatedAsyncioTestCase):
 
         result = await report_ai_service.generate_suggestion(
             self.db, self.settings, "week", date(2026, 9, 16), completion=completion
+            , user_id=self.user.id
         )
         self.assertEqual(result["status"], "pending")
         self.assertEqual(calls, 0)

@@ -36,6 +36,7 @@ from app.services.assessment_scoring import (
     next_mistake_state,
 )
 from app.services.activity_service import append_activity, append_mastery_change
+from app.services.ownership import workspace_owner_id
 from app.services.weakness_service import recalculate_knowledge_point, upsert_weak_learning_tasks
 
 
@@ -662,6 +663,7 @@ async def _update_point_mastery(
     await append_mastery_change(
         db,
         point,
+        user_id=await workspace_owner_id(db, point.workspace_id),
         before_mastery=before_mastery,
         before_status=before_status,
         reason="quiz_attempt",
@@ -707,6 +709,7 @@ async def _finish_if_complete(
     run.elapsed_seconds = _run_elapsed(run, submitted_at, quiz_set.duration_limit_seconds)
     await append_activity(
         db,
+        user_id=await workspace_owner_id(db, quiz_set.workspace_id),
         event_key=f"activity:quiz-run:{run.id}",
         activity_type="quiz_completed",
         title="完成了一次测验",
@@ -1213,6 +1216,7 @@ async def submit_paper(
             )
             await append_activity(
                 db,
+                user_id=await workspace_owner_id(db, quiz_set.workspace_id),
                 event_key=f"activity:quiz-run:{run.id}",
                 activity_type="quiz_completed",
                 title="完成了一次测验",
@@ -1439,3 +1443,164 @@ def serialize_quiz_run(
             attempts=attempt_rows,
         )
     return payload
+
+
+# ---------------------------------------------------------------------------
+# 出题历史（按作答方式分开）
+# ---------------------------------------------------------------------------
+
+ANSWER_MODES = ("sequential", "full_paper")
+
+
+def _history_item(
+    quiz_set: QuizSet,
+    run: QuizRun | None,
+    *,
+    round_count: int,
+    answered_count: int,
+    document_titles: dict[str, str],
+) -> dict[str, Any]:
+    total_questions = quiz_set.question_count
+    if run is not None and run.question_ids is not None:
+        total_questions = len(run.question_ids)
+    item: dict[str, Any] = {
+        "id": quiz_set.id,
+        "workspace_id": quiz_set.workspace_id,
+        "title": quiz_set.title,
+        "status": quiz_set.status,
+        "answer_mode": quiz_set.answer_mode,
+        "difficulty": quiz_set.difficulty,
+        "question_count": quiz_set.question_count,
+        "question_types": list(quiz_set.question_types or []),
+        "section_filters": list(quiz_set.section_filters or []),
+        "document_ids": list(quiz_set.document_ids or []),
+        "knowledge_point_ids": list(quiz_set.knowledge_point_ids or []),
+        "strict_sources": bool(quiz_set.strict_sources),
+        "duration_limit_seconds": quiz_set.duration_limit_seconds,
+        "generation_model": quiz_set.generation_model,
+        "generation_error": quiz_set.generation_error,
+        "created_at": _iso(quiz_set.created_at),
+        "updated_at": _iso(quiz_set.updated_at),
+        "documents": [
+            {"id": document_id, "filename": document_titles[document_id]}
+            for document_id in (quiz_set.document_ids or [])
+            if document_id in document_titles
+        ],
+        "round_count": round_count,
+        "run": None,
+    }
+    if run is not None:
+        item["run"] = {
+            "id": run.id,
+            "round_number": run.round_number,
+            "answer_mode": run.answer_mode,
+            "status": run.status,
+            "started_at": _iso(run.started_at),
+            "submitted_at": _iso(run.submitted_at),
+            "elapsed_seconds": run.elapsed_seconds,
+            "score": run.score,
+            "max_score": run.max_score,
+            "correct_count": run.correct_count,
+            "graded_count": run.graded_count,
+            "answered_count": answered_count,
+            "total_questions": total_questions,
+        }
+    return item
+
+
+async def list_quiz_sets(
+    db: AsyncSession,
+    *,
+    owned_workspace_ids: Sequence[str],
+    workspace_id: str | None = None,
+    document_id: str | None = None,
+    knowledge_point_id: str | None = None,
+    answer_mode: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """按作答方式返回出题历史，并带上最近一轮的作答进度。
+
+    旧版兼容试卷（generation_model='legacy'）只是错题重练的载体，
+    不是用户生成的题目，因此不计入出题历史。
+    """
+    conditions = [
+        QuizSet.workspace_id.in_(list(owned_workspace_ids)),
+        QuizSet.generation_model.is_not("legacy"),
+    ]
+    if workspace_id:
+        conditions.append(QuizSet.workspace_id == workspace_id)
+    if document_id:
+        conditions.append(QuizSet.id.in_(
+            select(QuizQuestion.quiz_set_id).where(QuizQuestion.document_id == document_id)
+        ))
+    if knowledge_point_id:
+        conditions.append(QuizSet.id.in_(
+            select(QuizQuestion.quiz_set_id).where(QuizQuestion.knowledge_point_id == knowledge_point_id)
+        ))
+
+    mode_counts = {mode: 0 for mode in ANSWER_MODES}
+    grouped = (await db.execute(
+        select(QuizSet.answer_mode, func.count()).where(*conditions).group_by(QuizSet.answer_mode)
+    )).all()
+    for mode, count in grouped:
+        if mode in mode_counts:
+            mode_counts[mode] = count
+
+    page_conditions = list(conditions)
+    if answer_mode:
+        page_conditions.append(QuizSet.answer_mode == answer_mode)
+    total = int(await db.scalar(select(func.count()).select_from(QuizSet).where(*page_conditions)) or 0)
+    rows = (await db.execute(
+        select(QuizSet)
+        .where(*page_conditions)
+        .order_by(QuizSet.created_at.desc(), QuizSet.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )).scalars().all()
+
+    set_ids = [row.id for row in rows]
+    rounds: dict[str, list[QuizRun]] = {}
+    if set_ids:
+        for run in (await db.execute(
+            select(QuizRun)
+            .where(QuizRun.quiz_set_id.in_(set_ids))
+            .order_by(QuizRun.quiz_set_id, QuizRun.round_number.desc())
+        )).scalars().all():
+            rounds.setdefault(run.quiz_set_id, []).append(run)
+    latest_runs = {set_id: set_rounds[0] for set_id, set_rounds in rounds.items()}
+
+    answered: dict[str, int] = {}
+    run_ids = [run.id for run in latest_runs.values()]
+    if run_ids:
+        answered = dict((await db.execute(
+            select(QuizAttempt.quiz_run_id, func.count())
+            .where(QuizAttempt.quiz_run_id.in_(run_ids))
+            .group_by(QuizAttempt.quiz_run_id)
+        )).all())
+
+    document_titles: dict[str, str] = {}
+    document_ids = {document_id for row in rows for document_id in (row.document_ids or [])}
+    if document_ids:
+        for document_id, filename in (await db.execute(
+            select(Document.id, Document.filename).where(Document.id.in_(document_ids))
+        )).all():
+            document_titles[document_id] = filename
+
+    items = []
+    for row in rows:
+        run = latest_runs.get(row.id)
+        items.append(_history_item(
+            row,
+            run,
+            round_count=len(rounds.get(row.id, [])),
+            answered_count=answered.get(run.id, 0) if run is not None else 0,
+            document_titles=document_titles,
+        ))
+    return {
+        "items": items,
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "mode_counts": mode_counts,
+    }

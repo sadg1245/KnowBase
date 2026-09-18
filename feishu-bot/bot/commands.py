@@ -137,7 +137,9 @@ class CommandRouter:
         mode = await self._redis.get(f"knowbase:mode:{user_id}")
         if isinstance(mode, bytes):
             mode = mode.decode("utf-8")
-        payload: dict = {"question": query, "user_id": user_id, "mode": mode or "simple", "strict_sources": True}
+        # 归属由后端从 X-KnowBase-Service-Token 绑定到的账号决定；
+        # 飞书 open_id 只用于机器人侧的会话状态，不作为授权依据。
+        payload: dict = {"question": query, "mode": mode or "simple", "strict_sources": True}
         if workspace:
             payload["workspace_id"] = workspace
 

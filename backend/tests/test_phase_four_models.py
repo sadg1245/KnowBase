@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 import app.models  # noqa: F401 - register complete SQLAlchemy metadata
 from app.models.base import Base
 from app.models.learning import Flashcard, ReviewLog
-from app.models.workspace import Workspace
+from tests.support import create_user, create_workspace
 from app.core.migrations import run_compat_migrations
 from app.schemas.learning import FlashcardCreate, FlashcardUpdate, ReviewRequest
 
@@ -26,9 +26,8 @@ class PhaseFourModelTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_flashcard_defaults_preserve_review_state(self):
         async with self.sessions() as db:
-            workspace = Workspace(name="Cards", slug="cards")
-            db.add(workspace)
-            await db.flush()
+            user = await create_user(db)
+            workspace = await create_workspace(db, user, name="Cards", slug="cards")
             card = Flashcard(workspace_id=workspace.id, front="Q", back="A")
             db.add(card)
             await db.flush()
@@ -90,7 +89,8 @@ class PhaseFourModelTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse({"review_count", "ease", "interval_days"} & fields)
 
-    async def test_compat_migrations_upgrade_legacy_card_rows_idempotently(self):
+    async def test_retired_compat_migrations_never_alter_structure(self):
+        """结构变更由 Alembic 负责；运行时兼容入口只维护检索索引。"""
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         try:
             async with engine.begin() as connection:
@@ -110,11 +110,20 @@ class PhaseFourModelTests(unittest.IsolatedAsyncioTestCase):
                 await connection.execute(text("INSERT INTO flashcards VALUES ('legacy', 'Q', 'A')"))
                 await run_compat_migrations(connection)
                 await run_compat_migrations(connection)
-                row = (await connection.execute(text(
-                    "SELECT id, front, back, source_type, updated_at FROM flashcards"
-                ))).one()
-                self.assertEqual(row[:4], ("legacy", "Q", "A", "manual"))
-                self.assertIsNotNone(row.updated_at)
+                columns = {
+                    row[1]
+                    for row in (await connection.execute(
+                        text("PRAGMA table_info(flashcards)")
+                    )).fetchall()
+                }
+                self.assertEqual(columns, {"id", "front", "back"})
+                objects = {
+                    row[0]
+                    for row in (await connection.execute(
+                        text("SELECT name FROM sqlite_master WHERE type = 'table'")
+                    )).fetchall()
+                }
+                self.assertIn("document_chunks_fts", objects)
         finally:
             await engine.dispose()
 

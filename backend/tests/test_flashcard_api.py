@@ -29,6 +29,7 @@ from app.schemas.learning import (
     FlashcardSelectionCreate,
     FlashcardUpdate,
 )
+from tests.support import create_user, create_workspace
 
 
 class FlashcardApiTests(unittest.IsolatedAsyncioTestCase):
@@ -42,10 +43,10 @@ class FlashcardApiTests(unittest.IsolatedAsyncioTestCase):
         await self.engine.dispose()
 
     async def _fixture(self, db):
-        workspace = Workspace(name="Cards", slug="cards")
-        other = Workspace(name="Other", slug="other")
-        db.add_all([workspace, other])
-        await db.flush()
+        user = await create_user(db)
+        self.user = user
+        workspace = await create_workspace(db, user, name="Cards", slug="cards")
+        other = await create_workspace(db, user, name="Other", slug="other")
         document = Document(
             workspace_id=workspace.id,
             filename="memory.md",
@@ -81,25 +82,33 @@ class FlashcardApiTests(unittest.IsolatedAsyncioTestCase):
     async def test_manual_card_can_be_created_updated_filtered_and_deleted(self):
         async with self.sessions() as db:
             workspace, _other, _document, _point_a, _point_b = await self._fixture(db)
-            created = await create_card(FlashcardCreate(
-                workspace_id=workspace.id,
-                front="Question",
-                back="Answer",
-                tags=["memory"],
-                difficulty=3,
-                source_type="answer",
-            ), db)
+            created = await create_card(
+                FlashcardCreate(
+                    workspace_id=workspace.id,
+                    front="Question",
+                    back="Answer",
+                    tags=["memory"],
+                    difficulty=3,
+                ),
+                db,
+                current_user=self.user,
+            )
             self.assertEqual(created["source_type"], "manual")
             self.assertEqual(created["tags"], ["memory"])
             self.assertEqual(created["mastery_status"], "not_started")
 
             due = datetime(2026, 9, 1, tzinfo=timezone.utc)
-            updated = await update_card(created["id"], FlashcardUpdate(
-                front="Updated question",
-                tags=["memory", "core"],
-                difficulty=4,
-                due_at=due,
-            ), db)
+            updated = await update_card(
+                created["id"],
+                FlashcardUpdate(
+                    front="Updated question",
+                    tags=["memory", "core"],
+                    difficulty=4,
+                    due_at=due,
+                ),
+                db,
+                current_user=self.user,
+            )
             self.assertEqual(updated["front"], "Updated question")
             self.assertEqual(updated["tags"], ["memory", "core"])
             self.assertEqual(updated["difficulty"], 4)
@@ -110,11 +119,14 @@ class FlashcardApiTests(unittest.IsolatedAsyncioTestCase):
                 tag="core",
                 query="updated",
                 db=db,
+                current_user=self.user,
             )
             self.assertEqual([row["id"] for row in filtered], [created["id"]])
 
-            await delete_card(created["id"], db)
-            self.assertEqual(await list_cards(workspace_id=workspace.id, db=db), [])
+            await delete_card(created["id"], db, current_user=self.user)
+            self.assertEqual(
+                await list_cards(workspace_id=workspace.id, db=db, current_user=self.user), []
+            )
 
     async def test_selection_card_saves_structured_source_and_rejects_cross_workspace_document(self):
         async with self.sessions() as db:
@@ -129,7 +141,7 @@ class FlashcardApiTests(unittest.IsolatedAsyncioTestCase):
                 source_heading="Long-term memory",
                 tags=["memory"],
                 difficulty=3,
-            ), db)
+            ), db, current_user=self.user)
             self.assertEqual(card["source_type"], "selection")
             self.assertEqual(card["source_snapshot"]["document_id"], document.id)
             self.assertEqual(card["source_snapshot"]["excerpt"], "Memory fades over time.")
@@ -142,14 +154,14 @@ class FlashcardApiTests(unittest.IsolatedAsyncioTestCase):
                     front="Invalid",
                     back="Invalid",
                     source_excerpt="Invalid",
-                ), db)
+                ), db, current_user=self.user)
             self.assertEqual(raised.exception.status_code, 400)
 
     async def test_point_generation_is_idempotent_and_workspace_generation_skips_existing(self):
         async with self.sessions() as db:
             workspace, _other, _document, point_a, point_b = await self._fixture(db)
-            first = await point_to_card(point_a.id, db)
-            second = await point_to_card(point_a.id, db)
+            first = await point_to_card(point_a.id, db, current_user=self.user)
+            second = await point_to_card(point_a.id, db, current_user=self.user)
             self.assertEqual(first["id"], second["id"])
             self.assertEqual(first["source_type"], "knowledge_point")
             self.assertEqual(first["difficulty"], 3)
@@ -159,6 +171,7 @@ class FlashcardApiTests(unittest.IsolatedAsyncioTestCase):
                 workspace.id,
                 FlashcardGenerateRequest(knowledge_point_ids=[point_a.id, point_b.id]),
                 db,
+                current_user=self.user,
             )
             self.assertEqual(generated["created_count"], 1)
             self.assertEqual(generated["cards"][0]["knowledge_point_id"], point_b.id)
@@ -173,14 +186,15 @@ class FlashcardApiTests(unittest.IsolatedAsyncioTestCase):
                     workspace_id="missing",
                     front="Q",
                     back="A",
-                ), db)
+                ), db, current_user=self.user)
             self.assertEqual(missing.exception.status_code, 404)
 
             with self.assertRaises(HTTPException) as cross_workspace:
                 await update_card(
-                    (await point_to_card(point_a.id, db))["id"],
+                    (await point_to_card(point_a.id, db, current_user=self.user))["id"],
                     FlashcardUpdate(workspace_id=other.id),
                     db,
+                    current_user=self.user,
                 )
             self.assertEqual(cross_workspace.exception.status_code, 400)
 
@@ -204,7 +218,9 @@ class FlashcardApiTests(unittest.IsolatedAsyncioTestCase):
             ])
             await db.flush()
 
-            rows = await list_cards(workspace_id=workspace.id, due_only=True, db=db)
+            rows = await list_cards(
+                workspace_id=workspace.id, due_only=True, db=db, current_user=self.user
+            )
 
             self.assertEqual([row["id"] for row in rows], [weak.id, early.id])
 
@@ -223,7 +239,7 @@ class FlashcardApiTests(unittest.IsolatedAsyncioTestCase):
             db.add(task)
             await db.flush()
 
-            payload = await dashboard(db)
+            payload = await dashboard(db, current_user=self.user)
 
             self.assertTrue(any(
                 row.get("id") == task.id

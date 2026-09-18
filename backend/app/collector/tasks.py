@@ -130,7 +130,9 @@ async def _queue_learning_generation(db_session: Any, document_id: str) -> None:
         logger.exception("Failed to dispatch learning generation for {}", document_id)
 
 
-async def _generate_learning_content(db_session: Any, document_id: str) -> dict[str, Any]:
+async def _generate_learning_content(
+    db_session: Any, document_id: str, overwrite_tags: bool = False
+) -> dict[str, Any]:
     """Run one durable learning-generation attempt in the worker session."""
     from app.config import settings
     from app.models.document import Document
@@ -145,7 +147,9 @@ async def _generate_learning_content(db_session: Any, document_id: str) -> dict[
     document.learning_status = "generating"
     document.learning_error_message = None
     await db_session.commit()
-    await generate_document_learning_content(db_session, document_id, settings)
+    await generate_document_learning_content(
+        db_session, document_id, settings, overwrite_tags=overwrite_tags
+    )
     await db_session.commit()
     return {"document_id": document_id, "status": "ready"}
 
@@ -330,6 +334,7 @@ if celery_app is not None:
     def generate_learning_content_task(
         self,
         document_id: str,
+        overwrite_tags: bool = False,
     ) -> dict[str, Any]:
         """Generate learning material after document parsing has completed."""
         db_session = None
@@ -338,7 +343,7 @@ if celery_app is not None:
             loop = asyncio.new_event_loop()
             try:
                 return loop.run_until_complete(
-                    _generate_learning_content(db_session, document_id)
+                    _generate_learning_content(db_session, document_id, overwrite_tags)
                 )
             finally:
                 loop.close()

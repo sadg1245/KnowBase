@@ -9,10 +9,14 @@ from loguru import logger
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, get_settings
+from app.api.deps import get_current_user, get_db, get_settings
 from app.config import Settings
+from app.core.app_settings_store import has_llm_api_key
+from app.core.app_settings_store import save as save_app_settings
 from app.models.document import Document
+from app.models.user import User
 from app.models.workspace import Workspace
+from app.services.llm_completion import call_completion, completion_kwargs, response_content
 from app.schemas.schemas import (
     EmbeddingSettings,
     EmbeddingSettingsUpdate,
@@ -90,6 +94,7 @@ async def get_llm_settings(
         "model": settings.DEFAULT_LLM_MODEL,
         "api_key_masked": _mask_key(active_key),
         "base_url": settings.OLLAMA_BASE_URL,
+        "configured": has_llm_api_key(settings),
     }
 
 
@@ -105,8 +110,8 @@ async def update_llm_settings(
 ) -> dict:
     """更新 LLM 提供商、模型，并可选择设置 API 密钥。
 
-    注意：在生产环境中这些设置应持久化到配置存储。
-    当前仅更新内存中的配置对象（重启后重置）。
+    修改会写入应用主目录下的本地配置文件，重启后依然生效。
+    密钥只保存在本机，不会上传到任何服务器。
     """
     if payload.provider is not None:
         settings.DEFAULT_LLM_PROVIDER = payload.provider
@@ -132,6 +137,7 @@ async def update_llm_settings(
         settings.DEFAULT_LLM_PROVIDER,
         settings.DEFAULT_LLM_MODEL,
     )
+    save_app_settings(settings)
 
     active_key: Optional[str] = None
     provider = settings.DEFAULT_LLM_PROVIDER.lower()
@@ -149,6 +155,7 @@ async def update_llm_settings(
         "model": settings.DEFAULT_LLM_MODEL,
         "api_key_masked": _mask_key(active_key),
         "base_url": settings.OLLAMA_BASE_URL,
+        "configured": has_llm_api_key(settings),
     }
 
 
@@ -191,28 +198,37 @@ async def test_llm_connectivity(
     try:
         import litellm
 
+        # 与生成路径保持同一套映射：DeepSeek/通义/智谱都是 OpenAI 兼容端点，
+        # 必须带上前缀与 base_url，否则请求会被发到错误的服务上。
         if provider == "ollama":
-            litellm_model = f"ollama/{model}"
+            litellm_model, api_base = f"ollama/{model}", settings.OLLAMA_BASE_URL
+        elif provider == "deepseek":
+            litellm_model, api_base = f"deepseek/{model}", "https://api.deepseek.com/v1"
+        elif provider in {"dashscope", "qwen"}:
+            litellm_model, api_base = f"openai/{model}", "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        elif provider in {"zhipu", "glm"}:
+            litellm_model, api_base = f"openai/{model}", "https://open.bigmodel.cn/api/paas/v4"
         else:
-            litellm_model = model
+            litellm_model, api_base = model, None
 
-        kwargs = {
-            "model": litellm_model,
-            "messages": [{"role": "user", "content": "Say 'hello' in one word."}],
-            "max_tokens": 10,
-        }
-        if api_key:
-            kwargs["api_key"] = api_key
-        if provider == "ollama" and settings.OLLAMA_BASE_URL:
-            kwargs["api_base"] = settings.OLLAMA_BASE_URL
+        # 推理模型会先花掉一部分预算思考：预算只有 10 个 token 时正文一定是空的，
+        # 这里按回答“一句话”给足余量，并把空正文当作失败上报。
+        kwargs = completion_kwargs(
+            model=litellm_model,
+            api_key=api_key,
+            api_base=api_base,
+            prompt="Say 'hello' in one word.",
+            provider=provider,
+            max_tokens=512,
+            temperature=0.2,
+            timeout=60,
+        )
 
         start = time.time()
-        response = await litellm.acompletion(**kwargs)
+        response = await call_completion(litellm.acompletion, kwargs)
         elapsed_ms = (time.time() - start) * 1000
 
-        content = ""
-        if response.choices and response.choices[0].message:
-            content = response.choices[0].message.content or ""
+        content = response_content(response)
 
         logger.info(
             "LLM test succeeded: provider={}, model={}, latency={:.0f}ms",
@@ -246,6 +262,7 @@ async def get_embedding_settings(
 ) -> dict:
     """返回当前嵌入模型配置。"""
     return {
+        "provider": settings.DEFAULT_EMBEDDING_PROVIDER,
         "model": settings.DEFAULT_EMBEDDING,
         "dimension": None,
     }
@@ -264,8 +281,16 @@ async def update_embedding_settings(
     """更新嵌入模型。
 
     注意：更换嵌入模型后需要对所有文档重新建立索引。
-    当前为内存级更新，重启后失效。
+    修改会写入应用主目录下的本地配置文件，重启后依然生效。
     """
+    if payload.provider is not None:
+        settings.DEFAULT_EMBEDDING_PROVIDER = payload.provider
+        if payload.model is None:
+            from app.core.embedding import EmbeddingService
+
+            settings.DEFAULT_EMBEDDING = EmbeddingService.DEFAULT_MODELS.get(
+                payload.provider, settings.DEFAULT_EMBEDDING
+            )
     if payload.model is not None:
         old_model = settings.DEFAULT_EMBEDDING
         settings.DEFAULT_EMBEDDING = payload.model
@@ -275,8 +300,10 @@ async def update_embedding_settings(
             old_model,
             payload.model,
         )
+    save_app_settings(settings)
 
     return {
+        "provider": settings.DEFAULT_EMBEDDING_PROVIDER,
         "model": settings.DEFAULT_EMBEDDING,
         "dimension": None,
     }
@@ -290,20 +317,24 @@ async def update_embedding_settings(
 @router.get("/system", response_model=SystemInfoResponse)
 async def get_system_info(
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ) -> dict:
     """返回系统汇总信息。"""
+    owned = select(Workspace.id).where(Workspace.owner_id == current_user.id)
     # 文档数量
-    doc_count_stmt = select(func.count(Document.id))
+    doc_count_stmt = select(func.count(Document.id)).where(Document.workspace_id.in_(owned))
     doc_count_result = await db.execute(doc_count_stmt)
     document_count = doc_count_result.scalar() or 0
 
     # 工作区数量
-    ws_count_stmt = select(func.count(Workspace.id))
+    ws_count_stmt = select(func.count(Workspace.id)).where(Workspace.owner_id == current_user.id)
     ws_count_result = await db.execute(ws_count_stmt)
     workspace_count = ws_count_result.scalar() or 0
 
-    chunk_count_stmt = select(func.coalesce(func.sum(Document.chunk_count), 0))
+    chunk_count_stmt = select(func.coalesce(func.sum(Document.chunk_count), 0)).where(
+        Document.workspace_id.in_(owned)
+    )
     chunk_count_result = await db.execute(chunk_count_stmt)
     total_chunks = chunk_count_result.scalar() or 0
 

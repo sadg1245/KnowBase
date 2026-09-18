@@ -3,6 +3,7 @@
 import unittest
 
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from app.api.routes.documents import _validate_extension
 from app.collector.pipeline import DocumentPipeline
@@ -53,14 +54,18 @@ class RegressionTests(unittest.TestCase):
         asyncio.run(_persist_stream_message(Session(), object()))
         self.assertEqual(calls, ["add", "flush", "commit"])
 
-    def test_chat_request_accepts_user_and_workspace(self):
+    def test_chat_request_drops_client_supplied_user_id(self):
+        """归属只由认证状态决定：客户端提交的 user_id 不再被接受。"""
         request = ChatRequest(
             question="hello",
-            user_id="ou_test",
             workspace_id="workspace-id",
         )
-        self.assertEqual(request.user_id, "ou_test")
         self.assertEqual(request.workspace_id, "workspace-id")
+        self.assertNotIn("user_id", request.model_dump())
+        self.assertNotIn("user_id", ChatRequest.model_fields)
+        # 旧客户端仍可能提交该字段：它必须被忽略，而不是被当作授权依据。
+        legacy = ChatRequest(question="hello", workspace_id="w", user_id="ou_test")
+        self.assertNotIn("user_id", legacy.model_dump())
 
     def test_chat_and_search_requests_accept_document_scope(self):
         document_ids = ["document-a", "document-b"]

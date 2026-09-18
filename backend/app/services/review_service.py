@@ -8,7 +8,9 @@ from math import ceil
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.learning import Flashcard, KnowledgePoint, ReviewLog, StudyActivity, UserProfile
+from app.models.learning import Flashcard, KnowledgePoint, ReviewLog, StudyActivity
+from app.models.user import LearningPreference
+from app.models.workspace import Workspace
 from app.services.activity_service import append_activity, append_mastery_change
 from app.models.assessment import WeakKnowledgeState
 from app.services.weakness_service import recalculate_knowledge_point, upsert_weak_learning_tasks
@@ -62,11 +64,14 @@ def _as_utc(value: datetime) -> datetime:
 async def build_review_summary(
     db: AsyncSession,
     timezone_offset_minutes: int,
+    *,
+    user_id: str,
     now: datetime | None = None,
 ) -> dict:
     """Aggregate the learner's review-day metrics using their local date."""
     current = now or datetime.now(timezone.utc)
     day_start, day_end = local_day_bounds(current, timezone_offset_minutes)
+    owned_workspaces = select(Workspace.id).where(Workspace.owner_id == user_id)
     due_cards = (
         await db.execute(
             select(Flashcard)
@@ -74,7 +79,7 @@ async def build_review_summary(
                 WeakKnowledgeState,
                 WeakKnowledgeState.knowledge_point_id == Flashcard.knowledge_point_id,
             )
-            .where(Flashcard.due_at <= current)
+            .where(Flashcard.due_at <= current, Flashcard.workspace_id.in_(owned_workspaces))
             .order_by(WeakKnowledgeState.weakness_score.desc().nullslast(), Flashcard.due_at.asc())
         )
     ).scalars().all()
@@ -83,14 +88,19 @@ async def build_review_summary(
     overdue_count = sum(1 for card in due_cards if _as_utc(card.due_at) < day_start)
 
     today_reviews = (
-        await db.execute(select(ReviewLog).where(
+        await db.execute(select(ReviewLog)
+        .join(Flashcard, Flashcard.id == ReviewLog.card_id)
+        .where(
             ReviewLog.reviewed_at >= day_start,
             ReviewLog.reviewed_at < day_end,
+            Flashcard.workspace_id.in_(owned_workspaces),
         ))
     ).scalars().all()
     durations = list((await db.execute(
         select(ReviewLog.duration_seconds)
+        .join(Flashcard, Flashcard.id == ReviewLog.card_id)
         .where(ReviewLog.duration_seconds > 0)
+        .where(Flashcard.workspace_id.in_(owned_workspaces))
         .order_by(ReviewLog.reviewed_at.desc())
         .limit(30)
     )).scalars().all())
@@ -99,10 +109,14 @@ async def build_review_summary(
 
     history_start = day_start - timedelta(days=120)
     review_dates = list((await db.execute(
-        select(ReviewLog.reviewed_at).where(ReviewLog.reviewed_at >= history_start)
+        select(ReviewLog.reviewed_at)
+        .join(Flashcard, Flashcard.id == ReviewLog.card_id)
+        .where(ReviewLog.reviewed_at >= history_start, Flashcard.workspace_id.in_(owned_workspaces))
     )).scalars().all())
     activity_dates = list((await db.execute(
-        select(StudyActivity.created_at).where(StudyActivity.created_at >= history_start)
+        select(StudyActivity.created_at).where(
+            StudyActivity.created_at >= history_start, StudyActivity.user_id == user_id
+        )
     )).scalars().all())
     offset = timedelta(minutes=timezone_offset_minutes)
     active_dates = {(_as_utc(value) + offset).date() for value in [*review_dates, *activity_dates]}
@@ -135,7 +149,7 @@ async def build_review_summary(
             "is_key": point.is_key,
         } for point in points]
 
-    profile = (await db.execute(select(UserProfile).limit(1))).scalar_one_or_none()
+    preference = await db.get(LearningPreference, user_id)
     return {
         "due_count": due_count,
         "new_count": new_count,
@@ -144,13 +158,14 @@ async def build_review_summary(
         "streak_days": streak_days,
         "overdue_count": overdue_count,
         "weak_points": weak_points,
-        "daily_target": profile.daily_review_target if profile else 10,
+        "daily_target": preference.daily_review_target if preference else 10,
     }
 
 
 async def apply_card_review(
     db: AsyncSession,
     card: Flashcard,
+    user_id: str,
     rating: int,
     duration_seconds: int,
     now: datetime | None = None,
@@ -207,6 +222,7 @@ async def apply_card_review(
     await db.flush()
     await append_activity(
         db,
+        user_id=user_id,
         event_key=f"activity:review:{review.id}",
         activity_type="review_completed",
         title="完成了一张知识卡复习",
@@ -221,6 +237,7 @@ async def apply_card_review(
         await append_mastery_change(
             db,
             point,
+            user_id=user_id,
             before_mastery=point_previous_mastery,
             before_status=point_previous_status,
             reason="review",

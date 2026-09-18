@@ -11,21 +11,83 @@
 - AI 练习与错题本：从知识点生成题目，记录错误并更新掌握度。
 - 学习报告：按日、自然周、自然月查看可追溯的学习趋势、目标进度与 AI 建议。
 - PWA 移动体验：可添加到手机桌面，并缓存基础应用外壳。
-- 私人空间保护：远程部署时可开启密码锁；飞书机器人支持服务令牌。
+- 私人账号保护：单账号部署，首次打开时创建账号；认证保护默认覆盖全部私人接口。
 
-### 开启私人空间密码
+## 第一阶段：账号与知识库基础
 
-生产或远程访问时，在 `.env` 中设置：
+### 单账号部署，多用户数据结构
+
+应用只允许首次创建一个账号：打开 Web 页面时若尚未建号，会引导填写用户名、密码和称呼；
+创建成功后设置入口关闭，之后只能登录与退出。数据库、认证依赖和唯一约束都按多用户结构实现，
+所有私人查询都附带服务端所有权条件，客户端提交的 `user_id` 不再进入请求契约。
+
+令牌签名密钥（`JWT_SECRET`）**由程序自管**：留空即可，首次启动会自动生成并保存在
+`<应用主目录>/secrets/`（权限 0600），之后一直复用。用户不需要知道也不需要填写它；
+只有需要接管已有部署时才显式配置一个 ≥32 位的随机值。
+
+需要在公网暴露时才配置：
 
 ```env
-AUTH_ENABLED=true
-JWT_SECRET=请替换为足够长的随机字符串
-SERVICE_TOKEN=请替换为飞书机器人专用随机令牌
+# 飞书机器人使用；服务令牌会绑定到唯一账号，未绑定账号时私人请求返回 503
+SERVICE_TOKEN=飞书机器人专用随机令牌
 BACKEND_ACCESS_TOKEN=与 SERVICE_TOKEN 保持一致
 CORS_ORIGINS=https://你的访问域名
 ```
 
-首次打开 Web 页面时，系统会引导设置私人空间密码。本地开发默认关闭密码锁，避免影响现有使用方式。
+### 应用主目录（本地优先，用户零配置）
+
+数据库、上传原文、头像封面、向量库、密钥、备份与用户偏好统一放在**应用主目录**下，
+用户只需要配置自己的模型 API Key：
+
+| 内容 | 位置 |
+|---|---|
+| 数据库 | `<主目录>/sqlite/knowbase.db` |
+| 上传原文 | `<主目录>/uploads` |
+| 头像与封面 | `<主目录>/media` |
+| 向量库（嵌入模式） | `<主目录>/chroma` |
+| 令牌密钥 | `<主目录>/secrets/jwt_secret` |
+| 升级前自动备份 | `<主目录>/backups`（默认保留最近 5 份） |
+| 用户偏好与 API Key | `<主目录>/settings.json`（权限 0600，只存本机） |
+
+主目录默认按平台选择：Windows `%APPDATA%\KnowBase`、macOS `~/Library/Application Support/KnowBase`、
+Linux `$XDG_DATA_HOME/knowbase`；也可以用环境变量 `KNOWBASE_HOME` 固定位置。
+容器部署通过 `DATA_ROOT` / `DATABASE_URL` / `UPLOAD_DIR` / `MEDIA_DIR` 显式覆盖，卷布局不受影响。
+
+同一套机制带来三个"用户不需要操心"的行为：
+
+- **升级前自动备份**：迁移是就地改结构，执行前会自动把 SQLite 整体备份到 `<主目录>/backups`。
+- **模型配置落盘**：`/api/settings/llm` 的修改会写入 `settings.json`，重启后仍然生效（过去只存在内存里）。
+- **向量库默认嵌入**：不设置 `CHROMA_HOST` 时，ChromaDB 直接跑在应用进程内，
+  不需要额外部署向量数据库；`CHROMA_HOST=chromadb` 这类自托管配置仍然生效。
+- **首次使用向导**：建号后引导填写自己的模型 API Key（可跳过），之后的错误提示都改成用户能看懂的话；
+  本地服务还没起来时，页面显示"暂时连接不上本地服务"并提供重试，而不是抛内部错误。
+
+关于优先级：**本机保存的偏好优先于环境变量**。也就是说，用户在界面里改过模型或 Key 之后，
+以 `settings.json` 为准；想让环境变量说了算，就不要在界面里修改这一项。
+
+### 数据库迁移（Alembic）
+
+结构由 `alembic upgrade head` 管理，应用启动不再执行 `create_all` 或兼容迁移 DDL。
+Docker 与本地开发的启动命令都会先执行升级，迁移失败时 API 不启动。
+
+```bash
+# 在 backend 目录手动升级
+python -m app.cli migrate
+```
+
+升级已有数据库前，请先备份 SQLite 数据库文件和上传目录。引导流程会检查核心表、关键列与索引，
+只有检查通过才登记基线；结构不符时给出可操作错误而不是盲目 stamp。
+
+账号迁移优先复用第一条 `user_profiles.id`，昵称与密码哈希进入 `users`，学习偏好进入
+`learning_preferences`。由于旧资料没有用户名，**升级后的账号用户名是 `owner`，密码沿用原来的解锁密码**。
+旧库没有个人资料时会创建一个待首次设置的占位所有者。
+
+### 学习领域、封面与标签
+
+- 知识库支持学习领域、学习状态（未开始/学习中/已暂停/已完成）、学习目标与封面（本地上传或 https 外链）。
+- 列表与详情返回真实聚合的文档数、知识点数、平均掌握进度和最近学习时间；删除领域只把知识库置为“未分类”。
+- 头像与封面保存在受控目录（`MEDIA_DIR`，默认 `./data/media`），只接受受控图片类型、检查文件头与像素范围，文件名随机。
+- 文档与知识点共用同一套标签规范化（去空白、去空值、去重、长度与数量上限），人工编辑过的知识点标签在重新生成学习内容时保留，除非显式请求覆盖。
 
 基于 RAG（检索增强生成）的个人知识库系统，支持导入多种格式文档，通过飞书机器人实现移动端智能问答。
 
@@ -186,27 +248,49 @@ cd E:\anything_llm
 
 # 2. 配置环境变量
 cp .env.example .env
-# 编辑 .env，填入飞书 App ID/Secret 和 LLM API Key
+# 编辑 .env：只需要填写你自己的模型 API Key（也可以在首次打开页面时按向导填写）
+# JWT_SECRET 留空即可，程序会自动生成并保存在数据目录里
+# 想用飞书机器人时，再把 SERVICE_TOKEN 与 BACKEND_ACCESS_TOKEN 设为同一个随机值
 
 # 3. 一键启动所有服务
 docker compose up -d
 
+# 首次启动会先执行数据库迁移，迁移失败则 API 不会启动（用 docker compose logs backend 查看原因）
+
 # 4. 访问服务
 # Web 管理界面:  http://localhost:3000
-# API 文档:      http://localhost:8000/docs
+# 首次打开页面会引导创建唯一一个账号，之后只能登录与退出
+# API 文档:      http://localhost:9000/docs
 # 飞书机器人:    在飞书中搜索你的机器人名称开始对话
 ```
 
 **Docker 服务说明：**
 
-| 服务 | 端口 | 说明 |
+| 服务 | 宿主机端口 | 说明 |
 |------|------|------|
-| frontend | 3000 | Web 管理界面 |
-| backend | 8000 | FastAPI 后端 API |
-| chromadb | 8001 | ChromaDB 向量数据库 |
-| redis | 6379 | Redis 缓存/队列 |
+| frontend | 3000 | Web 管理界面（nginx，`/api` 反代到 backend） |
+| backend | 9000 | FastAPI 后端 API（容器内 8000） |
+| chromadb | 127.0.0.1:9001 | ChromaDB 向量数据库（容器内 8000，仅本机可访问） |
+| redis | 127.0.0.1:6379 | Redis 缓存/队列（仅本机可访问） |
 | feishu-bot | — | 飞书机器人（无端口，WebSocket 出站连接） |
 | worker | — | Celery 异步任务 Worker |
+
+开发模式（`docker compose -f docker-compose.yml -f docker-compose.dev.yml up`）下 backend 与 frontend 直接暴露
+宿主机 8000 / 5173，方便热重载调试。
+
+**启动顺序与数据卷：** backend 容器启动时先执行 `python -m app.cli migrate`（Alembic 升级 + 旧库受控引导），
+成功后才拉起 API；worker 依赖 backend 健康检查通过后再启动，避免在迁移完成前写入数据库。
+数据库、上传原文与受控媒体（头像/封面）都落在 `backend_data` 卷里：
+
+| 数据 | 容器内路径 | 卷 |
+|---|---|---|
+| SQLite 数据库 | `/app/data/sqlite/knowbase.db` | `backend_data` |
+| 头像与知识库封面 | `/app/data/media` | `backend_data` |
+| 上传原文 | `/app/uploads` | `backend_uploads` |
+| 向量集合 | `/chroma/chroma` | `chroma_data` |
+
+升级前整卷备份 `backend_data`、`backend_uploads` 与 `chroma_data` 即可。
+`DATABASE_URL`、`UPLOAD_DIR`、`MEDIA_DIR` 已在 compose 中按上述挂载点给出默认值，并在 `.env` 里可覆盖（例如换成 PostgreSQL）。
 
 ### 方式二：本地开发启动
 
@@ -237,7 +321,17 @@ pip install -r requirements.txt
 
 # 配置环境变量
 cp ../.env.example ../.env
-# 编辑 .env 填入配置
+# 编辑 .env 填入配置。注意仓库根的 .env 默认是给 Docker 用的
+# （UPLOAD_DIR=/app/uploads、MEDIA_DIR=/app/data/media、REDIS_URL=redis://redis:6379/0），
+# 本机直接运行时改成相对路径与 localhost：
+#   DATABASE_URL=sqlite+aiosqlite:///./data/sqlite/knowbase.db
+#   UPLOAD_DIR=./data/uploads
+#   MEDIA_DIR=./data/media
+#   REDIS_URL=redis://localhost:6379/0
+#   CHROMA_HOST=localhost
+
+# 升级数据库结构（首次运行与每次拉取更新后都执行一次）
+python -m app.cli migrate
 
 # 启动开发服务器（热重载）
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
@@ -354,7 +448,10 @@ npm run build
 
 需要巩固的知识点提供重新阅读、通俗讲解、生成新例子、针对性练习、加入近期复习五个行动。讲解和例子链接会选择对应资料并预填输入框，必须由你点击发送才调用 AI。针对性练习会预选知识点；近期复习链接进入复习中心，薄弱度计算已按规则保存的复习任务会在今天页面和复习中心显示，可打开或标记完成。系统避免同一知识点同类型的待完成任务重复创建；薄弱知识还影响后续出题优先级和到期卡片顺序，原有翻卡、四档评分及卡片管理继续可用。
 
-升级现有 SQLite 安装时，启动流程会创建缺失表并执行可重复运行的兼容迁移，保留旧题号、答案和历史计数。部署前请备份数据库。现有 PostgreSQL 安装的增量升级不在本次 SQLite 验收范围内，需要另行执行并验证等价的新增列和索引迁移；仅切换连接地址不会自动升级旧 PostgreSQL 表结构。
+升级现有 SQLite 安装时，启动流程改用 Alembic：先校验旧结构、登记基线 revision，再执行后续迁移，
+保留旧题号、答案、历史计数、原始文件路径与知识库 ID。部署前请备份数据库和上传目录。
+运行时兼容入口 `run_compat_migrations` 已退役，只保留 SQLite FTS5 检索索引的幂等准备。
+现有 PostgreSQL 安装同样走同一条迁移链，但不在本次 SQLite 验收范围内，需要另行执行并验证。
 
 ## API 接口
 
@@ -371,6 +468,15 @@ npm run build
 | GET/PUT | `/api/settings/llm` | LLM 模型配置 |
 | GET/PUT | `/api/settings/embedding` | Embedding 配置 |
 | GET | `/api/settings/system` | 系统信息 |
+| GET | `/api/auth/status` | 是否已建号、是否需要首次设置 |
+| POST | `/api/auth/setup` | 首次建号（仅无账号时可用） |
+| POST | `/api/auth/login` / `/api/auth/logout` | 登录与退出 |
+| GET/PATCH | `/api/me` | 当前用户资料（昵称、头像） |
+| POST/DELETE | `/api/me/avatar` | 上传或清除头像 |
+| GET/PUT | `/api/me/preferences` | 读取或更新学习偏好 |
+| GET/POST/PATCH/DELETE | `/api/learning-domains` | 学习领域管理 |
+| POST/DELETE | `/api/workspaces/{id}/cover` | 上传或清除知识库封面 |
+| GET | `/api/media/{folder}/{filename}` | 受控媒体读取（随机文件名） |
 
 完整 API 文档启动后端后访问 http://localhost:8000/docs。
 
@@ -391,6 +497,13 @@ npm run build
 | `DEFAULT_EMBEDDING` | Embedding 模型 | `BAAI/bge-small-zh-v1.5` |
 | `CHUNK_SIZE` | 文本切片大小（字符） | `1000` |
 | `RAG_TOP_K` | 检索返回条数 | `5` |
+| `JWT_SECRET` | 令牌密钥；留空自动生成并存到应用主目录 | 留空即可 |
+| `KNOWBASE_HOME` / `DATA_ROOT` | 应用主目录（数据库、媒体、密钥、备份、偏好） | `%APPDATA%\KnowBase` |
+| `SERVICE_TOKEN` | 飞书机器人服务令牌，绑定唯一账号 | 随机字符串 |
+| `MEDIA_DIR` | 头像与封面受控目录 | `./data/media` |
+| `IMAGE_MAX_SIZE_MB` | 图片上传大小上限 | `4` |
+| `IMAGE_MAX_PIXELS` | 图片像素总量上限 | `20000000` |
+| `TAG_MAX_LENGTH` / `TAG_MAX_COUNT` | 单个标签长度与标签数量上限 | `32` / `30` |
 
 ## 成本估算
 

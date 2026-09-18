@@ -38,8 +38,10 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["body"], {"query": "hello"})
 
     async def test_chat_parses_sse_contract(self):
+        captured = {}
+
         def handler(request: httpx.Request) -> httpx.Response:
-            self.assertEqual(json.loads(request.content)["question"], "hello")
+            captured.update(json.loads(request.content))
             body = (
                 'data: {"token":"Hi"}\n\n'
                 'data: {"sources":[]}\n\n'
@@ -54,6 +56,19 @@ class CommandTests(unittest.IsolatedAsyncioTestCase):
         await router.close()
 
         self.assertIn("Hi", json.dumps(card, ensure_ascii=False))
+        self.assertEqual(captured["question"], "hello")
+        # 服务身份在服务端解析；飞书 open_id 不再作为 chat 授权依据。
+        self.assertNotIn("user_id", captured)
+
+    async def test_service_token_is_sent_as_the_bound_identity_header(self):
+        router = CommandRouter("http://backend", FakeRedis(), access_token="service-secret")
+        try:
+            self.assertEqual(
+                router._http_client.headers.get("X-KnowBase-Service-Token"),
+                "service-secret",
+            )
+        finally:
+            await router.close()
 
 
 if __name__ == "__main__":

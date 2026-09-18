@@ -1,4 +1,5 @@
 from app.models.base import Base, engine, async_session_factory, get_db
+from app.models.user import LearningDomain, LearningPreference, User
 from app.models.workspace import Workspace
 from app.models.document import Document
 from app.models.conversation import Conversation
@@ -12,7 +13,6 @@ from app.models.learning import (
     ReviewLog,
     StudyActivity,
     StudySession,
-    UserProfile,
 )
 from app.models.assessment import QuizSet, QuizRun, QuizAttempt, MistakeRecord, WeakKnowledgeState, LearningTask
 
@@ -21,10 +21,13 @@ __all__ = [
     "engine",
     "async_session_factory",
     "get_db",
+    "User",
+    "LearningPreference",
+    "LearningDomain",
     "Workspace",
     "Document",
     "Conversation", "ChatSession", "LearningNote", "ChatFeedback", "DocumentChunk", "RetrievalRun", "RetrievalHit",
-    "UserProfile", "KnowledgePoint", "Flashcard", "ReviewLog", "QuizQuestion", "StudyActivity",
+    "KnowledgePoint", "Flashcard", "ReviewLog", "QuizQuestion", "StudyActivity",
     "StudySession", "LearningGoal", "ReportSuggestion",
     "QuizSet", "QuizRun", "QuizAttempt", "MistakeRecord", "WeakKnowledgeState", "LearningTask",
 ]

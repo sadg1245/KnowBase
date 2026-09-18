@@ -10,13 +10,13 @@ import app.models  # noqa: F401
 from app.models.assessment import WeakKnowledgeState
 from app.models.base import Base
 from app.models.learning import Flashcard, KnowledgePoint, ReviewLog, StudyActivity
-from app.models.workspace import Workspace
 from app.services.review_service import (
     apply_card_review,
     mastery_after_review,
     mastery_status_for,
     schedule_review,
 )
+from tests.support import create_user, create_workspace
 
 
 class ReviewRuleTests(unittest.TestCase):
@@ -50,9 +50,8 @@ class ReviewTransactionTests(unittest.IsolatedAsyncioTestCase):
     async def test_review_updates_card_point_log_and_real_activity_duration(self):
         fixed_now = datetime(2026, 8, 29, 4, 0, tzinfo=timezone.utc)
         async with self.sessions() as db:
-            workspace = Workspace(name="Memory", slug="memory")
-            db.add(workspace)
-            await db.flush()
+            user = await create_user(db)
+            workspace = await create_workspace(db, user, name="Memory", slug="memory")
             point = KnowledgePoint(
                 workspace_id=workspace.id,
                 title="Spacing",
@@ -77,6 +76,7 @@ class ReviewTransactionTests(unittest.IsolatedAsyncioTestCase):
             change = await apply_card_review(
                 db,
                 card,
+                user.id,
                 rating=3,
                 duration_seconds=17,
                 now=fixed_now,
@@ -126,9 +126,8 @@ class ReviewTransactionTests(unittest.IsolatedAsyncioTestCase):
     async def test_forgotten_unlinked_card_clamps_mastery_and_stays_learning(self):
         fixed_now = datetime(2026, 8, 29, 4, 0, tzinfo=timezone.utc)
         async with self.sessions() as db:
-            workspace = Workspace(name="Memory", slug="memory-two")
-            db.add(workspace)
-            await db.flush()
+            user = await create_user(db)
+            workspace = await create_workspace(db, user, name="Memory", slug="memory-two")
             card = Flashcard(
                 workspace_id=workspace.id,
                 front="Question",
@@ -141,7 +140,7 @@ class ReviewTransactionTests(unittest.IsolatedAsyncioTestCase):
             db.add(card)
             await db.flush()
 
-            await apply_card_review(db, card, rating=1, duration_seconds=4, now=fixed_now)
+            await apply_card_review(db, card, user.id, rating=1, duration_seconds=4, now=fixed_now)
 
             self.assertEqual(card.mastery, 0.0)
             self.assertEqual(card.mastery_status, "learning")
@@ -152,10 +151,9 @@ class ReviewTransactionTests(unittest.IsolatedAsyncioTestCase):
     async def test_low_review_recalculates_only_the_linked_weakness_before_commit(self):
         fixed_now = datetime(2026, 8, 29, 4, 0, tzinfo=timezone.utc)
         async with self.sessions() as db:
-            workspace = Workspace(name="Weak link", slug="weak-link")
+            user = await create_user(db)
+            workspace = await create_workspace(db, user, name="Weak link", slug="weak-link")
             point = KnowledgePoint(workspace_id="pending", title="Ratios", summary="R")
-            db.add(workspace)
-            await db.flush()
             point.workspace_id = workspace.id
             db.add(point)
             await db.flush()
@@ -166,7 +164,7 @@ class ReviewTransactionTests(unittest.IsolatedAsyncioTestCase):
             db.add(card)
             await db.flush()
 
-            await apply_card_review(db, card, rating=1, duration_seconds=8, now=fixed_now)
+            await apply_card_review(db, card, user.id, rating=1, duration_seconds=8, now=fixed_now)
 
             state = (await db.execute(select(WeakKnowledgeState))).scalar_one()
             self.assertEqual(state.knowledge_point_id, point.id)

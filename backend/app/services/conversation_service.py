@@ -23,7 +23,7 @@ def build_session_title(question: str) -> str:
 
 
 class ConversationService:
-    def __init__(self, db: AsyncSession, user_id: str = "default") -> None:
+    def __init__(self, db: AsyncSession, user_id: str) -> None:
         self.db = db
         self.user_id = user_id
 
@@ -114,6 +114,7 @@ class ConversationService:
         """Record one persisted user question without copying its content."""
         return await append_activity(
             self.db,
+            user_id=self.user_id,
             event_key=f"activity:question:{message.id}",
             activity_type="question_asked",
             title="发起了一次学习提问",

@@ -3,7 +3,7 @@
 import json
 import time
 import uuid
-from functools import lru_cache
+from functools import lru_cache, partial
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,11 +12,14 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, get_settings
+from app.api.deps import get_current_user, get_db, get_settings
 from app.config import Settings
 from app.models.conversation import Conversation
+from app.models.user import User
+from app.models.workspace import Workspace
 from app.services.conversation_service import ConversationService
 from app.services.hybrid_retrieval import HybridRetrievalService, RetrievalCandidate
+from app.services.ownership import owned_workspace
 from app.services.learning_answer import (
     answer_requires_model,
     build_follow_up_suggestions,
@@ -74,21 +77,17 @@ async def _persist_stream_message(db: AsyncSession, message: Conversation) -> No
 # ---------------------------------------------------------------------------
 
 def _get_chroma_client():
-    """返回 ChromaDB HTTP 客户端，失败时抛出包含详细信息的错误。"""
+    """返回向量库客户端；失败时给出面向用户的提示，技术原因写入日志。"""
     try:
-        import chromadb
-        settings = get_settings()
-        client = chromadb.HttpClient(
-            host=settings.CHROMA_HOST,
-            port=settings.CHROMA_PORT,
-        )
-        client.heartbeat()
-        return client
+        from app.core.chroma import get_chroma_client
+
+        return get_chroma_client()
     except Exception as exc:
+        logger.error("Vector store unavailable: {}", exc)
         raise HTTPException(
             status_code=503,
-            detail=f"ChromaDB is not available: {exc}",
-        )
+            detail="检索服务暂时不可用，请稍后重试。",
+        ) from exc
 
 
 @lru_cache(maxsize=1)
@@ -219,6 +218,7 @@ async def _vector_recall(
     workspace_id: str | None,
     document_ids: list[str],
     top_k: int,
+    owned_workspace_ids: list[str] | None = None,
 ) -> list[dict]:
     """Return vector candidates in the same shape used by hybrid retrieval."""
     embed_fn = _get_embedding_function()
@@ -228,9 +228,7 @@ async def _vector_recall(
         collection_names = [f"ws_{workspace_id}".replace("-", "_")]
     else:
         collection_names = [
-            collection.name
-            for collection in chroma_client.list_collections()
-            if collection.name.startswith("ws_")
+            f"ws_{value}".replace("-", "_") for value in (owned_workspace_ids or [])
         ]
     all_results: list[dict] = []
     for collection_name in collection_names:
@@ -268,16 +266,27 @@ async def _vector_recall(
 async def search_knowledge(
     payload: SearchRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ) -> dict:
     """Keep the legacy search endpoint as vector-only diagnostic search."""
+    owned_ids = await _owned_workspace_ids(db, current_user)
+    if payload.workspace_id:
+        await owned_workspace(db, payload.workspace_id, current_user)
     results = await _vector_recall(
         query=payload.query,
         workspace_id=payload.workspace_id,
         document_ids=payload.document_ids,
         top_k=payload.top_k,
+        owned_workspace_ids=owned_ids,
     )
     return {"results": results}
+
+
+async def _owned_workspace_ids(db: AsyncSession, user: User) -> list[str]:
+    return list((await db.execute(
+        select(Workspace.id).where(Workspace.owner_id == user.id)
+    )).scalars().all())
 
 
 # ---------------------------------------------------------------------------
@@ -289,13 +298,15 @@ async def search_knowledge(
 async def chat(
     payload: ChatRequest,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ):
     """Persistent learning chat with hybrid evidence retrieval and SSE events."""
     if not payload.workspace_id:
         raise HTTPException(400, "Please choose a knowledge base before starting a learning session")
+    await owned_workspace(db, payload.workspace_id, current_user)
 
-    service = ConversationService(db, user_id=payload.user_id)
+    service = ConversationService(db, user_id=current_user.id)
     session_id = payload.session_id or payload.conversation_id
     session = await service.get_session(session_id) if session_id else None
     if session_id and session is None:
@@ -320,7 +331,7 @@ async def chat(
 
     user_msg = Conversation(
         id=str(uuid.uuid4()),
-        user_id=payload.user_id,
+        user_id=current_user.id,
         session_id=session.id,
         workspace_id=payload.workspace_id,
         role="user",
@@ -334,7 +345,10 @@ async def chat(
     title_changed = await service.touch_session(session, payload.question)
     await db.commit()
 
-    retrieval = await HybridRetrievalService(db, _vector_recall).retrieve(
+    owned_ids = await _owned_workspace_ids(db, current_user)
+    retrieval = await HybridRetrievalService(
+        db, partial(_vector_recall, owned_workspace_ids=owned_ids)
+    ).retrieve(
         query=payload.question,
         workspace_id=payload.workspace_id,
         document_ids=payload.document_ids,
@@ -424,7 +438,7 @@ async def chat(
 
             assistant_msg = Conversation(
                 id=str(uuid.uuid4()),
-                user_id=payload.user_id,
+                user_id=current_user.id,
                 session_id=session.id,
                 workspace_id=payload.workspace_id,
                 role="assistant",
@@ -452,7 +466,7 @@ async def chat(
             if full_answer:
                 assistant_msg = Conversation(
                     id=str(uuid.uuid4()),
-                    user_id=payload.user_id,
+                    user_id=current_user.id,
                     session_id=session.id,
                     workspace_id=payload.workspace_id,
                     role="assistant",

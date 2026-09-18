@@ -10,9 +10,10 @@ from zoneinfo import ZoneInfo
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.assessment import LearningTask, MistakeRecord, QuizAttempt, WeakKnowledgeState
+from app.models.assessment import LearningTask, MistakeRecord, QuizAttempt, QuizSet, WeakKnowledgeState
 from app.models.document import Document
 from app.models.learning import Flashcard, KnowledgePoint, LearningGoal, ReviewLog, StudyActivity
+from app.models.user import User
 from app.models.workspace import Workspace
 from app.services import goal_service, study_session_service
 from app.services.period_service import period_bounds
@@ -24,6 +25,11 @@ def _aware(value: datetime) -> datetime:
 
 def _iso(value) -> str | None:
     return value.isoformat() if value else None
+
+
+async def _display_name(db: AsyncSession, user_id: str) -> str:
+    name = await db.scalar(select(User.display_name).where(User.id == user_id))
+    return name or "学习者"
 
 
 def _point(row: KnowledgePoint, weakness_score: float | None = None) -> dict:
@@ -74,17 +80,21 @@ def _derived_task(
     }
 
 
-async def _median_duration(db: AsyncSession, model, column, fallback: int) -> int:
-    values = [int(value) for value in await db.scalars(select(column).where(column > 0))]
+async def _median_duration(db: AsyncSession, query, fallback: int) -> int:
+    values = [int(value) for value in await db.scalars(query)]
     return max(1, round(median(values))) if values else fallback
 
 
-async def rank_workspaces(db: AsyncSession, *, now: datetime, limit: int = 4) -> list[dict]:
-    profile = await goal_service.get_or_create_profile(db)
-    local_today = _aware(now).astimezone(ZoneInfo(profile.timezone_name)).date()
+async def rank_workspaces(
+    db: AsyncSession, *, now: datetime, user_id: str, limit: int = 4
+) -> list[dict]:
+    preference = await goal_service.get_or_create_preferences_by_id(db, user_id)
+    local_today = _aware(now).astimezone(ZoneInfo(preference.timezone_name)).date()
     recent_cutoff = _aware(now) - timedelta(days=30)
     workspaces = list(await db.scalars(
-        select(Workspace).where(Workspace.archived.is_(False))
+        select(Workspace).where(
+            Workspace.owner_id == user_id, Workspace.archived.is_(False)
+        )
     ))
     ranked = []
     for workspace in workspaces:
@@ -160,26 +170,32 @@ async def rank_workspaces(db: AsyncSession, *, now: datetime, limit: int = 4) ->
     return ranked[:limit]
 
 
-async def build_dashboard(db: AsyncSession, *, now: datetime) -> dict:
+async def build_dashboard(db: AsyncSession, *, now: datetime, user_id: str) -> dict:
     now = _aware(now)
-    await study_session_service.expire_stale_sessions(db, now)
-    profile = await goal_service.get_or_create_profile(db)
-    zone = ZoneInfo(profile.timezone_name)
+    await study_session_service.expire_stale_sessions(db, user_id=user_id, now=now)
+    preference = await goal_service.get_or_create_preferences_by_id(db, user_id)
+    zone = ZoneInfo(preference.timezone_name)
     local_today = now.astimezone(zone).date()
-    day = period_bounds("day", local_today, profile.timezone_name)
-    week = period_bounds("week", local_today, profile.timezone_name)
-    goals = await goal_service.get_goals(db, now=now)
+    day = period_bounds("day", local_today, preference.timezone_name)
+    week = period_bounds("week", local_today, preference.timezone_name)
+    goals = await goal_service.get_goals(db, now=now, user_id=user_id)
+    owned_workspaces = select(Workspace.id).where(Workspace.owner_id == user_id)
 
-    due_cards = int(await db.scalar(select(func.count(Flashcard.id)).where(Flashcard.due_at <= now)) or 0)
+    due_cards = int(await db.scalar(select(func.count(Flashcard.id)).where(
+        Flashcard.due_at <= now, Flashcard.workspace_id.in_(owned_workspaces)
+    )) or 0)
     unresolved_mistakes = int(await db.scalar(select(func.count(MistakeRecord.id)).where(
-        MistakeRecord.mastery_status != "mastered"
+        MistakeRecord.mastery_status != "mastered",
+        MistakeRecord.workspace_id.in_(owned_workspaces),
     )) or 0)
     day_activities = list(await db.scalars(select(StudyActivity).where(
+        StudyActivity.user_id == user_id,
         StudyActivity.occurred_at >= day.utc_start,
         StudyActivity.occurred_at < day.utc_end,
         StudyActivity.activity_type.in_(goal_service.LEARNING_ACTIVITY_TYPES),
     )))
     week_activities = list(await db.scalars(select(StudyActivity).where(
+        StudyActivity.user_id == user_id,
         StudyActivity.occurred_at >= week.utc_start,
         StudyActivity.occurred_at < week.utc_end,
         StudyActivity.activity_type.in_(goal_service.LEARNING_ACTIVITY_TYPES),
@@ -188,9 +204,21 @@ async def build_dashboard(db: AsyncSession, *, now: datetime) -> dict:
     week_seconds = sum(row.duration_seconds or 0 for row in week_activities)
     today_minutes = round(today_seconds / 60)
 
-    review_seconds = await _median_duration(db, ReviewLog, ReviewLog.duration_seconds, 45)
-    attempt_seconds = await _median_duration(db, QuizAttempt, QuizAttempt.duration_seconds, 180)
-    review_count = min(due_cards, profile.daily_review_target)
+    review_seconds = await _median_duration(
+        db,
+        select(ReviewLog.duration_seconds)
+        .join(Flashcard, Flashcard.id == ReviewLog.card_id)
+        .where(ReviewLog.duration_seconds > 0, Flashcard.workspace_id.in_(owned_workspaces)),
+        45,
+    )
+    attempt_seconds = await _median_duration(
+        db,
+        select(QuizAttempt.duration_seconds)
+        .join(QuizSet, QuizSet.id == QuizAttempt.quiz_set_id)
+        .where(QuizAttempt.duration_seconds > 0, QuizSet.workspace_id.in_(owned_workspaces)),
+        180,
+    )
+    review_count = min(due_cards, preference.daily_review_target)
     tasks = [
         _derived_task(
             local_today, "review", title="完成今日复习",
@@ -213,6 +241,7 @@ async def build_dashboard(db: AsyncSession, *, now: datetime) -> dict:
 
     persisted = list(await db.scalars(
         select(LearningTask).where(
+            LearningTask.workspace_id.in_(owned_workspaces),
             LearningTask.status == "pending",
             LearningTask.due_at.is_not(None),
             LearningTask.due_at <= now,
@@ -249,7 +278,7 @@ async def build_dashboard(db: AsyncSession, *, now: datetime) -> dict:
                 source={"type": "learning_goal", "id": progress["id"]},
             ))
 
-    remaining = max(0, profile.daily_goal_minutes - today_minutes)
+    remaining = max(0, preference.daily_goal_minutes - today_minutes)
     tasks.append(_derived_task(
         local_today, "study_time", title="完成今日学习时长",
         description=f"今日还需专注学习 {remaining} 分钟",
@@ -262,6 +291,7 @@ async def build_dashboard(db: AsyncSession, *, now: datetime) -> dict:
 
     history_cutoff = week.utc_start - timedelta(days=60)
     history = list(await db.scalars(select(StudyActivity).where(
+        StudyActivity.user_id == user_id,
         StudyActivity.occurred_at >= history_cutoff,
         StudyActivity.activity_type.in_(goal_service.LEARNING_ACTIVITY_TYPES),
     )))
@@ -274,30 +304,40 @@ async def build_dashboard(db: AsyncSession, *, now: datetime) -> dict:
 
     recent_rows = list(await db.scalars(
         select(StudyActivity)
-        .where(StudyActivity.activity_type.not_in(("mastery_changed", "weakness_changed")))
+        .where(
+            StudyActivity.user_id == user_id,
+            StudyActivity.activity_type.not_in(("mastery_changed", "weakness_changed")),
+        )
         .order_by(StudyActivity.occurred_at.desc(), StudyActivity.id.desc()).limit(8)
     ))
     weak_pairs = (await db.execute(
         select(KnowledgePoint, WeakKnowledgeState.weakness_score)
         .join(WeakKnowledgeState, WeakKnowledgeState.knowledge_point_id == KnowledgePoint.id)
+        .where(KnowledgePoint.workspace_id.in_(owned_workspaces))
         .order_by(WeakKnowledgeState.weakness_score.desc(), KnowledgePoint.importance.desc())
         .limit(5)
     )).all()
-    recommendations = await rank_workspaces(db, now=now, limit=4)
-    workspace_count = int(await db.scalar(select(func.count(Workspace.id)).where(Workspace.archived.is_(False))) or 0)
-    document_count = int(await db.scalar(select(func.count(Document.id))) or 0)
-    point_count = int(await db.scalar(select(func.count(KnowledgePoint.id))) or 0)
+    recommendations = await rank_workspaces(db, now=now, user_id=user_id, limit=4)
+    workspace_count = int(await db.scalar(select(func.count(Workspace.id)).where(
+        Workspace.owner_id == user_id, Workspace.archived.is_(False)
+    )) or 0)
+    document_count = int(await db.scalar(select(func.count(Document.id)).where(
+        Document.workspace_id.in_(owned_workspaces)
+    )) or 0)
+    point_count = int(await db.scalar(select(func.count(KnowledgePoint.id)).where(
+        KnowledgePoint.workspace_id.in_(owned_workspaces)
+    )) or 0)
     recent_workspaces = [{
         "id": row["workspace_id"], "name": row["name"], "description": row["description"],
         "domain": row["domain"], "accent_color": row["accent_color"], "learning_goal": "",
     } for row in recommendations]
     return {
         "profile": {
-            "display_name": profile.display_name,
-            "daily_goal_minutes": profile.daily_goal_minutes,
-            "daily_review_target": profile.daily_review_target,
-            "weekly_goal_days": profile.weekly_goal_days,
-            "timezone_name": profile.timezone_name,
+            "display_name": await _display_name(db, user_id),
+            "daily_goal_minutes": preference.daily_goal_minutes,
+            "daily_review_target": preference.daily_review_target,
+            "weekly_goal_days": preference.weekly_goal_days,
+            "timezone_name": preference.timezone_name,
         },
         "stats": {
             "workspace_count": workspace_count, "document_count": document_count,

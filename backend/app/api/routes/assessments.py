@@ -7,18 +7,35 @@ from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, get_settings
+from app.api.deps import get_current_user, get_db, get_settings
 from app.config import Settings
 from app.models.assessment import LearningTask, MistakeRecord, QuizAttempt, QuizRun, WeakKnowledgeState
 from app.models.learning import KnowledgePoint, QuizQuestion
+from app.models.user import User
+from app.models.workspace import Workspace
 from app.schemas.assessment import (LearningTaskStatus, MistakeMasteryStatus, MistakeRedoRequest,
-    PaperSubmitRequest, QuestionSubmitRequest, QuizRunCreateRequest, QuizSetGenerateRequest)
+    AnswerMode, PaperSubmitRequest, QuestionSubmitRequest, QuizRunCreateRequest, QuizSetGenerateRequest)
 from app.services import assessment_service as service, assessment_workflows as workflows
 from app.services.assessment_ai import AssessmentAIError
+from app.services.ownership import (
+    owned_attempt,
+    owned_mistake,
+    owned_quiz_set,
+    owned_quiz_run,
+    owned_task,
+    owned_workspace,
+)
 
 router = APIRouter(prefix="/learning", tags=["assessments"])
 DB = Annotated[AsyncSession, Depends(get_db)]
 Config = Annotated[Settings, Depends(get_settings)]
+CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+async def _owned_workspace_ids(db, user: User) -> list[str]:
+    return list((await db.execute(
+        select(Workspace.id).where(Workspace.owner_id == user.id)
+    )).scalars().all())
 
 
 async def _call(operation):
@@ -29,18 +46,62 @@ async def _call(operation):
 
 
 @router.post("/quiz-sets/generate")
-async def generate_quiz_set(payload: QuizSetGenerateRequest, db: DB, settings: Config):
+async def generate_quiz_set(payload: QuizSetGenerateRequest, db: DB, settings: Config, user: CurrentUser):
+    await owned_workspace(db, payload.workspace_id, user)
     paper = await _call(service.generate_quiz_set(db, payload, settings))
     return await workflows.set_view(db, paper.id)
 
 
+class QuizHistoryScope(BaseModel):
+    workspace_id: str | None = None
+    document_id: str | None = None
+    knowledge_point_id: str | None = None
+    answer_mode: AnswerMode | None = None
+    limit: int = 20
+    offset: int = 0
+
+
+def quiz_history_scope(
+    workspace_id: str | None = None,
+    document_id: str | None = None,
+    knowledge_point_id: str | None = None,
+    answer_mode: AnswerMode | None = None,
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+) -> QuizHistoryScope:
+    return QuizHistoryScope(workspace_id=workspace_id, document_id=document_id,
+        knowledge_point_id=knowledge_point_id, answer_mode=answer_mode, limit=limit, offset=offset)
+
+
+HistoryScope = Annotated[QuizHistoryScope, Depends(quiz_history_scope)]
+
+
+@router.get("/quiz-sets")
+async def list_quiz_sets(db: DB, scope: HistoryScope, user: CurrentUser):
+    """出题历史：按逐题/整卷两种作答方式分别列出，并带上最近一轮的作答情况。"""
+    if scope.workspace_id:
+        await owned_workspace(db, scope.workspace_id, user)
+    return await service.list_quiz_sets(
+        db,
+        owned_workspace_ids=await _owned_workspace_ids(db, user),
+        workspace_id=scope.workspace_id,
+        document_id=scope.document_id,
+        knowledge_point_id=scope.knowledge_point_id,
+        answer_mode=scope.answer_mode,
+        limit=scope.limit,
+        offset=scope.offset,
+    )
+
+
 @router.get("/quiz-sets/{quiz_set_id}")
-async def get_quiz_set(quiz_set_id: str, db: DB):
+async def get_quiz_set(quiz_set_id: str, db: DB, user: CurrentUser):
+    await owned_quiz_set(db, quiz_set_id, user)
     return await _call(workflows.set_view(db, quiz_set_id))
 
 
 @router.post("/quiz-sets/{quiz_set_id}/runs")
-async def create_run(quiz_set_id: str, db: DB, payload: QuizRunCreateRequest | None = Body(None)):
+async def create_run(quiz_set_id: str, db: DB, user: CurrentUser, payload: QuizRunCreateRequest | None = Body(None)):
+    await owned_quiz_set(db, quiz_set_id, user)
     payload = payload or QuizRunCreateRequest()
     run = await _call(service.create_quiz_run(db, quiz_set_id,
         resume=payload.resume_unsubmitted, answer_mode=payload.answer_mode))
@@ -48,7 +109,8 @@ async def create_run(quiz_set_id: str, db: DB, payload: QuizRunCreateRequest | N
 
 
 @router.post("/quiz-runs/{run_id}/start")
-async def start_run(run_id: str, db: DB):
+async def start_run(run_id: str, db: DB, user: CurrentUser):
+    await owned_quiz_run(db, run_id, user)
     return await workflows.run_view(db, await _call(service.start_quiz_run(db, run_id)))
 
 
@@ -58,19 +120,22 @@ async def _attempt_result(db, attempt):
 
 
 @router.post("/quiz-runs/{run_id}/questions/{question_id}/submit")
-async def submit_question(run_id: str, question_id: str, payload: QuestionSubmitRequest, db: DB, settings: Config):
+async def submit_question(run_id: str, question_id: str, payload: QuestionSubmitRequest, db: DB, settings: Config, user: CurrentUser):
+    await owned_quiz_run(db, run_id, user)
     attempt = await _call(service.submit_question(db, run_id, question_id, payload, settings))
     return await _attempt_result(db, attempt)
 
 
 @router.post("/quiz-runs/{run_id}/submit")
-async def submit_paper(run_id: str, payload: PaperSubmitRequest, db: DB, settings: Config):
+async def submit_paper(run_id: str, payload: PaperSubmitRequest, db: DB, settings: Config, user: CurrentUser):
+    await owned_quiz_run(db, run_id, user)
     run = await _call(service.submit_paper(db, run_id, payload, settings))
     return await workflows.run_view(db, run)
 
 
 @router.post("/quiz-runs/{run_id}/retry")
-async def retry_run(run_id: str, db: DB):
+async def retry_run(run_id: str, db: DB, user: CurrentUser):
+    await owned_quiz_run(db, run_id, user)
     run = await _call(service._quiz_run(db, run_id))
     if run.status != "submitted":
         raise HTTPException(409, "Only a submitted run can be retried")
@@ -79,7 +144,8 @@ async def retry_run(run_id: str, db: DB):
 
 
 @router.post("/attempts/{attempt_id}/retry-grading")
-async def retry_grading(attempt_id: str, db: DB, settings: Config):
+async def retry_grading(attempt_id: str, db: DB, settings: Config, user: CurrentUser):
+    await owned_attempt(db, attempt_id, user)
     attempt = await _call(service.retry_grading(db, attempt_id, settings))
     return await _attempt_result(db, attempt)
 
@@ -102,9 +168,14 @@ def list_scope(workspace_id: str | None = None, document_id: str | None = None,
 Scope = Annotated[ListScope, Depends(list_scope)]
 
 
-def _scope(query, model, scope, *, question=False):
+def _scope(query, model, scope, *, owned_ids, question=False):
     if scope.workspace_id:
-        query = query.where(model.workspace_id == scope.workspace_id)
+        query = query.where(
+            model.workspace_id == scope.workspace_id,
+            model.workspace_id.in_(owned_ids),
+        )
+    else:
+        query = query.where(model.workspace_id.in_(owned_ids))
     if scope.knowledge_point_id:
         query = query.where(model.knowledge_point_id == scope.knowledge_point_id)
     if scope.document_id:
@@ -148,10 +219,10 @@ async def _recoverable_redos(db, question_ids):
 
 
 @router.get("/mistakes")
-async def list_mistakes(db: DB, scope: Scope, mastery_status: MistakeMasteryStatus | None = None):
+async def list_mistakes(db: DB, scope: Scope, user: CurrentUser, mastery_status: MistakeMasteryStatus | None = None):
     query = select(MistakeRecord, QuizQuestion, KnowledgePoint).join(QuizQuestion, QuizQuestion.id == MistakeRecord.question_id)
     query = query.outerjoin(KnowledgePoint, KnowledgePoint.id == MistakeRecord.knowledge_point_id)
-    query = _scope(query, MistakeRecord, scope, question=True)
+    query = _scope(query, MistakeRecord, scope, owned_ids=await _owned_workspace_ids(db, user), question=True)
     if mastery_status:
         query = query.where(MistakeRecord.mastery_status == mastery_status)
     page = await _page(db, query.order_by(MistakeRecord.last_wrong_at.desc(), MistakeRecord.id), scope, _mistake)
@@ -163,10 +234,8 @@ async def list_mistakes(db: DB, scope: Scope, mastery_status: MistakeMasteryStat
 
 
 @router.post("/mistakes/{mistake_id}/redo")
-async def redo_mistake(mistake_id: str, payload: MistakeRedoRequest, db: DB, settings: Config):
-    mistake = await db.get(MistakeRecord, mistake_id)
-    if mistake is None:
-        raise HTTPException(404, "Mistake not found")
+async def redo_mistake(mistake_id: str, payload: MistakeRedoRequest, db: DB, settings: Config, user: CurrentUser):
+    mistake = await owned_mistake(db, mistake_id, user)
     attempt = await _call(workflows.standalone_submission(db, mistake.question_id,
         QuestionSubmitRequest(**payload.model_dump()), settings, is_redo=True))
     await db.refresh(mistake)
@@ -184,9 +253,9 @@ def _point_record(row, point):
 
 
 @router.get("/weak-knowledge")
-async def list_weak_knowledge(db: DB, scope: Scope):
+async def list_weak_knowledge(db: DB, scope: Scope, user: CurrentUser):
     query = select(WeakKnowledgeState, KnowledgePoint).join(KnowledgePoint, KnowledgePoint.id == WeakKnowledgeState.knowledge_point_id)
-    query = _scope(query, WeakKnowledgeState, scope)
+    query = _scope(query, WeakKnowledgeState, scope, owned_ids=await _owned_workspace_ids(db, user))
     return await _page(db, query.order_by(WeakKnowledgeState.weakness_score.desc(), WeakKnowledgeState.id), scope, _point_record)
 
 
@@ -197,17 +266,19 @@ class RecalculateScope(BaseModel):
 
 
 @router.post("/weak-knowledge/recalculate")
-async def recalculate_weak_knowledge(db: DB, payload: RecalculateScope | None = Body(None)):
+async def recalculate_weak_knowledge(db: DB, user: CurrentUser, payload: RecalculateScope | None = Body(None)):
     scope = payload or RecalculateScope()
+    if scope.workspace_id:
+        await owned_workspace(db, scope.workspace_id, user)
     ids = await _call(workflows.recalculate_scope(db, **scope.model_dump()))
     return {"recalculated_count": len(ids), "knowledge_point_ids": ids}
 
 
 @router.get("/tasks")
-async def list_tasks(db: DB, scope: Scope, status: LearningTaskStatus | None = None,
+async def list_tasks(db: DB, scope: Scope, user: CurrentUser, status: LearningTaskStatus | None = None,
                      due_before: datetime | None = None, due_after: datetime | None = None):
     query = select(LearningTask, KnowledgePoint).outerjoin(KnowledgePoint, KnowledgePoint.id == LearningTask.knowledge_point_id)
-    query = _scope(query, LearningTask, scope)
+    query = _scope(query, LearningTask, scope, owned_ids=await _owned_workspace_ids(db, user))
     if status:
         query = query.where(LearningTask.status == status)
     if due_before:
@@ -218,7 +289,8 @@ async def list_tasks(db: DB, scope: Scope, status: LearningTaskStatus | None = N
 
 
 @router.post("/tasks/{task_id}/complete")
-async def complete_task(task_id: str, db: DB):
+async def complete_task(task_id: str, db: DB, user: CurrentUser):
+    await owned_task(db, task_id, user)
     task = await _call(workflows.complete_task(db, task_id))
     point = await db.get(KnowledgePoint, task.knowledge_point_id) if task.knowledge_point_id else None
     return _point_record(task, point)

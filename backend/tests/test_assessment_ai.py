@@ -15,11 +15,23 @@ EVIDENCE = [{
 }]
 REQUEST = QuizSetGenerateRequest(workspace_id="workspace-1", count=1, difficulty="medium", question_types=["single_choice"], strict_sources=True)
 SETTINGS = Settings.model_construct(DEFAULT_LLM_PROVIDER="ollama", DEFAULT_LLM_MODEL="test-model", OLLAMA_BASE_URL="http://ollama.test")
+DEEPSEEK_SETTINGS = Settings.model_construct(
+    DEFAULT_LLM_PROVIDER="deepseek", DEFAULT_LLM_MODEL="deepseek-flash",
+    DEEPSEEK_API_KEY="test-key", OLLAMA_BASE_URL=None,
+)
 
 
 def response(payload):
     message = type("Message", (), {"content": json.dumps(payload)})()
     return type("Response", (), {"choices": [type("Choice", (), {"message": message})()]})()
+
+
+def empty_reasoning_response():
+    """A reasoning model that spent its whole output budget on hidden thinking."""
+    message = type("Message", (), {"content": "", "reasoning_content": "thinking out loud"})()
+    return type("Response", (), {
+        "choices": [type("Choice", (), {"message": message, "finish_reason": "length"})()],
+    })()
 
 
 def fake_completion(*payloads):
@@ -37,6 +49,17 @@ def recording_completion(*payloads):
     async def complete(**kwargs):
         calls.append(kwargs)
         return response(next(payloads))
+
+    return complete, calls
+
+
+def raw_recording_completion(*responses):
+    """Record calls while returning provider responses unchanged."""
+    calls, responses = [], iter(responses)
+
+    async def complete(**kwargs):
+        calls.append(kwargs)
+        return next(responses)
 
     return complete, calls
 
@@ -179,6 +202,37 @@ class AssessmentGenerationTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(AssessmentAIError) as raised:
             await build_generated_paper(EVIDENCE, request, SETTINGS, completion)
         self.assertEqual(raised.exception.status_code, 502)
+        self.assertEqual(len(calls), 2)
+
+    async def test_deepseek_generation_asks_for_json_mode_and_a_full_budget(self):
+        completion, calls = recording_completion({"questions": [generated_question()]})
+        await build_generated_paper(EVIDENCE, REQUEST, DEEPSEEK_SETTINGS, completion)
+        self.assertEqual(calls[0]["response_format"], {"type": "json_object"})
+        self.assertEqual(calls[0]["max_tokens"], 16_000)
+        self.assertEqual(calls[0]["model"], "deepseek/deepseek-flash")
+        self.assertEqual(calls[0]["api_base"], "https://api.deepseek.com/v1")
+
+    async def test_providers_without_json_mode_keep_the_conservative_budget(self):
+        completion, calls = recording_completion({"questions": [generated_question()]})
+        await build_generated_paper(EVIDENCE, REQUEST, SETTINGS, completion)
+        self.assertNotIn("response_format", calls[0])
+        self.assertEqual(calls[0]["max_tokens"], 8_000)
+
+    async def test_exhausted_reasoning_budget_is_retried_with_a_larger_budget(self):
+        completion, calls = raw_recording_completion(empty_reasoning_response(), response({"questions": [generated_question()]}))
+        paper = await build_generated_paper(EVIDENCE, REQUEST, DEEPSEEK_SETTINGS, completion)
+        self.assertEqual([question.question_type for question in paper.questions], ["single_choice"])
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["max_tokens"], 16_000)
+        self.assertEqual(calls[1]["max_tokens"], 32_000)
+        self.assertIn("previous response was invalid", calls[1]["messages"][0]["content"])
+
+    async def test_exhausted_reasoning_budget_twice_reports_the_real_cause(self):
+        completion, calls = raw_recording_completion(empty_reasoning_response(), empty_reasoning_response())
+        with self.assertRaises(AssessmentAIError) as raised:
+            await build_generated_paper(EVIDENCE, REQUEST, DEEPSEEK_SETTINGS, completion)
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertIn("output token budget", str(raised.exception))
         self.assertEqual(len(calls), 2)
 
 

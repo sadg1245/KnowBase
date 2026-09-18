@@ -12,6 +12,7 @@ from app.core.migrations import run_compat_migrations
 from app.models.base import Base
 from app.models.assessment import LearningTask
 from app.models.workspace import Workspace
+from tests.support import create_user, create_workspace
 from app.schemas.assessment import QuizSetGenerateRequest
 
 
@@ -60,7 +61,8 @@ class PhaseFiveModelTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValidationError):
             QuizSetGenerateRequest(workspace_id="workspace", question_types=["essay"])
 
-    async def test_compat_migrations_add_assessment_question_columns_idempotently(self):
+    async def test_retired_compat_migrations_keep_legacy_columns_untouched(self):
+        """阶段一之后结构只由 Alembic 变更，运行时入口不再补列。"""
         engine = create_async_engine("sqlite+aiosqlite:///:memory:")
         try:
             async with engine.begin() as connection:
@@ -76,9 +78,7 @@ class PhaseFiveModelTests(unittest.IsolatedAsyncioTestCase):
                     row[1]
                     for row in (await connection.execute(text("PRAGMA table_info(quiz_questions)"))).fetchall()
                 }
-                self.assertTrue(
-                    {"quiz_set_id", "document_id", "answer_payload", "source_snapshot"} <= columns
-                )
+                self.assertEqual(columns, {"id"})
         finally:
             await engine.dispose()
 
@@ -89,9 +89,10 @@ class PhaseFiveModelTests(unittest.IsolatedAsyncioTestCase):
                 await connection.run_sync(Base.metadata.create_all)
             sessions = async_sessionmaker(engine, expire_on_commit=False)
             async with sessions() as db:
-                workspace = Workspace(name="Assessments", slug="assessments")
-                db.add(workspace)
-                await db.flush()
+                user = await create_user(db)
+                workspace = await create_workspace(
+                    db, user, name="Assessments", slug="assessments"
+                )
                 db.add(LearningTask(
                     workspace_id=workspace.id,
                     knowledge_point_id="point",

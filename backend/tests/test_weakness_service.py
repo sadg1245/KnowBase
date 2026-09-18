@@ -10,7 +10,7 @@ import app.models  # noqa: F401
 from app.models.assessment import LearningTask, MistakeRecord, QuizAttempt
 from app.models.base import Base
 from app.models.learning import Flashcard, KnowledgePoint, QuizQuestion, ReviewLog, StudyActivity
-from app.models.workspace import Workspace
+from tests.support import create_user, create_workspace
 from app.services.weakness_service import (
     AttemptEvidence,
     WeaknessMetrics,
@@ -75,9 +75,10 @@ class WeaknessPersistenceTests(unittest.IsolatedAsyncioTestCase):
             await connection.run_sync(Base.metadata.create_all)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         self.db = self.sessions()
-        self.workspace = Workspace(name="Weakness", slug="weakness")
-        self.db.add(self.workspace)
-        await self.db.flush()
+        self.user = await create_user(self.db)
+        self.workspace = await create_workspace(
+            self.db, self.user, name="Weakness", slug="weakness"
+        )
         self.point = KnowledgePoint(
             workspace_id=self.workspace.id,
             title="Fractions",
@@ -206,6 +207,7 @@ class WeaknessPersistenceTests(unittest.IsolatedAsyncioTestCase):
                 task_type="review", title="Recent other", status="completed", completed_at=NOW,
             ),
             StudyActivity(
+                user_id=self.user.id,
                 workspace_id=self.workspace.id, activity_type="task_completed", title="Other activity",
                 payload={"knowledge_point_id": other.id}, created_at=NOW,
             ),
@@ -219,6 +221,7 @@ class WeaknessPersistenceTests(unittest.IsolatedAsyncioTestCase):
             task_type="targeted_practice", title="Recent target", status="completed", completed_at=NOW,
         ))
         self.db.add(StudyActivity(
+            user_id=self.user.id,
             workspace_id=self.workspace.id, activity_type="task_completed", title="Target activity",
             payload={"knowledge_point_id": target.id}, created_at=NOW,
         ))

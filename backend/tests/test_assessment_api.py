@@ -10,11 +10,13 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from app.api.deps import get_db, get_settings
+from app.api.deps import get_current_user, get_db, get_settings
 from app.main import app
 from app.models.base import Base
 from app.models.assessment import LearningTask, MistakeRecord, QuizAttempt, QuizRun, QuizSet
-from app.models.learning import KnowledgePoint, QuizQuestion, StudyActivity, UserProfile
+from app.models.learning import KnowledgePoint, QuizQuestion, StudyActivity
+from app.models.user import User
+from tests.support import create_user, create_workspace
 from app.models.workspace import Workspace
 from app.models.document import Document
 from app.models.chat import DocumentChunk
@@ -31,9 +33,10 @@ class AssessmentAPITests(unittest.IsolatedAsyncioTestCase):
             await conn.run_sync(Base.metadata.create_all)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         self.db = self.sessions()
-        self.workspace = Workspace(name="Test", slug="api-test")
-        self.db.add(self.workspace)
-        await self.db.flush()
+        self.user = await create_user(self.db)
+        self.workspace = await create_workspace(
+            self.db, self.user, name="Test", slug="api-test"
+        )
         self.point = KnowledgePoint(workspace_id=self.workspace.id, title="Triangles", mastery=0.5)
         self.db.add(self.point)
         await self.db.commit()
@@ -43,6 +46,7 @@ class AssessmentAPITests(unittest.IsolatedAsyncioTestCase):
             await self.db.commit()
         app.dependency_overrides[get_db] = database
         app.dependency_overrides[get_settings] = lambda: SETTINGS
+        app.dependency_overrides[get_current_user] = lambda: self.user
         self.client = AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
     async def asyncTearDown(self):
@@ -77,12 +81,105 @@ class AssessmentAPITests(unittest.IsolatedAsyncioTestCase):
 
     async def test_phase_five_routes_are_registered(self):
         paths = {route.path for route in app.routes}
-        for path in ["/quiz-sets/generate", "/quiz-sets/{quiz_set_id}", "/quiz-sets/{quiz_set_id}/runs",
+        for path in ["/quiz-sets", "/quiz-sets/generate", "/quiz-sets/{quiz_set_id}", "/quiz-sets/{quiz_set_id}/runs",
                      "/quiz-runs/{run_id}/start", "/quiz-runs/{run_id}/questions/{question_id}/submit",
                      "/quiz-runs/{run_id}/submit", "/quiz-runs/{run_id}/retry",
                      "/attempts/{attempt_id}/retry-grading", "/mistakes", "/mistakes/{mistake_id}/redo",
                      "/weak-knowledge", "/weak-knowledge/recalculate", "/tasks", "/tasks/{task_id}/complete"]:
             self.assertIn("/api/learning" + path, paths)
+
+    async def test_quiz_history_splits_answer_modes_and_reports_run_progress(self):
+        document = Document(workspace_id=self.workspace.id, filename="geometry.pdf", file_path="geometry.pdf",
+            file_type="pdf", status="ready")
+        self.db.add(document)
+        await self.db.flush()
+        sequential = QuizSet(workspace_id=self.workspace.id, title="逐题卷", question_count=1, status="ready",
+            answer_mode="sequential", question_types=["single_choice"], document_ids=[document.id],
+            created_at=datetime(2026, 9, 1, tzinfo=timezone.utc))
+        full_paper = QuizSet(workspace_id=self.workspace.id, title="整卷卷", question_count=2, status="ready",
+            answer_mode="full_paper", question_types=["single_choice", "short_answer"],
+            created_at=datetime(2026, 9, 2, tzinfo=timezone.utc))
+        self.db.add_all([sequential, full_paper])
+        await self.db.flush()
+        question = QuizQuestion(workspace_id=self.workspace.id, quiz_set_id=sequential.id, document_id=document.id,
+            knowledge_point_id=self.point.id, question_type="single_choice", prompt="How many sides?",
+            options=["Two", "Three"], answer="Three", answer_payload="Three", explanation="Three sides.",
+            grading_rubric={})
+        self.db.add(question)
+        await self.db.commit()
+
+        listing = (await self.request("GET", "/quiz-sets", params={"workspace_id": self.workspace.id})).json()
+        self.assertEqual(listing["total"], 2)
+        self.assertEqual(listing["mode_counts"], {"sequential": 1, "full_paper": 1})
+        self.assertEqual([item["id"] for item in listing["items"]], [full_paper.id, sequential.id])
+        newest, older = listing["items"]
+        self.assertEqual(newest["answer_mode"], "full_paper")
+        self.assertEqual(newest["question_types"], ["single_choice", "short_answer"])
+        self.assertIsNone(newest["run"])
+        self.assertEqual(older["documents"], [{"id": document.id, "filename": "geometry.pdf"}])
+        self.assertIsNone(older["run"])
+
+        run = await self.started(sequential)
+        filtered = (await self.request("GET", "/quiz-sets", params={
+            "workspace_id": self.workspace.id, "answer_mode": "sequential",
+        })).json()
+        self.assertEqual(filtered["total"], 1)
+        self.assertEqual(filtered["mode_counts"], {"sequential": 1, "full_paper": 1})
+        active = filtered["items"][0]
+        self.assertEqual(active["id"], sequential.id)
+        self.assertEqual(active["round_count"], 1)
+        self.assertEqual(active["run"]["status"], "in_progress")
+        self.assertEqual(active["run"]["answered_count"], 0)
+        self.assertEqual(active["run"]["total_questions"], 1)
+
+        submit = await self.request("POST", f"/quiz-runs/{run['id']}/questions/{question.id}/submit",
+                                    json={"answer": "Three"})
+        self.assertEqual(submit.status_code, 200, submit.text)
+        answered = (await self.request("GET", "/quiz-sets", params={
+            "workspace_id": self.workspace.id, "answer_mode": "sequential",
+        })).json()["items"][0]["run"]
+        self.assertEqual(answered["status"], "submitted")
+        self.assertEqual(answered["answered_count"], 1)
+        self.assertEqual(answered["score"], 1)
+        self.assertEqual(answered["max_score"], 1)
+
+    async def test_quiz_history_filters_by_document_and_hides_legacy_carriers(self):
+        document = Document(workspace_id=self.workspace.id, filename="geometry.pdf", file_path="geometry.pdf",
+            file_type="pdf", status="ready")
+        self.db.add(document)
+        await self.db.flush()
+        generated = QuizSet(workspace_id=self.workspace.id, title="几何卷", question_count=1, status="ready",
+            answer_mode="sequential", question_types=["single_choice"], document_ids=[document.id])
+        legacy = QuizSet(workspace_id=self.workspace.id, title="Legacy practice", question_count=1, status="ready",
+            answer_mode="sequential", question_types=["single_choice"], generation_model="legacy")
+        self.db.add_all([generated, legacy])
+        await self.db.flush()
+        self.db.add(QuizQuestion(workspace_id=self.workspace.id, quiz_set_id=generated.id, document_id=document.id,
+            question_type="single_choice", prompt="Sides?", options=["Two", "Three"], answer="Three",
+            answer_payload="Three", explanation="Three sides.", grading_rubric={}))
+        await self.db.commit()
+
+        scoped = (await self.request("GET", "/quiz-sets", params={"document_id": document.id})).json()
+        self.assertEqual([item["id"] for item in scoped["items"]], [generated.id])
+        self.assertEqual(scoped["total"], 1)
+        unscoped = (await self.request("GET", "/quiz-sets", params={"workspace_id": self.workspace.id})).json()
+        self.assertNotIn(legacy.id, [item["id"] for item in unscoped["items"]])
+
+    async def test_quiz_history_is_scoped_to_owned_workspaces(self):
+        other_user = await create_user(self.db)
+        other_workspace = await create_workspace(self.db, other_user, name="Other", slug="other-ws")
+        foreign = QuizSet(workspace_id=other_workspace.id, title="别人的卷", question_count=1, status="ready",
+            answer_mode="full_paper", question_types=["single_choice"])
+        self.db.add(foreign)
+        await self.db.commit()
+
+        listing = (await self.request("GET", "/quiz-sets")).json()
+        self.assertEqual(listing["items"], [])
+        self.assertEqual(listing["total"], 0)
+        self.assertEqual(listing["mode_counts"], {"sequential": 0, "full_paper": 0})
+        forbidden = await self.request("GET", "/quiz-sets", params={"workspace_id": other_workspace.id})
+        self.assertEqual(forbidden.status_code, 404)
+        self.assertEqual((await self.request("GET", "/quiz-sets", params={"limit": 0})).status_code, 422)
 
     async def test_unsubmitted_paper_and_legacy_list_hide_result_material(self):
         paper, question = await self.paper("full_paper")
@@ -170,7 +267,7 @@ class AssessmentAPITests(unittest.IsolatedAsyncioTestCase):
     async def test_export_on_empty_profile_is_read_only_and_retains_old_fields(self):
         response = await self.request("GET", "/export")
         self.assertEqual(response.status_code, 200, response.text)
-        self.assertEqual(await self.db.scalar(select(func.count(UserProfile.id))), 0)
+        self.assertEqual(await self.db.scalar(select(func.count(User.id))), 1)
         for field in ["quiz_sets", "quiz_runs", "quiz_attempts", "mistakes", "weak_knowledge", "learning_tasks", "profile", "quizzes", "flashcards", "activities"]:
             self.assertIn(field, response.json())
 
@@ -317,15 +414,12 @@ class AssessmentAPITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(mistake.redo_count, 2)
         self.assertEqual(mistake.mastery_status, "mastered")
 
-    async def test_run_scope_migration_is_idempotent_and_preserves_legacy_rows(self):
+    async def test_retired_migration_preserves_legacy_run_scope_rows(self):
+        """`question_ids` 现在由 Alembic 基线负责，运行时入口不再补列。"""
         from app.core.migrations import run_compat_migrations
         paper, _ = await self.paper()
         await self.db.commit()
         async with self.engine.begin() as conn:
-            # Model represents the new schema; simulate an installed pre-scope table.
-            columns = (await conn.execute(text("PRAGMA table_info(quiz_runs)"))).all()
-            if any(row[1] == "question_ids" for row in columns):
-                await conn.execute(text("ALTER TABLE quiz_runs DROP COLUMN question_ids"))
             await conn.execute(text("INSERT INTO quiz_runs (id, quiz_set_id, round_number, answer_mode, status, elapsed_seconds, score, max_score, correct_count, graded_count) VALUES ('legacy-run', :paper, 1, 'sequential', 'not_started', 0, 0, 0, 0, 0)"), {"paper": paper.id})
             await run_compat_migrations(conn)
             await run_compat_migrations(conn)
@@ -347,10 +441,10 @@ class AssessmentAPITests(unittest.IsolatedAsyncioTestCase):
         document = Document(workspace_id=self.workspace.id, filename="geometry.pdf", file_path="x", file_type="pdf")
         self.db.add(document)
         await self.db.flush()
-        session = ChatSession(workspace_id=self.workspace.id)
+        session = ChatSession(user_id=self.user.id, workspace_id=self.workspace.id)
         self.db.add(session)
         await self.db.flush()
-        message = Conversation(workspace_id=self.workspace.id, session_id=session.id, user_id="default",
+        message = Conversation(workspace_id=self.workspace.id, session_id=session.id, user_id=self.user.id,
             role="assistant", content="Three sides", sources=[{"document_id": document.id, "source_file": "geometry.pdf", "excerpt": "three"}])
         self.db.add(message)
         await self.db.commit()
@@ -380,8 +474,9 @@ class AssessmentAPITests(unittest.IsolatedAsyncioTestCase):
                 async with engine.begin() as conn:
                     await conn.run_sync(Base.metadata.create_all)
                 async with sessions() as db:
+                    db.add(User(id="u-regrade", username="u-regrade"))
                     db.add_all([
-                        Workspace(id="w", name="w", slug="w"),
+                        Workspace(id="w", owner_id="u-regrade", name="w", slug="w"),
                         KnowledgePoint(id="p", workspace_id="w", title="p", mastery=0.5),
                         QuizSet(id="s", workspace_id="w", status="ready", question_count=1),
                         QuizQuestion(id="q", workspace_id="w", quiz_set_id="s", knowledge_point_id="p",
@@ -406,7 +501,10 @@ class AssessmentAPITests(unittest.IsolatedAsyncioTestCase):
                 jobs = [asyncio.create_task(retry(sessions, 0)), asyncio.create_task(retry(others, 1))]
                 await asyncio.wait_for(asyncio.gather(*(event.wait() for event in arrivals)), 5)
                 async with others() as writer:
-                    writer.add(StudyActivity(workspace_id="w", activity_type="test", title="Independent write"))
+                    writer.add(StudyActivity(
+                        user_id="u-regrade", workspace_id="w", activity_type="test",
+                        title="Independent write",
+                    ))
                     await asyncio.wait_for(writer.commit(), 3)
                 release.set()
                 outcomes = await asyncio.wait_for(asyncio.gather(*jobs, return_exceptions=True), 8)

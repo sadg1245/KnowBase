@@ -1,149 +1,140 @@
-"""工作区 CRUD 端点。"""
+"""知识库 CRUD 端点。
 
+数据库与 API 路径继续使用 `workspaces`/`/api/workspaces` 作为内部兼容契约，
+但所有查询都以 `Workspace.owner_id == current_user.id` 为服务端约束。
+"""
+
+import os
 import re
 import unicodedata
-import os
 from datetime import datetime, timezone
+from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile
 from loguru import logger
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, get_settings
+from app.api.deps import get_current_user, get_db, get_settings
 from app.config import Settings
-from app.models.workspace import Workspace
+from app.core.media import (
+    delete_media,
+    public_image_url,
+    store_image,
+    validate_external_image_url,
+)
+from app.models.assessment import WeakKnowledgeState
 from app.models.document import Document
+from app.models.learning import KnowledgePoint, StudyActivity
+from app.models.user import LearningDomain, User
+from app.models.workspace import Workspace
 from app.schemas.schemas import (
     WorkspaceCreate,
-    WorkspaceUpdate,
-    WorkspaceResponse,
     WorkspaceDetailResponse,
+    WorkspaceResponse,
+    WorkspaceUpdate,
 )
+from app.services.goal_service import LEARNING_ACTIVITY_TYPES
+from app.services.ownership import owned_domain, owned_workspace
 
 
 router = APIRouter(prefix="/workspaces", tags=["workspaces"])
 
 
 def _slugify(text: str) -> str:
-    """将工作区名称转换为 URL 安全的 slug。"""
-    # 标准化 unicode
+    """将知识库名称转换为 URL 安全的 slug。"""
     text = unicodedata.normalize("NFKD", text)
-    # 将非字母数字字符替换为连字符
     text = re.sub(r"[^\w\s-]", "", text, flags=re.ASCII)
     text = re.sub(r"[-\s]+", "-", text).strip("-_")
     text = text.lower()
-    # 同时处理中文/CJK 字符 — 保持原样
     text = re.sub(r"[^\w-]", "-", text)
     text = re.sub(r"-+", "-", text).strip("-")
     return text or "workspace"
 
 
 async def _ensure_unique_slug(
-    db: AsyncSession, base_slug: str, exclude_id: str | None = None
+    db: AsyncSession,
+    owner_id: str,
+    base_slug: str,
+    exclude_id: Optional[str] = None,
 ) -> str:
-    """确保 slug 唯一性；如有冲突则追加计数器。"""
+    """同一用户内 slug 唯一；不同用户允许同名。"""
     slug = base_slug
     counter = 1
     while True:
-        stmt = select(Workspace).where(Workspace.slug == slug)
+        stmt = select(Workspace.id).where(
+            Workspace.owner_id == owner_id, Workspace.slug == slug
+        )
         if exclude_id:
             stmt = stmt.where(Workspace.id != exclude_id)
-        result = await db.execute(stmt)
-        existing = result.scalar_one_or_none()
-        if existing is None:
+        if (await db.execute(stmt)).scalar_one_or_none() is None:
             return slug
         slug = f"{base_slug}-{counter}"
         counter += 1
 
 
-# ---------------------------------------------------------------------------
-# 列出所有工作区
-# ---------------------------------------------------------------------------
-
-
-@router.get("", response_model=list[WorkspaceResponse])
-async def list_workspaces(db: AsyncSession = Depends(get_db)) -> list[dict]:
-    """返回所有工作区，按创建时间降序排列（最新的在前）。"""
-    stmt = (
-        select(Workspace, func.count(Document.id).label("document_count"))
-        .outerjoin(Document, Document.workspace_id == Workspace.id)
-        .group_by(Workspace.id)
-        .order_by(Workspace.created_at.desc())
+async def _domain_name(db: AsyncSession, workspace: Workspace) -> str:
+    if not workspace.domain_id:
+        return "未分类"
+    name = await db.scalar(
+        select(LearningDomain.name).where(LearningDomain.id == workspace.domain_id)
     )
-    result = await db.execute(stmt)
-    return [
-        {
-            "id": workspace.id,
-            "name": workspace.name,
-            "description": workspace.description,
-            "slug": workspace.slug,
-            "created_at": workspace.created_at,
-            "updated_at": workspace.updated_at,
-            "document_count": document_count,
-            "learning_goal": workspace.learning_goal or "",
-            "domain": workspace.domain or "未分类",
-            "accent_color": workspace.accent_color,
-            "archived": workspace.archived,
+    return name or "未分类"
+
+
+async def _stats(
+    db: AsyncSession, workspace_ids: list[str]
+) -> dict[str, dict]:
+    """按知识库聚合文档数、知识点数、平均掌握度与最近学习时间。"""
+    if not workspace_ids:
+        return {}
+    result = {
+        workspace_id: {
+            "document_count": 0,
+            "knowledge_point_count": 0,
+            "learning_progress": 0,
+            "last_studied_at": None,
         }
-        for workspace, document_count in result.all()
-    ]
+        for workspace_id in workspace_ids
+    }
+    document_rows = (await db.execute(
+        select(Document.workspace_id, func.count(Document.id))
+        .where(Document.workspace_id.in_(workspace_ids))
+        .group_by(Document.workspace_id)
+    )).all()
+    for workspace_id, count in document_rows:
+        result[workspace_id]["document_count"] = int(count or 0)
+
+    point_rows = (await db.execute(
+        select(
+            KnowledgePoint.workspace_id,
+            func.count(KnowledgePoint.id),
+            func.avg(KnowledgePoint.mastery),
+        )
+        .where(KnowledgePoint.workspace_id.in_(workspace_ids))
+        .group_by(KnowledgePoint.workspace_id)
+    )).all()
+    for workspace_id, count, average in point_rows:
+        result[workspace_id]["knowledge_point_count"] = int(count or 0)
+        result[workspace_id]["learning_progress"] = (
+            round(float(average or 0) * 100) if count else 0
+        )
+
+    activity_rows = (await db.execute(
+        select(StudyActivity.workspace_id, func.max(StudyActivity.occurred_at))
+        .where(
+            StudyActivity.workspace_id.in_(workspace_ids),
+            StudyActivity.activity_type.in_(LEARNING_ACTIVITY_TYPES),
+        )
+        .group_by(StudyActivity.workspace_id)
+    )).all()
+    for workspace_id, last_at in activity_rows:
+        result[workspace_id]["last_studied_at"] = last_at
+    return result
 
 
-# ---------------------------------------------------------------------------
-# 创建工作区
-# ---------------------------------------------------------------------------
-
-
-@router.post("", response_model=WorkspaceResponse, status_code=201)
-async def create_workspace(
-    payload: WorkspaceCreate,
-    db: AsyncSession = Depends(get_db),
-) -> Workspace:
-    """创建新工作区，自动生成 slug。"""
-    base_slug = _slugify(payload.name)
-    unique_slug = await _ensure_unique_slug(db, base_slug)
-
-    workspace = Workspace(
-        name=payload.name,
-        description=payload.description or "",
-        learning_goal=payload.learning_goal or "",
-        domain=payload.domain or "未分类",
-        accent_color=payload.accent_color or "#1f7a8c",
-        slug=unique_slug,
-    )
-    db.add(workspace)
-    await db.flush()
-    await db.refresh(workspace)
-    logger.info("Created workspace '{}' with slug '{}'", workspace.name, workspace.slug)
-    return workspace
-
-
-# ---------------------------------------------------------------------------
-# 获取工作区详情
-# ---------------------------------------------------------------------------
-
-
-@router.get("/{workspace_id}", response_model=WorkspaceDetailResponse)
-async def get_workspace(
-    workspace_id: str,
-    db: AsyncSession = Depends(get_db),
-) -> dict:
-    """返回单个工作区及其文档数量。"""
-    stmt = select(Workspace).where(Workspace.id == workspace_id)
-    result = await db.execute(stmt)
-    workspace = result.scalar_one_or_none()
-    if workspace is None:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-
-    # 统计文档数量
-    count_stmt = (
-        select(func.count(Document.id))
-        .where(Document.workspace_id == workspace_id)
-    )
-    count_result = await db.execute(count_stmt)
-    doc_count = count_result.scalar() or 0
-
+async def _payload(db: AsyncSession, workspace: Workspace, stats: dict | None = None) -> dict:
+    values = stats or (await _stats(db, [workspace.id])).get(workspace.id, {})
     return {
         "id": workspace.id,
         "name": workspace.name,
@@ -151,17 +142,105 @@ async def get_workspace(
         "slug": workspace.slug,
         "created_at": workspace.created_at,
         "updated_at": workspace.updated_at,
-        "document_count": doc_count,
+        "document_count": values.get("document_count", 0),
+        "knowledge_point_count": values.get("knowledge_point_count", 0),
+        "learning_progress": values.get("learning_progress", 0),
+        "last_studied_at": values.get("last_studied_at"),
         "learning_goal": workspace.learning_goal or "",
-        "domain": workspace.domain or "未分类",
+        "learning_status": workspace.learning_status or "not_started",
+        "domain": await _domain_name(db, workspace),
+        "domain_id": workspace.domain_id,
+        "cover_kind": workspace.cover_kind or "none",
+        "cover_url": public_image_url("cover", workspace.cover_kind, workspace.cover_value),
         "accent_color": workspace.accent_color,
         "archived": workspace.archived,
     }
 
 
-# ---------------------------------------------------------------------------
-# 更新工作区
-# ---------------------------------------------------------------------------
+async def _resolve_domain(
+    db: AsyncSession, user: User, domain_id: Optional[str], fallback_name: Optional[str]
+) -> tuple[Optional[str], Optional[str]]:
+    """返回 (domain_id, 兼容 domain 名称)。"""
+    if domain_id is not None:
+        domain = await owned_domain(db, domain_id, user)
+        return domain.id, domain.name
+    if fallback_name is not None:
+        cleaned = fallback_name.strip()
+        if cleaned and cleaned != "未分类":
+            existing = (await db.execute(
+                select(LearningDomain).where(
+                    LearningDomain.user_id == user.id, LearningDomain.name == cleaned
+                )
+            )).scalar_one_or_none()
+            if existing is None:
+                existing = LearningDomain(user_id=user.id, name=cleaned)
+                db.add(existing)
+                await db.flush()
+            return existing.id, existing.name
+        return None, "未分类"
+    return None, None
+
+
+@router.get("", response_model=list[WorkspaceResponse])
+async def list_workspaces(
+    include_archived: bool = Query(False, description="包含已归档知识库"),
+    archived_only: bool = Query(False, description="仅返回已归档知识库"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[dict]:
+    stmt = select(Workspace).where(Workspace.owner_id == current_user.id)
+    if archived_only:
+        stmt = stmt.where(Workspace.archived.is_(True))
+    elif not include_archived:
+        stmt = stmt.where(Workspace.archived.is_(False))
+    rows = (await db.execute(
+        stmt.order_by(Workspace.created_at.desc())
+    )).scalars().all()
+    stats = await _stats(db, [row.id for row in rows])
+    return [await _payload(db, row, stats.get(row.id)) for row in rows]
+
+
+@router.post("", response_model=WorkspaceResponse, status_code=201)
+async def create_workspace(
+    payload: WorkspaceCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    domain_id, domain_name = await _resolve_domain(db, current_user, payload.domain_id, payload.domain)
+    cover_kind, cover_value = "none", None
+    if payload.cover_url:
+        cover_kind = "url"
+        cover_value = validate_external_image_url(payload.cover_url, settings)
+    unique_slug = await _ensure_unique_slug(db, current_user.id, _slugify(payload.name))
+    workspace = Workspace(
+        owner_id=current_user.id,
+        domain_id=domain_id,
+        name=payload.name.strip(),
+        description=payload.description or "",
+        learning_goal=payload.learning_goal or "",
+        domain=domain_name or "未分类",
+        learning_status=payload.learning_status or "not_started",
+        cover_kind=cover_kind,
+        cover_value=cover_value,
+        accent_color=payload.accent_color or "#1f7a8c",
+        slug=unique_slug,
+    )
+    db.add(workspace)
+    await db.flush()
+    await db.refresh(workspace)
+    logger.info("Created knowledge base '{}' for user '{}'", workspace.id, current_user.id)
+    return await _payload(db, workspace)
+
+
+@router.get("/{workspace_id}", response_model=WorkspaceDetailResponse)
+async def get_workspace(
+    workspace_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    workspace = await owned_workspace(db, workspace_id, current_user)
+    return await _payload(db, workspace)
 
 
 @router.put("/{workspace_id}", response_model=WorkspaceResponse)
@@ -169,64 +248,114 @@ async def update_workspace(
     workspace_id: str,
     payload: WorkspaceUpdate,
     db: AsyncSession = Depends(get_db),
-) -> Workspace:
-    """更新工作区名称和/或描述。"""
-    stmt = select(Workspace).where(Workspace.id == workspace_id)
-    result = await db.execute(stmt)
-    workspace = result.scalar_one_or_none()
-    if workspace is None:
-        raise HTTPException(status_code=404, detail="Workspace not found")
+    current_user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    workspace = await owned_workspace(db, workspace_id, current_user)
+    previous_upload = workspace.cover_value if workspace.cover_kind == "upload" else None
 
     if payload.name is not None:
-        workspace.name = payload.name
-        base_slug = _slugify(payload.name)
-        workspace.slug = await _ensure_unique_slug(db, base_slug, exclude_id=workspace_id)
+        workspace.name = payload.name.strip()
+        workspace.slug = await _ensure_unique_slug(
+            db, current_user.id, _slugify(workspace.name), exclude_id=workspace_id
+        )
+    if payload.domain_id is not None or payload.domain is not None:
+        domain_id, domain_name = await _resolve_domain(
+            db, current_user, payload.domain_id, payload.domain
+        )
+        if domain_id is not None:
+            workspace.domain_id = domain_id
+        elif payload.domain_id is None and payload.domain is not None:
+            workspace.domain_id = None
+        if domain_name is not None:
+            workspace.domain = domain_name
+    if payload.clear_cover:
+        workspace.cover_kind = "none"
+        workspace.cover_value = None
+    elif payload.cover_url is not None:
+        workspace.cover_kind = "url"
+        workspace.cover_value = validate_external_image_url(payload.cover_url, settings)
 
-    for field in ("description", "learning_goal", "domain", "accent_color", "archived"):
+    for field in ("description", "learning_goal", "accent_color", "archived", "learning_status"):
         value = getattr(payload, field, None)
         if value is not None:
             setattr(workspace, field, value)
 
     workspace.updated_at = datetime.now(timezone.utc)
     await db.flush()
+    if previous_upload and workspace.cover_kind != "upload":
+        delete_media(previous_upload, settings)
     await db.refresh(workspace)
-    logger.info("Updated workspace '{}'", workspace.id)
-    return workspace
+    return await _payload(db, workspace)
 
 
-# ---------------------------------------------------------------------------
-# 删除工作区
-# ---------------------------------------------------------------------------
+@router.post("/{workspace_id}/cover", response_model=WorkspaceResponse)
+async def upload_cover(
+    workspace_id: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    """先按当前用户加载知识库，再写入受控封面目录。"""
+    workspace = await owned_workspace(db, workspace_id, current_user)
+    previous_upload = workspace.cover_value if workspace.cover_kind == "upload" else None
+    stored = await store_image(file, "cover", settings=settings)
+    workspace.cover_kind = "upload"
+    workspace.cover_value = stored.relative_path
+    workspace.updated_at = datetime.now(timezone.utc)
+    await db.flush()
+    if previous_upload and previous_upload != stored.relative_path:
+        delete_media(previous_upload, settings)
+    return await _payload(db, workspace)
+
+
+@router.delete("/{workspace_id}/cover", response_model=WorkspaceResponse)
+async def clear_cover(
+    workspace_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    workspace = await owned_workspace(db, workspace_id, current_user)
+    previous_upload = workspace.cover_value if workspace.cover_kind == "upload" else None
+    workspace.cover_kind = "none"
+    workspace.cover_value = None
+    workspace.updated_at = datetime.now(timezone.utc)
+    await db.flush()
+    delete_media(previous_upload, settings)
+    return await _payload(db, workspace)
 
 
 @router.delete("/{workspace_id}", status_code=204)
 async def delete_workspace(
     workspace_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
-) -> None:
-    """删除工作区并级联删除其所有文档。"""
-    stmt = select(Workspace).where(Workspace.id == workspace_id)
-    result = await db.execute(stmt)
-    workspace = result.scalar_one_or_none()
-    if workspace is None:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-
-    docs = (await db.execute(select(Document).where(Document.workspace_id == workspace_id))).scalars().all()
+) -> Response:
+    """删除知识库：先验证所有权，再清理受控文件与向量集合。"""
+    workspace = await owned_workspace(db, workspace_id, current_user)
+    cover_value = workspace.cover_value if workspace.cover_kind == "upload" else None
+    docs = (await db.execute(
+        select(Document).where(Document.workspace_id == workspace_id)
+    )).scalars().all()
     for document in docs:
-        if os.path.isfile(document.file_path):
+        if document.file_path and os.path.isfile(document.file_path):
             try:
                 os.remove(document.file_path)
             except OSError:
                 logger.warning("Could not remove file for document '{}'", document.id)
     try:
-        import chromadb
-        chromadb.HttpClient(host=settings.CHROMA_HOST, port=settings.CHROMA_PORT).delete_collection(
+        from app.core.chroma import get_chroma_client
+
+        get_chroma_client().delete_collection(
             name=f"ws_{workspace_id}".replace("-", "_")
         )
     except Exception:
         logger.warning("Vector collection cleanup deferred for workspace '{}'", workspace_id)
     await db.delete(workspace)
     await db.flush()
-    logger.info("Deleted workspace '{}' (and cascaded documents)", workspace_id)
-    return None
+    delete_media(cover_value, settings)
+    logger.info("Deleted knowledge base '{}' for user '{}'", workspace_id, current_user.id)
+    return Response(status_code=204)

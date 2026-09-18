@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.chat import ChatSession
 from app.models.document import Document
 from app.models.learning import StudyActivity, StudySession
+from app.models.workspace import Workspace
 from app.schemas.insights import StudySessionStart
 from app.services.activity_service import append_activity
 
@@ -49,38 +50,54 @@ def _aware(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-async def _validated_workspace(db: AsyncSession, request: StudySessionStart) -> str | None:
+async def _validated_workspace(
+    db: AsyncSession, request: StudySessionStart, user_id: str
+) -> str | None:
     if request.context_type == "document":
         context = (await db.execute(
-            select(Document).where(Document.id == request.context_id)
+            select(Document)
+            .join(Workspace, Workspace.id == Document.workspace_id)
+            .where(Document.id == request.context_id, Workspace.owner_id == user_id)
         )).scalar_one_or_none()
     else:
         context = (await db.execute(
-            select(ChatSession).where(ChatSession.id == request.context_id)
+            select(ChatSession).where(
+                ChatSession.id == request.context_id, ChatSession.user_id == user_id
+            )
         )).scalar_one_or_none()
     if context is None:
         raise ContextNotFound(request.context_id)
     if request.workspace_id is not None and context.workspace_id != request.workspace_id:
         raise ContextMismatch("Learning context does not belong to the workspace")
+    if context.workspace_id is not None:
+        owned = await db.scalar(select(Workspace.id).where(
+            Workspace.id == context.workspace_id, Workspace.owner_id == user_id
+        ))
+        if owned is None:
+            raise ContextNotFound(request.context_id)
     return context.workspace_id
 
 
 async def start_session(
     db: AsyncSession,
     request: StudySessionStart,
+    user_id: str,
     now: datetime | None = None,
 ) -> StudySession:
     now = _aware(now or datetime.now(timezone.utc))
-    await expire_stale_sessions(db, now)
+    await expire_stale_sessions(db, user_id=user_id, now=now)
     existing = (await db.execute(
-        select(StudySession).where(StudySession.id == request.id)
+        select(StudySession).where(
+            StudySession.id == request.id, StudySession.user_id == user_id
+        )
     )).scalar_one_or_none()
     if existing is not None:
         if existing.context_type != request.context_type or existing.context_id != request.context_id:
             raise ContextMismatch("Session id belongs to another learning context")
         return existing
-    workspace_id = await _validated_workspace(db, request)
+    workspace_id = await _validated_workspace(db, request, user_id)
     active = (await db.execute(select(StudySession).where(
+        StudySession.user_id == user_id,
         StudySession.context_type == request.context_type,
         StudySession.context_id == request.context_id,
         StudySession.status == "active",
@@ -89,6 +106,7 @@ async def start_session(
         return active
     row = StudySession(
         id=request.id,
+        user_id=user_id,
         workspace_id=workspace_id,
         context_type=request.context_type,
         context_id=request.context_id,
@@ -104,12 +122,13 @@ async def start_session(
         else:
             from sqlalchemy.dialects.postgresql import insert
         await db.execute(insert(StudySession).values(
-            id=request.id, workspace_id=workspace_id,
+            id=request.id, user_id=user_id, workspace_id=workspace_id,
             context_type=request.context_type, context_id=request.context_id,
             started_at=now, last_heartbeat_at=now, status="active",
             active_seconds=0, last_sequence=0,
         ).on_conflict_do_nothing())
         resolved = (await db.execute(select(StudySession).where(
+            StudySession.user_id == user_id,
             StudySession.context_type == request.context_type,
             StudySession.context_id == request.context_id,
             StudySession.status == "active",
@@ -121,9 +140,11 @@ async def start_session(
     return row
 
 
-async def _session(db: AsyncSession, session_id: str) -> StudySession:
+async def _session(db: AsyncSession, session_id: str, user_id: str) -> StudySession:
     row = (await db.execute(
-        select(StudySession).where(StudySession.id == session_id)
+        select(StudySession).where(
+            StudySession.id == session_id, StudySession.user_id == user_id
+        )
     )).scalar_one_or_none()
     if row is None:
         raise SessionNotFound(session_id)
@@ -134,9 +155,10 @@ async def heartbeat_session(
     db: AsyncSession,
     session_id: str,
     sequence: int,
+    user_id: str,
     now: datetime | None = None,
 ) -> StudySession:
-    row = await _session(db, session_id)
+    row = await _session(db, session_id, user_id)
     if row.status not in {"active", "paused"}:
         raise SessionCompleted(session_id)
     if sequence <= row.last_sequence:
@@ -169,6 +191,7 @@ async def _settle(
         title = "阅读文档" if row.context_type == "document" else "完成学习会话"
         existing = await append_activity(
             db,
+            user_id=row.user_id,
             event_key=event_key,
             activity_type=activity_type,
             title=title,
@@ -190,9 +213,10 @@ async def finish_session(
     db: AsyncSession,
     session_id: str,
     sequence: int,
+    user_id: str,
     now: datetime | None = None,
 ) -> SessionSettlement:
-    row = await _session(db, session_id)
+    row = await _session(db, session_id, user_id)
     now = _aware(now or datetime.now(timezone.utc))
     if sequence > row.last_sequence:
         row.last_sequence = sequence
@@ -201,10 +225,12 @@ async def finish_session(
 
 async def expire_stale_sessions(
     db: AsyncSession,
+    user_id: str,
     now: datetime | None = None,
 ) -> list[SessionSettlement]:
     now = _aware(now or datetime.now(timezone.utc))
     rows = (await db.execute(select(StudySession).where(
+        StudySession.user_id == user_id,
         StudySession.status.in_(("active", "paused")),
     ))).scalars().all()
     results = []

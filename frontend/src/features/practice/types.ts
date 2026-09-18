@@ -113,6 +113,63 @@ export interface QuizRunView extends QuizRunSummary {
   quiz_set: QuizSetView;
 }
 
+export interface QuizSetHistoryRun {
+  id: string;
+  round_number: number;
+  answer_mode: AssessmentAnswerMode;
+  status: QuizRunStatus;
+  started_at: string | null;
+  submitted_at: string | null;
+  elapsed_seconds: number;
+  score: number;
+  max_score: number;
+  correct_count: number;
+  graded_count: number;
+  answered_count: number;
+  total_questions: number;
+}
+
+export interface QuizSetHistoryDocument {
+  id: string;
+  filename: string;
+}
+
+export interface QuizSetHistoryItem {
+  id: string;
+  workspace_id: string;
+  title: string;
+  status: QuizSetStatus;
+  answer_mode: AssessmentAnswerMode;
+  difficulty: AssessmentDifficulty;
+  question_count: number;
+  question_types: AssessmentQuestionType[];
+  section_filters: string[];
+  document_ids: string[];
+  knowledge_point_ids: string[];
+  strict_sources: boolean;
+  duration_limit_seconds: number | null;
+  generation_model: string | null;
+  generation_error: string | null;
+  created_at: string;
+  updated_at: string;
+  documents: QuizSetHistoryDocument[];
+  round_count: number;
+  run: QuizSetHistoryRun | null;
+}
+
+export interface QuizSetHistoryPage extends AssessmentPage<QuizSetHistoryItem> {
+  mode_counts: Record<AssessmentAnswerMode, number>;
+}
+
+export interface QuizSetHistoryScope {
+  workspace_id?: string;
+  document_id?: string;
+  knowledge_point_id?: string;
+  answer_mode?: AssessmentAnswerMode;
+  limit?: number;
+  offset?: number;
+}
+
 export interface QuizSetGenerateRequest {
   workspace_id: string;
   title?: string;

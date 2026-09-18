@@ -10,7 +10,7 @@ from app.models.base import Base
 from app.models.chat import DocumentChunk
 from app.models.document import Document
 from app.models.learning import KnowledgePoint
-from app.models.workspace import Workspace
+from tests.support import create_user, create_workspace
 from app.schemas.learning import KnowledgePointMerge, KnowledgePointUpdate
 from app.schemas.schemas import DocumentResponse, DocumentStatusResponse, DocumentUpdate
 
@@ -27,9 +27,8 @@ class PhaseTwoModelTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_document_phase_two_defaults_are_persisted(self):
         async with self.session_factory() as db:
-            workspace = Workspace(name="Test", slug="test")
-            db.add(workspace)
-            await db.flush()
+            user = await create_user(db)
+            workspace = await create_workspace(db, user, name="Test", slug="test")
 
             row = Document(
                 workspace_id=workspace.id,

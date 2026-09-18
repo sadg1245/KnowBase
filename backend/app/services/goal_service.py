@@ -1,14 +1,18 @@
-"""Canonical learning goals, compatibility profile fields, and measurable progress."""
+"""用户级学习目标、学习偏好，以及可度量的进度计算。
+
+所有查询都以 `user_id` 限定；不存在不带用户范围的全局目标读取。
+"""
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.learning import KnowledgePoint, LearningGoal, StudyActivity, UserProfile
+from app.models.learning import KnowledgePoint, LearningGoal, StudyActivity
+from app.models.user import LearningPreference, User
 from app.models.workspace import Workspace
 from app.schemas.insights import GlobalGoalsUpdate, WorkspaceGoalUpdate
 from app.services.activity_service import append_activity
@@ -46,27 +50,39 @@ def _local_today(now: datetime, timezone_name: str) -> date:
     return _aware(now).astimezone(_zone(timezone_name)).date()
 
 
-async def get_or_create_profile(db: AsyncSession) -> UserProfile:
-    profile = await db.scalar(select(UserProfile).limit(1))
-    if profile is None:
-        profile = UserProfile(display_name="学习者")
-        db.add(profile)
+async def get_or_create_preferences(db: AsyncSession, user: User) -> LearningPreference:
+    """返回当前用户的学习偏好，必要时创建默认值。"""
+    preference = await db.get(LearningPreference, user.id)
+    if preference is None:
+        preference = LearningPreference(user_id=user.id)
+        db.add(preference)
         await db.flush()
-    return profile
+    return preference
 
 
-async def _seed_global_goals(db: AsyncSession, profile: UserProfile) -> dict[str, LearningGoal]:
-    rows = list(await db.scalars(select(LearningGoal).where(LearningGoal.scope_type == "global")))
+async def get_preferences(db: AsyncSession, user: User) -> LearningPreference:
+    return await get_or_create_preferences(db, user)
+
+
+async def _seed_global_goals(
+    db: AsyncSession, user_id: str, preference: LearningPreference
+) -> dict[str, LearningGoal]:
+    rows = list(await db.scalars(select(LearningGoal).where(
+        LearningGoal.user_id == user_id,
+        LearningGoal.scope_type == "global",
+    )))
     by_metric = {row.metric: row for row in rows}
     defaults = {
-        "daily_minutes": float(profile.daily_goal_minutes),
-        "daily_reviews": float(profile.daily_review_target),
-        "weekly_days": float(profile.weekly_goal_days),
+        "daily_minutes": float(preference.daily_goal_minutes),
+        "daily_reviews": float(preference.daily_review_target),
+        "weekly_days": float(preference.weekly_goal_days),
         "overall_mastery": 100.0,
     }
     for metric, target in defaults.items():
         if metric not in by_metric:
-            row = LearningGoal(scope_type="global", metric=metric, target_value=target)
+            row = LearningGoal(
+                user_id=user_id, scope_type="global", metric=metric, target_value=target
+            )
             db.add(row)
             by_metric[metric] = row
     await db.flush()
@@ -83,6 +99,7 @@ async def _record_change(
     goal.version += 1
     await append_activity(
         db,
+        user_id=goal.user_id,
         event_key=f"activity:goal:{goal.id}:v{goal.version}",
         activity_type="goal_changed",
         title="修改了学习目标",
@@ -102,11 +119,14 @@ def _goal_state(goal: LearningGoal) -> dict:
     }
 
 
-async def _progress(db: AsyncSession, goal: LearningGoal, now: datetime, timezone_name: str) -> dict:
+async def _progress(
+    db: AsyncSession, goal: LearningGoal, now: datetime, timezone_name: str
+) -> dict:
     local_date = _local_today(now, timezone_name)
     if goal.metric == "daily_minutes":
         bounds = period_bounds("day", local_date, timezone_name)
         activities = list(await db.scalars(select(StudyActivity).where(
+            StudyActivity.user_id == goal.user_id,
             StudyActivity.occurred_at >= bounds.utc_start,
             StudyActivity.occurred_at < bounds.utc_end,
         )))
@@ -114,6 +134,7 @@ async def _progress(db: AsyncSession, goal: LearningGoal, now: datetime, timezon
     elif goal.metric == "daily_reviews":
         bounds = period_bounds("day", local_date, timezone_name)
         activities = list(await db.scalars(select(StudyActivity).where(
+            StudyActivity.user_id == goal.user_id,
             StudyActivity.occurred_at >= bounds.utc_start,
             StudyActivity.occurred_at < bounds.utc_end,
             StudyActivity.activity_type.in_(("review", "review_completed")),
@@ -126,6 +147,7 @@ async def _progress(db: AsyncSession, goal: LearningGoal, now: datetime, timezon
     elif goal.metric == "weekly_days":
         bounds = period_bounds("week", local_date, timezone_name)
         activities = list(await db.scalars(select(StudyActivity).where(
+            StudyActivity.user_id == goal.user_id,
             StudyActivity.occurred_at >= bounds.utc_start,
             StudyActivity.occurred_at < bounds.utc_end,
             StudyActivity.activity_type.in_(LEARNING_ACTIVITY_TYPES),
@@ -141,7 +163,7 @@ async def _progress(db: AsyncSession, goal: LearningGoal, now: datetime, timezon
         average = await db.scalar(
             select(func.avg(KnowledgePoint.mastery))
             .join(Workspace, Workspace.id == KnowledgePoint.workspace_id)
-            .where(Workspace.archived.is_(False))
+            .where(Workspace.owner_id == goal.user_id, Workspace.archived.is_(False))
         )
         actual = float(average or 0) * 100
     actual = round(actual, 2)
@@ -162,31 +184,47 @@ async def _progress(db: AsyncSession, goal: LearningGoal, now: datetime, timezon
     }
 
 
-async def calculate_goal_progress(db: AsyncSession, goal: LearningGoal, bounds=None, *, now: datetime) -> dict:
-    profile = await get_or_create_profile(db)
-    return await _progress(db, goal, now, profile.timezone_name)
+async def calculate_goal_progress(
+    db: AsyncSession, goal: LearningGoal, bounds=None, *, now: datetime
+) -> dict:
+    preference = await get_or_create_preferences_by_id(db, goal.user_id)
+    return await _progress(db, goal, now, preference.timezone_name)
 
 
-async def get_goals(db: AsyncSession, *, now: datetime) -> dict:
-    profile = await get_or_create_profile(db)
-    globals_by_metric = await _seed_global_goals(db, profile)
-    result = {"timezone_name": profile.timezone_name}
+async def get_or_create_preferences_by_id(db: AsyncSession, user_id: str) -> LearningPreference:
+    preference = await db.get(LearningPreference, user_id)
+    if preference is None:
+        preference = LearningPreference(user_id=user_id)
+        db.add(preference)
+        await db.flush()
+    return preference
+
+
+async def get_goals(db: AsyncSession, *, now: datetime, user_id: str) -> dict:
+    preference = await get_or_create_preferences_by_id(db, user_id)
+    globals_by_metric = await _seed_global_goals(db, user_id, preference)
+    result = {"timezone_name": preference.timezone_name}
     for metric in GLOBAL_METRICS:
-        result[metric] = await _progress(db, globals_by_metric[metric], now, profile.timezone_name)
+        result[metric] = await _progress(db, globals_by_metric[metric], now, preference.timezone_name)
     workspace_rows = list(await db.scalars(select(LearningGoal).where(
+        LearningGoal.user_id == user_id,
         LearningGoal.scope_type == "workspace",
         LearningGoal.is_active.is_(True),
     ).order_by(LearningGoal.updated_at.desc())))
-    result["workspace_goals"] = [await _progress(db, row, now, profile.timezone_name) for row in workspace_rows]
+    result["workspace_goals"] = [
+        await _progress(db, row, now, preference.timezone_name) for row in workspace_rows
+    ]
     return result
 
 
-async def update_global_goals(db: AsyncSession, request: GlobalGoalsUpdate, *, now: datetime) -> dict:
+async def update_global_goals(
+    db: AsyncSession, request: GlobalGoalsUpdate, *, now: datetime, user_id: str
+) -> dict:
     _zone(request.timezone_name)
     if request.target_completion_date < _local_today(now, request.timezone_name):
         raise GoalValidationError("Target completion date cannot be in the past")
-    profile = await get_or_create_profile(db)
-    goals = await _seed_global_goals(db, profile)
+    preference = await get_or_create_preferences_by_id(db, user_id)
+    goals = await _seed_global_goals(db, user_id, preference)
     targets = {
         "daily_minutes": (float(request.daily_minutes), None),
         "daily_reviews": (float(request.daily_reviews), None),
@@ -202,20 +240,38 @@ async def update_global_goals(db: AsyncSession, request: GlobalGoalsUpdate, *, n
         goal.target_date = target_date
         goal.is_active = True
         await _record_change(db, goal, before, _goal_state(goal), now)
-    profile.daily_goal_minutes = request.daily_minutes
-    profile.daily_review_target = request.daily_reviews
-    profile.weekly_goal_days = request.weekly_days
-    profile.timezone_name = request.timezone_name
-    profile.updated_at = now
+    preference.daily_goal_minutes = request.daily_minutes
+    preference.daily_review_target = request.daily_reviews
+    preference.weekly_goal_days = request.weekly_days
+    preference.timezone_name = request.timezone_name
+    preference.updated_at = now
     await db.flush()
-    return await get_goals(db, now=now)
+    return await get_goals(db, now=now, user_id=user_id)
 
 
-async def sync_legacy_profile_goals(db: AsyncSession, values: dict, *, now: datetime) -> UserProfile:
-    profile = await get_or_create_profile(db)
-    timezone_name = values.get("timezone_name", profile.timezone_name)
+async def sync_profile_preferences(
+    db: AsyncSession,
+    user: User,
+    values: dict,
+    *,
+    now: datetime,
+) -> LearningPreference:
+    """旧 `/learning/profile` 与偏好接口共用的目标同步。"""
+    preference = await get_or_create_preferences(db, user)
+    return await sync_preference_values(db, user.id, preference, values, now=now)
+
+
+async def sync_preference_values(
+    db: AsyncSession,
+    user_id: str,
+    preference: LearningPreference,
+    values: dict,
+    *,
+    now: datetime,
+) -> LearningPreference:
+    timezone_name = values.get("timezone_name", preference.timezone_name)
     _zone(timezone_name)
-    goals = await _seed_global_goals(db, profile)
+    goals = await _seed_global_goals(db, user_id, preference)
     mapping = {
         "daily_goal_minutes": "daily_minutes",
         "daily_review_target": "daily_reviews",
@@ -231,30 +287,39 @@ async def sync_legacy_profile_goals(db: AsyncSession, values: dict, *, now: date
             goal.target_value = target
             goal.is_active = True
             await _record_change(db, goal, before, _goal_state(goal), now)
-        setattr(profile, field, values[field])
-    profile.timezone_name = timezone_name
-    profile.updated_at = now
+        setattr(preference, field, values[field])
+    preference.timezone_name = timezone_name
+    preference.updated_at = now
     await db.flush()
-    return profile
+    return preference
 
 
 async def update_workspace_goal(
-    db: AsyncSession, workspace_id: str, request: WorkspaceGoalUpdate, *, now: datetime
+    db: AsyncSession,
+    workspace_id: str,
+    request: WorkspaceGoalUpdate,
+    *,
+    now: datetime,
+    user_id: str,
 ) -> dict:
-    profile = await get_or_create_profile(db)
-    if request.target_date < _local_today(now, profile.timezone_name):
+    preference = await get_or_create_preferences_by_id(db, user_id)
+    if request.target_date < _local_today(now, preference.timezone_name):
         raise GoalValidationError("Target date cannot be in the past")
-    workspace = await db.scalar(select(Workspace).where(Workspace.id == workspace_id))
+    workspace = await db.scalar(select(Workspace).where(
+        Workspace.id == workspace_id, Workspace.owner_id == user_id
+    ))
     if workspace is None:
         raise GoalNotFoundError(workspace_id)
     goal = await db.scalar(select(LearningGoal).where(
+        LearningGoal.user_id == user_id,
         LearningGoal.scope_type == "workspace",
         LearningGoal.workspace_id == workspace_id,
         LearningGoal.metric == "workspace_mastery",
     ))
     if goal is None:
         goal = LearningGoal(
-            scope_type="workspace", workspace_id=workspace_id, metric="workspace_mastery",
+            user_id=user_id, scope_type="workspace", workspace_id=workspace_id,
+            metric="workspace_mastery",
             target_value=float(request.target_mastery), target_date=request.target_date,
         )
         db.add(goal)
@@ -268,11 +333,14 @@ async def update_workspace_goal(
             goal.is_active = True
             await _record_change(db, goal, before, _goal_state(goal), now)
     await db.flush()
-    return await _progress(db, goal, now, profile.timezone_name)
+    return await _progress(db, goal, now, preference.timezone_name)
 
 
-async def delete_workspace_goal(db: AsyncSession, workspace_id: str, *, now: datetime) -> dict:
+async def delete_workspace_goal(
+    db: AsyncSession, workspace_id: str, *, now: datetime, user_id: str
+) -> dict:
     goal = await db.scalar(select(LearningGoal).where(
+        LearningGoal.user_id == user_id,
         LearningGoal.scope_type == "workspace",
         LearningGoal.workspace_id == workspace_id,
         LearningGoal.metric == "workspace_mastery",
@@ -284,4 +352,5 @@ async def delete_workspace_goal(db: AsyncSession, workspace_id: str, *, now: dat
         goal.is_active = False
         await _record_change(db, goal, before, _goal_state(goal), now)
         await db.flush()
-    return await _progress(db, goal, now, (await get_or_create_profile(db)).timezone_name)
+    preference = await get_or_create_preferences_by_id(db, user_id)
+    return await _progress(db, goal, now, preference.timezone_name)

@@ -7,6 +7,7 @@ from app.models.assessment import LearningTask, MistakeRecord, QuizAttempt, Quiz
 from app.models.document import Document
 from app.models.learning import KnowledgePoint, QuizQuestion, StudyActivity
 from app.services import assessment_service as assessment
+from app.services.ownership import workspace_owner_id
 from app.services.weakness_service import recalculate_knowledge_point, upsert_weak_learning_tasks
 
 
@@ -125,7 +126,9 @@ async def complete_task(db, task_id):
                 raise assessment.AssessmentStateError("Only pending tasks can be completed")
             task.status = "completed"
             task.completed_at = datetime.now(timezone.utc)
-            db.add(StudyActivity(workspace_id=task.workspace_id, activity_type="learning_task",
+            db.add(StudyActivity(
+                user_id=await workspace_owner_id(db, task.workspace_id),
+                workspace_id=task.workspace_id, activity_type="learning_task",
                 title=task.title, duration_seconds=0, payload={"task_id": task.id, "knowledge_point_id": task.knowledge_point_id}))
             await db.flush()
             if task.knowledge_point_id:

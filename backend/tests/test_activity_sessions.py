@@ -10,7 +10,6 @@ import app.models  # noqa: F401
 from app.models.base import Base
 from app.models.document import Document
 from app.models.learning import StudyActivity
-from app.models.workspace import Workspace
 from app.schemas.insights import StudySessionStart
 from app.services.activity_service import InvalidActivityType, append_activity
 from app.services.study_session_service import (
@@ -20,6 +19,7 @@ from app.services.study_session_service import (
     heartbeat_session,
     start_session,
 )
+from tests.support import create_user, create_workspace
 
 
 NOW = datetime(2026, 9, 15, 2, 0, tzinfo=timezone.utc)
@@ -32,9 +32,10 @@ class ActivitySessionTests(unittest.IsolatedAsyncioTestCase):
             await connection.run_sync(Base.metadata.create_all)
         self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
         self.db = self.sessions()
-        self.workspace = Workspace(name="Calculus", slug="calculus")
-        self.db.add(self.workspace)
-        await self.db.flush()
+        self.user = await create_user(self.db)
+        self.workspace = await create_workspace(
+            self.db, self.user, name="Calculus", slug="calculus"
+        )
         self.document = Document(
             workspace_id=self.workspace.id,
             filename="limits.pdf",
@@ -51,6 +52,7 @@ class ActivitySessionTests(unittest.IsolatedAsyncioTestCase):
     async def test_duplicate_event_key_returns_original_without_mutating_it(self):
         first = await append_activity(
             self.db,
+            user_id=self.user.id,
             event_key="activity:card:1",
             activity_type="card_created",
             title="创建卡片",
@@ -60,6 +62,7 @@ class ActivitySessionTests(unittest.IsolatedAsyncioTestCase):
         )
         second = await append_activity(
             self.db,
+            user_id=self.user.id,
             event_key="activity:card:1",
             activity_type="card_created",
             title="不应覆盖",
@@ -75,6 +78,7 @@ class ActivitySessionTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(InvalidActivityType):
             await append_activity(
                 self.db,
+                user_id=self.user.id,
                 event_key="bad:1",
                 activity_type="mouse_moved",
                 title="不允许",
@@ -92,12 +96,13 @@ class ActivitySessionTests(unittest.IsolatedAsyncioTestCase):
                 context_id=self.document.id,
                 workspace_id=self.workspace.id,
             ),
+            self.user.id,
             NOW,
         )
-        await heartbeat_session(self.db, session.id, 1, NOW + timedelta(seconds=30))
-        duplicate = await heartbeat_session(self.db, session.id, 1, NOW + timedelta(seconds=31))
+        await heartbeat_session(self.db, session.id, 1, self.user.id, NOW + timedelta(seconds=30))
+        duplicate = await heartbeat_session(self.db, session.id, 1, self.user.id, NOW + timedelta(seconds=31))
         duplicate_seconds = duplicate.active_seconds
-        result = await heartbeat_session(self.db, session.id, 2, NOW + timedelta(seconds=150))
+        result = await heartbeat_session(self.db, session.id, 2, self.user.id, NOW + timedelta(seconds=150))
         self.assertEqual(duplicate_seconds, 30)
         self.assertEqual(result.active_seconds, 30)
         self.assertEqual(result.last_sequence, 2)
@@ -111,11 +116,12 @@ class ActivitySessionTests(unittest.IsolatedAsyncioTestCase):
                 context_id=self.document.id,
                 workspace_id=self.workspace.id,
             ),
+            self.user.id,
             NOW,
         )
-        await heartbeat_session(self.db, session.id, 1, NOW + timedelta(seconds=30))
-        first = await finish_session(self.db, session.id, 1, NOW + timedelta(seconds=35))
-        second = await finish_session(self.db, session.id, 1, NOW + timedelta(seconds=40))
+        await heartbeat_session(self.db, session.id, 1, self.user.id, NOW + timedelta(seconds=30))
+        first = await finish_session(self.db, session.id, 1, self.user.id, NOW + timedelta(seconds=35))
+        second = await finish_session(self.db, session.id, 1, self.user.id, NOW + timedelta(seconds=40))
         self.assertEqual(first.activity.id, second.activity.id)
         self.assertEqual(first.session.status, "completed")
         self.assertEqual(first.activity.activity_type, "document_read")
@@ -132,11 +138,12 @@ class ActivitySessionTests(unittest.IsolatedAsyncioTestCase):
                 context_id=self.document.id,
                 workspace_id=self.workspace.id,
             ),
+            self.user.id,
             NOW,
         )
-        await finish_session(self.db, session.id, 0, NOW + timedelta(seconds=1))
+        await finish_session(self.db, session.id, 0, self.user.id, NOW + timedelta(seconds=1))
         with self.assertRaises(SessionCompleted):
-            await heartbeat_session(self.db, session.id, 1, NOW + timedelta(seconds=30))
+            await heartbeat_session(self.db, session.id, 1, self.user.id, NOW + timedelta(seconds=30))
 
     async def test_stale_session_expires_and_keeps_accumulated_time(self):
         session = await start_session(
@@ -147,10 +154,13 @@ class ActivitySessionTests(unittest.IsolatedAsyncioTestCase):
                 context_id=self.document.id,
                 workspace_id=self.workspace.id,
             ),
+            self.user.id,
             NOW,
         )
-        await heartbeat_session(self.db, session.id, 1, NOW + timedelta(seconds=30))
-        expired = await expire_stale_sessions(self.db, NOW + timedelta(hours=12, seconds=1))
+        await heartbeat_session(self.db, session.id, 1, self.user.id, NOW + timedelta(seconds=30))
+        expired = await expire_stale_sessions(
+            self.db, self.user.id, NOW + timedelta(hours=12, seconds=1)
+        )
         self.assertEqual(len(expired), 1)
         self.assertEqual(expired[0].session.status, "expired")
         self.assertEqual(expired[0].activity.duration_seconds, 30)
@@ -163,8 +173,8 @@ class ActivitySessionTests(unittest.IsolatedAsyncioTestCase):
         session = await start_session(self.db, StudySessionStart(
             id="session-age", context_type="document", context_id=self.document.id,
             workspace_id=self.workspace.id,
-        ), NOW)
-        result = await heartbeat_session(self.db, session.id, 1, NOW + timedelta(hours=13))
+        ), self.user.id, NOW)
+        result = await heartbeat_session(self.db, session.id, 1, self.user.id, NOW + timedelta(hours=13))
         self.assertEqual(result.status, "expired")
         self.assertEqual(result.active_seconds, 0)
 

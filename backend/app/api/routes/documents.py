@@ -12,11 +12,12 @@ from loguru import logger
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_db, get_settings
+from app.api.deps import get_current_user, get_db, get_settings
 from app.config import Settings
+from app.core.tags import TagValidationError, normalize_tags
 from app.models.document import Document
 from app.models.chat import DocumentChunk
-from app.models.workspace import Workspace
+from app.models.user import User
 from app.models.learning import KnowledgePoint
 from app.services.document_jobs import enqueue_document_processing, enqueue_learning_generation
 from app.schemas.schemas import (
@@ -27,6 +28,7 @@ from app.schemas.schemas import (
     DocumentUpdate,
     UploadResponse,
 )
+from app.services.ownership import owned_document, owned_workspace
 
 
 router = APIRouter(tags=["documents"])
@@ -66,14 +68,16 @@ def _validate_extension(filename: str) -> str:
     return ext
 
 
-async def _validate_workspace(db: AsyncSession, workspace_id: str) -> Workspace:
-    """确保工作区存在并返回该工作区。"""
-    stmt = select(Workspace).where(Workspace.id == workspace_id)
-    result = await db.execute(stmt)
-    workspace = result.scalar_one_or_none()
-    if workspace is None:
-        raise HTTPException(status_code=404, detail="Workspace not found")
-    return workspace
+async def _validate_workspace(db: AsyncSession, workspace_id: str, user: User):
+    """确保知识库存在且属于当前用户。"""
+    return await owned_workspace(db, workspace_id, user)
+
+
+def _normalized_tags(values: list[str] | None) -> list[str]:
+    try:
+        return normalize_tags(values)
+    except TagValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 async def _process_document(db: AsyncSession, document: Document, settings: Settings) -> None:
@@ -106,12 +110,10 @@ async def _process_document(db: AsyncSession, document: Document, settings: Sett
         # 第 3 步 — 将向量存储到 ChromaDB
         # ------------------------------------------------------------------
         try:
-            import chromadb
+            from app.core.chroma import get_chroma_client
             from app.core.embedding import get_embedding_service
 
-            chroma_client = chromadb.HttpClient(
-                host=settings.CHROMA_HOST, port=settings.CHROMA_PORT
-            )
+            chroma_client = get_chroma_client()
             collection_name = f"ws_{document.workspace_id}".replace("-", "_")
             collection = chroma_client.get_or_create_collection(
                 name=collection_name,
@@ -255,13 +257,14 @@ async def upload_documents(
     workspace_id: str,
     files: list[UploadFile] = File(...),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ) -> list[dict]:
     """上传一个或多个文件到工作区。
 
     每个文件会经过校验、保存到磁盘并排队处理。
     """
-    workspace = await _validate_workspace(db, workspace_id)
+    workspace = await _validate_workspace(db, workspace_id, current_user)
 
     upload_dir = os.path.join(settings.UPLOAD_DIR, workspace_id)
     os.makedirs(upload_dir, exist_ok=True)
@@ -354,9 +357,10 @@ async def list_documents(
     status: Optional[str] = Query(None, description="Filter by status"),
     file_type: Optional[str] = Query(None, description="Filter by file type"),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> list[Document]:
     """列出工作区中的所有文档，可按条件筛选。"""
-    await _validate_workspace(db, workspace_id)
+    await _validate_workspace(db, workspace_id, current_user)
 
     stmt = (
         select(Document)
@@ -382,14 +386,10 @@ async def list_documents(
 async def get_document(
     document_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Document:
     """根据 ID 返回单个文档。"""
-    stmt = select(Document).where(Document.id == document_id)
-    result = await db.execute(stmt)
-    document = result.scalar_one_or_none()
-    if document is None:
-        raise HTTPException(status_code=404, detail="Document not found")
-    return document
+    return await owned_document(db, document_id, current_user)
 
 
 @router.patch("/documents/{document_id}", response_model=DocumentResponse)
@@ -397,21 +397,13 @@ async def update_document(
     document_id: str,
     payload: DocumentUpdate,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Document:
-    document = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one_or_none()
-    if document is None:
-        raise HTTPException(status_code=404, detail="Document not found")
+    document = await owned_document(db, document_id, current_user)
     if payload.filename is not None:
         document.filename = payload.filename.strip()
     if payload.tags is not None:
-        normalized: list[str] = []
-        seen: set[str] = set()
-        for raw in payload.tags:
-            tag = raw.strip()
-            if tag and tag not in seen:
-                seen.add(tag)
-                normalized.append(tag)
-        document.tags = normalized
+        document.tags = _normalized_tags(payload.tags)
     document.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(document)
@@ -430,10 +422,8 @@ def _section_item(chunk: DocumentChunk) -> dict:
     }
 
 
-async def _document_chunks(db: AsyncSession, document_id: str) -> list[DocumentChunk]:
-    document = (await db.execute(select(Document.id).where(Document.id == document_id))).scalar_one_or_none()
-    if document is None:
-        raise HTTPException(status_code=404, detail="Document not found")
+async def _document_chunks(db: AsyncSession, document_id: str, user: User) -> list[DocumentChunk]:
+    await owned_document(db, document_id, user)
     rows = await db.execute(
         select(DocumentChunk)
         .where(DocumentChunk.document_id == document_id)
@@ -446,8 +436,9 @@ async def _document_chunks(db: AsyncSession, document_id: str) -> list[DocumentC
 async def list_document_sections(
     document_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
-    chunks = await _document_chunks(db, document_id)
+    chunks = await _document_chunks(db, document_id, current_user)
     outline: list[dict] = []
     seen: set[tuple] = set()
     for chunk in chunks:
@@ -469,8 +460,9 @@ async def get_document_section(
     document_id: str,
     chunk_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
-    chunks = await _document_chunks(db, document_id)
+    chunks = await _document_chunks(db, document_id, current_user)
     index = next((i for i, row in enumerate(chunks) if row.id == chunk_id), None)
     if index is None:
         raise HTTPException(status_code=404, detail="Document section not found")
@@ -487,10 +479,9 @@ async def get_document_section(
 async def reprocess_document(
     document_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Document:
-    document = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one_or_none()
-    if document is None:
-        raise HTTPException(status_code=404, detail="Document not found")
+    document = await owned_document(db, document_id, current_user)
     if document.status in {"pending", "processing"}:
         raise HTTPException(status_code=409, detail="Document processing is already active")
     document.status = "processing"
@@ -512,11 +503,11 @@ async def reprocess_document(
 @router.post("/documents/{document_id}/regenerate-learning", response_model=DocumentResponse, status_code=202)
 async def regenerate_document_learning(
     document_id: str,
+    overwrite_tags: bool = Query(False, description="明确要求用 AI 标签覆盖人工标签"),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> Document:
-    document = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one_or_none()
-    if document is None:
-        raise HTTPException(status_code=404, detail="Document not found")
+    document = await owned_document(db, document_id, current_user)
     if document.status != "ready":
         raise HTTPException(status_code=400, detail="Document parsing must be ready first")
     if document.learning_status in {"queued", "generating"}:
@@ -525,7 +516,7 @@ async def regenerate_document_learning(
     document.learning_error_message = None
     await db.commit()
     try:
-        enqueue_learning_generation(document.id)
+        enqueue_learning_generation(document.id, overwrite_tags=overwrite_tags)
     except Exception as exc:
         document.learning_status = "failed"
         document.learning_error_message = f"Learning queue dispatch failed: {exc}"[:1000]
@@ -540,10 +531,11 @@ async def preview_document(
     document_id: str,
     download: bool = Query(False),
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ):
     """Serve an owned document through the API instead of a public static folder."""
-    document = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one_or_none()
-    if document is None or not os.path.isfile(document.file_path):
+    document = await owned_document(db, document_id, current_user)
+    if not os.path.isfile(document.file_path):
         raise HTTPException(status_code=404, detail="Document not found")
     safe_name = document.filename.replace('"', "")
     disposition = "attachment" if download else "inline"
@@ -563,13 +555,10 @@ async def preview_document(
 async def get_document_status(
     document_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     """仅返回文档的处理状态字段。"""
-    stmt = select(Document).where(Document.id == document_id)
-    result = await db.execute(stmt)
-    document = result.scalar_one_or_none()
-    if document is None:
-        raise HTTPException(status_code=404, detail="Document not found")
+    document = await owned_document(db, document_id, current_user)
     return {
         "id": document.id,
         "status": document.status,
@@ -591,14 +580,11 @@ async def get_document_status(
 async def delete_document(
     document_id: str,
     db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
     settings: Settings = Depends(get_settings),
 ) -> None:
     """删除文档：从磁盘移除文件、删除数据库记录以及清除 ChromaDB 中的向量。"""
-    stmt = select(Document).where(Document.id == document_id)
-    result = await db.execute(stmt)
-    document = result.scalar_one_or_none()
-    if document is None:
-        raise HTTPException(status_code=404, detail="Document not found")
+    document = await owned_document(db, document_id, current_user)
 
     # 从磁盘删除文件
     if os.path.exists(document.file_path):
@@ -607,11 +593,9 @@ async def delete_document(
 
     # 从 ChromaDB 中删除向量
     try:
-        import chromadb
+        from app.core.chroma import get_chroma_client
 
-        chroma_client = chromadb.HttpClient(
-            host=settings.CHROMA_HOST, port=settings.CHROMA_PORT
-        )
+        chroma_client = get_chroma_client()
         collection_name = f"ws_{document.workspace_id}".replace("-", "_")
         collection = chroma_client.get_collection(name=collection_name)
         # 兼容新旧摄取流水线的元数据字段。

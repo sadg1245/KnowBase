@@ -13,6 +13,7 @@ from app.models.base import Base
 from app.models.chat import DocumentChunk, RetrievalHit, RetrievalRun
 from app.models.document import Document
 from app.models.workspace import Workspace
+from tests.support import create_user, create_workspace
 
 
 def _module():
@@ -106,9 +107,8 @@ class HybridRetrievalIntegrationTests(unittest.IsolatedAsyncioTestCase):
             raise RuntimeError("vector offline")
 
         async with self.session_factory() as db:
-            workspace = Workspace(name="检索测试", slug="retrieval-test")
-            db.add(workspace)
-            await db.flush()
+            user = await create_user(db)
+            workspace = await create_workspace(db, user, name="检索测试", slug="retrieval-test")
             first = Document(
                 workspace_id=workspace.id,
                 filename="选择.pdf",
@@ -167,9 +167,8 @@ class HybridRetrievalIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.fail("document chunk upsert is missing")
 
         async with self.session_factory() as db:
-            workspace = Workspace(name="索引测试", slug="index-test")
-            db.add(workspace)
-            await db.flush()
+            user = await create_user(db)
+            workspace = await create_workspace(db, user, name="索引测试", slug="index-test")
             document = Document(
                 workspace_id=workspace.id,
                 filename="索引.pdf",
@@ -220,7 +219,8 @@ class HybridRetrievalIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 return Collection()
 
         async with self.session_factory() as db:
-            workspace = Workspace(id="workspace-legacy", name="旧知识库", slug="legacy")
+            user = await create_user(db)
+            workspace = await create_workspace(db, user, name="旧知识库", slug="legacy")
             document = Document(
                 id="doc-legacy",
                 workspace_id=workspace.id,
@@ -229,7 +229,7 @@ class HybridRetrievalIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 file_type="pdf",
                 status="ready",
             )
-            db.add_all([workspace, document])
+            db.add(document)
             await db.flush()
 
             first = await module.backfill_keyword_index(db, Client())
