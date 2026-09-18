@@ -123,9 +123,11 @@ def retrieval_available(*, vector_succeeded: bool, keyword_succeeded: bool) -> b
     return vector_succeeded or keyword_succeeded
 
 
-def merged_evidence_status(evidence_status: str, parsed: LayeredAnswer) -> str:
-    """Record model_only when the answer carries no usable private-source citation."""
-    if evidence_status == "error":
+def merged_evidence_status(
+    evidence_status: str, parsed: LayeredAnswer, *, retrievers_ok: bool = True
+) -> str:
+    """Record an outage as error, and model_only when no source citation survived."""
+    if not retrievers_ok or evidence_status == "error":
         return "error"
     if sources_layer_empty(parsed):
         return "model_only"

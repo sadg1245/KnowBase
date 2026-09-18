@@ -366,6 +366,10 @@ async def chat(
         assistant_msg: Conversation | None = None
         try:
             yield event({"session": {"id": session.id, "title": session.title, "title_changed": title_changed}})
+            retrievers_ok = retrieval_available(
+                vector_succeeded=retrieval.vector_succeeded,
+                keyword_succeeded=retrieval.keyword_succeeded,
+            )
             yield event({
                 "evidence": {
                     "status": retrieval.evidence_status,
@@ -374,17 +378,13 @@ async def chat(
                     "degradation_reason": retrieval.degradation_reason,
                     "top_score": round(retrieval.top_score, 4),
                     "answer_policy": "source_first",
-                    "model_fallback": retrieval.evidence_status != "supported",
+                    "model_fallback": retrievers_ok and retrieval.evidence_status != "supported",
                     "profile_injected": False,
                     "memory_hits": [],
                     "memory_degraded_reason": None,
                 }
             })
 
-            retrievers_ok = retrieval_available(
-                vector_succeeded=retrieval.vector_succeeded,
-                keyword_succeeded=retrieval.keyword_succeeded,
-            )
             if not retrievers_ok:
                 streamed = DETERMINISTIC_RETRIEVAL_ERROR
                 yield event({"token": streamed})
@@ -408,7 +408,9 @@ async def chat(
                 if parsed.content != streamed.strip():
                     yield event({"replace": parsed.content})
             full_answer = parsed.content
-            answer_status = merged_evidence_status(retrieval.evidence_status, parsed)
+            answer_status = merged_evidence_status(
+                retrieval.evidence_status, parsed, retrievers_ok=retrievers_ok
+            )
 
             assistant_msg = Conversation(
                 id=str(uuid.uuid4()),

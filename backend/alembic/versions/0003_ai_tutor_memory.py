@@ -66,7 +66,15 @@ def upgrade() -> None:
     if "answer_policy" not in conversation_columns:
         op.add_column("conversations", sa.Column("answer_policy", sa.String(20), nullable=True))
     if "used_memory_ids" not in conversation_columns:
-        op.add_column("conversations", sa.Column("used_memory_ids", sa.JSON(), nullable=True))
+        op.add_column(
+            "conversations",
+            sa.Column(
+                "used_memory_ids",
+                sa.JSON(),
+                nullable=False,
+                server_default=sa.text("'[]'"),
+            ),
+        )
     if "profile_summary" not in conversation_columns:
         op.add_column("conversations", sa.Column("profile_summary", sa.String(500), nullable=True))
 

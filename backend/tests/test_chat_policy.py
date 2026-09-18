@@ -36,6 +36,20 @@ class ChatPolicyTests(unittest.TestCase):
         self.assertEqual(service.deterministic_empty_answer(), service.deterministic_empty_answer())
         self.assertIn("没有相关内容", service.deterministic_empty_answer())
 
+    def test_retrieval_outage_is_not_reported_as_model_fallback(self):
+        source = ROUTE_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn("retrievers_ok=retrievers_ok", source)
+        self.assertIn('"model_fallback": retrievers_ok and', source)
+
+    def test_outage_status_wins_over_missing_citations(self):
+        parsed = service.parse_layered_answer(service.DETERMINISTIC_RETRIEVAL_ERROR, 0)
+
+        self.assertEqual(
+            service.merged_evidence_status("insufficient", parsed, retrievers_ok=False),
+            "error",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

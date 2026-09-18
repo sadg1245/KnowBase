@@ -59,6 +59,14 @@ class LayeredAnswerTests(unittest.TestCase):
         self.assertEqual(service.merged_evidence_status("supported", supported), "supported")
         self.assertEqual(service.merged_evidence_status("error", model_only), "error")
 
+    def test_total_retrieval_outage_is_recorded_as_error(self):
+        model_only = service.parse_layered_answer("## AI 补充（模型记忆）\n只有模型知识。", 2)
+
+        self.assertEqual(
+            service.merged_evidence_status("insufficient", model_only, retrievers_ok=False),
+            "error",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
