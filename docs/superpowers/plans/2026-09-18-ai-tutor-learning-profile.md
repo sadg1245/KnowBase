@@ -2015,11 +2015,10 @@ class LearningMemoryService:
         if store is None:
             return None
         try:
-            candidates = store.query(
-                embedding=embedding,
-                top_k=1,
-                where={"is_active": True, "kind": kind},
-            )
+            where: dict = {"$and": [{"is_active": True}, {"kind": kind}]}
+            if workspace_id:
+                where = {"$and": [{"is_active": True}, {"kind": kind}, {"workspace_id": workspace_id}]}
+            candidates = store.query(embedding=embedding, top_k=1, where=where)
         except Exception as exc:
             logger.warning("Memory dedup lookup degraded: {}", exc)
             return None
@@ -3620,6 +3619,8 @@ test('tutor profile panel renders an empty state without memories', () => {
             <Button icon={<BulbOutlined />} onClick={() => setProfileOpen(true)}>导师眼中的我</Button>
 ```
 
+（`LearningChat.tsx` 目前只导入了 `FileTextOutlined` 与 `MenuOutlined`，需要在 `@ant-design/icons` 的导入里补上 `BulbOutlined`。）
+
 页面底部加入：
 
 ```tsx
@@ -3681,8 +3682,11 @@ git commit -m "feat: show the tutor profile and manage learning memories"
 $env:PYTHONPATH="backend"; & ".\.venv\Scripts\python.exe" -m pytest backend/tests -q
 
 # 前端
-cd frontend && npm test
+cd frontend; npm test
 ```
+
+注意：`frontend/src/pages/SearchTest.tsx` 也调用了 `streamChat`，但它只传前三个参数，
+删除 `strictSources` 形参不会影响它；改动后需要确认该文件仍然能通过 `npm run build`。
 
 - [ ] **Step 2: 全量后端回归**
 
