@@ -99,7 +99,7 @@ const Dashboard: React.FC = () => {
     <div className="dashboard-review-grid">
       <ActivityTimeline activities={data.recent_activities} />
       <section className="dashboard-section dashboard-weakness">
-        <header className="dashboard-section-heading"><div><span className="dashboard-kicker">Focus</span><h2>当前薄弱知识点</h2></div></header>
+        <header className="dashboard-section-heading"><div><span className="dashboard-kicker">Focus</span><h2>当前薄弱知识点（导师建议优先级）</h2></div></header>
         {data.weak_points.length ? <div>{data.weak_points.map(point => <button key={point.id} onClick={() => navigate(`/knowledge/${point.workspace_id}`)}>
           <Progress type="circle" size={40} percent={Math.round(point.mastery * 100)} showInfo={false} strokeColor="#c98b37" />
           <span><strong>{point.title}</strong><small>掌握度 {Math.round(point.mastery * 100)}%{typeof point.weakness_score === 'number' ? ` · 薄弱分 ${Math.round(point.weakness_score)}` : ''}</small></span>

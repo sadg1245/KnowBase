@@ -652,6 +652,65 @@ export const finishStudySessionKeepalive = async (id: string, sequence: number):
 };
 export interface LearningProfile { id: string; display_name: string; daily_goal_minutes: number; daily_review_target: number; weekly_goal_days: number; timezone_name: string; preferred_mode: string; reminder_time?: string }
 export const getLearningProfile = async (): Promise<LearningProfile> => (await api.get('/learning/profile')).data;
+
+export type MemoryKind = 'session_summary' | 'mistake_pattern' | 'preference' | 'insight' | 'manual';
+
+export interface LearningMemory {
+  id: string;
+  kind: MemoryKind;
+  title: string;
+  content: string;
+  workspace_id: string | null;
+  source_refs: Record<string, any>;
+  importance: number;
+  is_active: boolean;
+  embedding_state: string;
+  use_count: number;
+  last_used_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TutorProfileWeakPoint {
+  knowledge_point_id: string;
+  title: string;
+  mastery: number;
+  weakness_score: number;
+  reason: string;
+}
+
+export interface TutorProfile {
+  display_name: string;
+  preferred_mode: string;
+  goal_summary: string;
+  mastery: Array<{ knowledge_point_id: string; title: string; mastery: number; status: string }>;
+  weak_points: TutorProfileWeakPoint[];
+  recent_topics: string[];
+  common_mistakes: Array<{ knowledge_point_title: string; pattern: string; count: number }>;
+  next_actions: string[];
+  generated_at: string;
+}
+
+export const getTutorProfile = async (workspaceId?: string): Promise<TutorProfile> =>
+  (await api.get('/learning/learner-profile', { params: { workspace_id: workspaceId } })).data;
+
+export const getMemories = async (
+  params: { kind?: MemoryKind; workspace_id?: string; is_active?: boolean } = {},
+): Promise<{ items: LearningMemory[]; total: number }> =>
+  (await api.get('/learning/memories', { params })).data;
+
+export const createMemory = async (
+  values: { kind?: MemoryKind; title: string; content: string; workspace_id?: string },
+): Promise<LearningMemory> => (await api.post('/learning/memories', values)).data;
+
+export const updateMemory = async (
+  id: string,
+  values: { title?: string; content?: string; importance?: number; is_active?: boolean },
+): Promise<LearningMemory> => (await api.patch(`/learning/memories/${id}`, values)).data;
+
+export const deleteMemory = async (id: string): Promise<void> => {
+  await api.delete(`/learning/memories/${id}`);
+};
 export const updateLearningProfile = async (values: Partial<LearningProfile>): Promise<LearningProfile> => (await api.put('/learning/profile', values)).data;
 export const getKnowledgeBaseDetail = async (id: string): Promise<KnowledgeBaseDetail> => (await api.get(`/learning/workspaces/${id}`)).data;
 export const updateKnowledgeBase = async (id: string, values: Partial<Workspace>): Promise<KnowledgeBaseDetail> => (await api.put(`/learning/workspaces/${id}`, values)).data;

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { App, Button, Drawer, Space, Tag, Typography } from 'antd';
-import { FileTextOutlined, MenuOutlined } from '@ant-design/icons';
+import { BulbOutlined, FileTextOutlined, MenuOutlined } from '@ant-design/icons';
 
 import {
   ChatEvent,
@@ -10,14 +10,21 @@ import {
   createMessageMistake,
   createMessageNote,
   createSessionSummaryNote,
+  deleteMemory,
   Document,
+  getMemories,
   getDocuments,
   getKnowledgeBaseDetail,
   getLearningProfile,
+  getTutorProfile,
   getWorkspaces,
+  LearningMemory,
   LearningMode,
+  MemoryKind,
   normalizeChatSources,
   SourceItem,
+  TutorProfile,
+  updateMemory,
   updateMessageFeedback,
   Workspace,
 } from '../services/api';
@@ -33,6 +40,7 @@ import { EvidenceDrawer } from '../components/learning/EvidenceDrawer';
 import { LearningModePanel } from '../components/learning/LearningModePanel';
 import { MobileLearningControls } from '../components/learning/MobileLearningControls';
 import { SessionSidebar } from '../components/learning/SessionSidebar';
+import { TutorProfileDrawer } from '../components/learning/TutorProfileDrawer';
 import { sourceDetailTarget } from '../features/learning/sourceNavigation';
 import {
   applyLearningRecommendationPreset,
@@ -81,6 +89,11 @@ const LearningChat: React.FC = () => {
   const [currentEvidence, setCurrentEvidence] = useState<{ status?: string; degradationReason?: string }>({});
   const [sessionsDrawer, setSessionsDrawer] = useState(false);
   const [settingsDrawer, setSettingsDrawer] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [tutorProfile, setTutorProfile] = useState<TutorProfile | null>(null);
+  const [memories, setMemories] = useState<LearningMemory[]>([]);
+  const [memoryFilter, setMemoryFilter] = useState<MemoryKind | undefined>();
+  const [memoryLoading, setMemoryLoading] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const draftIdRef = useRef<string>();
   const draftRef = useRef<AssistantDraft>(createAssistantDraft());
@@ -217,6 +230,26 @@ const LearningChat: React.FC = () => {
   }, [detachActiveSession, message, presetQuery, streaming.cancel, workspaceId, workspaces, workspacesLoading]);
 
   useEffect(() => { scrollMessagesIntoView(endRef.current); }, [messages]);
+
+  const loadTutorContext = useCallback(async () => {
+    setMemoryLoading(true);
+    try {
+      const [profile, page] = await Promise.all([
+        getTutorProfile(workspaceId),
+        getMemories({ workspace_id: workspaceId }),
+      ]);
+      setTutorProfile(profile);
+      setMemories(page.items);
+    } catch {
+      message.error('学习记录暂时没有加载成功');
+    } finally {
+      setMemoryLoading(false);
+    }
+  }, [message, workspaceId]);
+
+  useEffect(() => {
+    if (profileOpen) void loadTutorContext();
+  }, [loadTutorContext, profileOpen]);
 
   const openSession = useCallback(async (id: string) => {
     streaming.cancel();
@@ -373,6 +406,7 @@ const LearningChat: React.FC = () => {
             {presetPointTitle ? <Tag className="learning-preset-context">当前建议：{presetPointTitle}</Tag> : null}
           </div>
           <Space>
+            <Button icon={<BulbOutlined />} onClick={() => setProfileOpen(true)}>导师眼中的我</Button>
             <Button className="learning-tablet-session-button" icon={<MenuOutlined />} onClick={() => setSessionsDrawer(true)}>会话</Button>
             <Button aria-label="保存会话笔记" icon={<FileTextOutlined />} disabled={!sessionState.activeSession || !messages.length} onClick={() => sessionState.activeSession && void action('会话笔记', () => createSessionSummaryNote(sessionState.activeSession!.id))}>保存会话笔记</Button>
           </Space>
@@ -393,6 +427,17 @@ const LearningChat: React.FC = () => {
     </div>
     <Drawer title="学习会话" placement="left" width={300} open={sessionsDrawer} onClose={() => setSessionsDrawer(false)} className="learning-session-drawer">{sessionSidebar}</Drawer>
     <Drawer title="学习设置" placement="bottom" height="82vh" open={settingsDrawer} onClose={() => setSettingsDrawer(false)} className="learning-settings-drawer">{modePanel}</Drawer>
+    <TutorProfileDrawer
+      open={profileOpen}
+      onClose={() => setProfileOpen(false)}
+      profile={tutorProfile}
+      memories={memories}
+      kindFilter={memoryFilter}
+      loading={memoryLoading}
+      onFilter={setMemoryFilter}
+      onToggle={(memory) => void updateMemory(memory.id, { is_active: !memory.is_active }).then(loadTutorContext)}
+      onDelete={(memory) => void deleteMemory(memory.id).then(loadTutorContext)}
+    />
     <EvidenceDrawer source={source} onClose={() => setSource(null)} onOpenSource={openSource} />
   </div>;
 };
