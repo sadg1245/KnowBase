@@ -3,6 +3,7 @@
 import unittest
 from datetime import datetime, timezone
 
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.core.migrations import ensure_memory_index
@@ -136,6 +137,32 @@ class MemoryHookTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(self.calls, [])
+
+    async def test_hook_db_level_failure_leaves_the_session_usable(self):
+        """A failing flush must not poison the caller's session or abort its commit."""
+        session = ChatSession(user_id=self.user.id, workspace_id=self.workspace.id, title="会话")
+        self.db.add(session)
+        await self.db.flush()
+
+        class ExplodingService:
+            def __init__(self, db):
+                self.db = db
+
+            async def remember(self, **kwargs):
+                await self.db.execute(text("SELECT * FROM table_that_does_not_exist"))
+                return None
+
+        await learning_memory.remember_session_summary(
+            self.db,
+            user_id=self.user.id,
+            session=session,
+            content="内容",
+            service=ExplodingService(self.db),
+        )
+
+        # The caller's own work must still be committable after the best-effort write failed.
+        self.assertEqual((await self.db.execute(text("SELECT 1"))).scalar(), 1)
+        await self.db.commit()
 
 
 if __name__ == "__main__":

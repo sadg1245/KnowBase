@@ -12,7 +12,9 @@ class ChatSessionCreate(BaseModel):
     workspace_id: str | None = None
     document_ids: list[str] = Field(default_factory=list, max_length=50)
     mode: LearningMode = "simple"
-    strict_sources: bool = True
+    # Retained for backward compatibility only: the server ignores this field, because the answer
+    # policy is always source-first with an explicit model fallback.
+    strict_sources: bool = False
     title: str = Field("新学习会话", max_length=255)
 
 

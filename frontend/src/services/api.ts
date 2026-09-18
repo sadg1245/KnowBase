@@ -410,6 +410,8 @@ export const streamChat = async (
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(authToken() ? { Authorization: `Bearer ${authToken()}` } : {}) },
+    // `strict_sources` is retained only so older backends still accept the payload; the current
+    // server ignores it and always answers source-first with an explicit model fallback.
     body: JSON.stringify({ question, workspace_id: workspaceId, document_ids: documentIds, mode, strict_sources: false, session_id: sessionId }),
     signal,
   });
