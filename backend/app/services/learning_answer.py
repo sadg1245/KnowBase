@@ -1,34 +1,8 @@
-"""Hard evidence gates and deterministic learning-answer helpers."""
+"""Deterministic follow-up question suggestions for the learning chat."""
 
 from __future__ import annotations
 
 import re
-
-
-def answer_requires_model(strict_sources: bool, evidence_status: str) -> bool:
-    return not strict_sources or evidence_status == "supported"
-
-
-def strict_refusal(evidence_status: str) -> str:
-    if evidence_status == "limited":
-        return (
-            "当前资料与问题有一定关联，但证据不足，严格资料模式下我不能据此下结论。"
-            "请补充更具体的问题、选择相关文件，或关闭严格资料模式后查看明确标注的 AI 补充。"
-        )
-    return (
-        "我在当前选定的私人资料中没有找到足以回答这个问题的内容。"
-        "你可以调整关键词、扩大文件范围，或先导入相关资料。"
-    )
-
-
-def filter_strict_answer(answer: str, source_count: int) -> str:
-    """Keep only substantive paragraphs whose citation IDs exist in this run."""
-    valid: list[str] = []
-    for paragraph in re.split(r"\n\s*\n", answer.strip()):
-        citations = [int(value) for value in re.findall(r"\[资料(\d+)\]", paragraph)]
-        if citations and all(1 <= value <= source_count for value in citations):
-            valid.append(paragraph.strip())
-    return "\n\n".join(valid)
 
 
 def build_follow_up_suggestions(question: str, mode: str) -> list[str]:

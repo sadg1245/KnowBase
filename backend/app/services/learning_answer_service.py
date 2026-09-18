@@ -118,6 +118,11 @@ def sources_layer_empty(parsed: LayeredAnswer) -> bool:
     return not any(layer.key in {"sources", "mixed"} and layer.citations for layer in parsed.layers)
 
 
+def retrieval_available(*, vector_succeeded: bool, keyword_succeeded: bool) -> bool:
+    """A total retrieval outage is a failure, not a missing-knowledge fallback."""
+    return vector_succeeded or keyword_succeeded
+
+
 def merged_evidence_status(evidence_status: str, parsed: LayeredAnswer) -> str:
     """Record model_only when the answer carries no usable private-source citation."""
     if evidence_status == "error":
