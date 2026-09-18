@@ -50,6 +50,14 @@ class ChatPolicyTests(unittest.TestCase):
             "error",
         )
 
+    def test_chat_route_injects_profile_and_memory(self):
+        source = ROUTE_SOURCE.read_text(encoding="utf-8")
+
+        self.assertIn("LearnerProfileService", source)
+        self.assertIn("LearningMemoryService", source)
+        self.assertIn("format_profile_block", source)
+        self.assertIn("format_memory_block", source)
+
 
 if __name__ == "__main__":
     unittest.main()

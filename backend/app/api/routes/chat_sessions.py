@@ -180,6 +180,11 @@ async def create_summary_note(
     )
     db.add(note)
     await db.flush()
+    from app.services.learning_memory import remember_session_summary
+
+    await remember_session_summary(
+        db, user_id=current_user.id, session=session, content=note.content
+    )
     return {"id": note.id, "title": note.title, "content": note.content}
 
 

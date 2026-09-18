@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from typing import Any, Protocol
 
@@ -12,8 +12,11 @@ from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models.learning import LearningMemory
+from app.models.assessment import MistakeRecord
+from app.models.learning import KnowledgePoint, LearningMemory, QuizQuestion as QuestionModel
+from app.models.workspace import Workspace
 from app.services.hybrid_retrieval import build_fts_match_query, tokenize_for_search
+from app.services.learner_profile import invalidate_profile_cache
 
 MEMORY_KINDS = ("session_summary", "mistake_pattern", "preference", "insight", "manual")
 
@@ -430,3 +433,118 @@ class LearningMemoryService:
             memory.use_count += 1
             memory.last_used_at = now
         await self.db.flush()
+
+
+async def _owner_user_id(db: AsyncSession, workspace_id: str | None) -> str | None:
+    if not workspace_id:
+        return None
+    workspace = await db.get(Workspace, workspace_id)
+    return getattr(workspace, "owner_id", None)
+
+
+async def remember_session_summary(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    session,
+    content: str,
+    service: LearningMemoryService | None = None,
+) -> None:
+    """Best-effort session summary memory; never raises into the caller."""
+    try:
+        text_content = " ".join((content or "").split())
+        if not text_content:
+            return
+        writer = service or LearningMemoryService(db, user_id)
+        await writer.remember(
+            kind="session_summary",
+            title=getattr(session, "title", "") or "学习会话",
+            content=text_content[-800:],
+            workspace_id=getattr(session, "workspace_id", None),
+            source_refs={"session_id": getattr(session, "id", None)},
+        )
+        invalidate_profile_cache(user_id, getattr(session, "workspace_id", None))
+    except Exception as exc:
+        logger.warning("Session summary memory skipped: {}", exc)
+
+
+async def remember_mistake_pattern(
+    db: AsyncSession,
+    *,
+    workspace_id: str,
+    question_id: str,
+    user_id: str | None = None,
+    window_days: int = 30,
+    service: LearningMemoryService | None = None,
+) -> None:
+    """Store a pattern memory once a knowledge point has two recent mistakes."""
+    try:
+        owner = user_id or await _owner_user_id(db, workspace_id)
+        if not owner:
+            return
+        question = await db.get(QuestionModel, question_id)
+        if question is None or not question.knowledge_point_id:
+            return
+        since = datetime.now(timezone.utc) - timedelta(days=window_days)
+        count = int(
+            (
+                await db.execute(
+                    select(func.count(MistakeRecord.id)).where(
+                        MistakeRecord.knowledge_point_id == question.knowledge_point_id,
+                        MistakeRecord.workspace_id == workspace_id,
+                        MistakeRecord.last_wrong_at >= since,
+                    )
+                )
+            ).scalar()
+            or 0
+        )
+        if count < 2:
+            return
+        point = await db.get(KnowledgePoint, question.knowledge_point_id)
+        title = getattr(point, "title", "") or "未命名知识点"
+        record = (
+            await db.execute(
+                select(MistakeRecord).where(MistakeRecord.question_id == question.id)
+            )
+        ).scalar_one_or_none()
+        pattern = (getattr(record, "error_reason", None) or "").strip() or "答案类型或解题步骤出错"
+        writer = service or LearningMemoryService(db, owner)
+        await writer.remember(
+            kind="mistake_pattern",
+            title=f"{title} 的常见错误",
+            content=f"{title} 上「{pattern}」最近 {window_days} 天内出现 {count} 次。",
+            workspace_id=workspace_id,
+            source_refs={
+                "knowledge_point_id": question.knowledge_point_id,
+                "mistake_id": getattr(record, "id", None),
+            },
+        )
+        invalidate_profile_cache(owner, workspace_id)
+    except Exception as exc:
+        logger.warning("Mistake pattern memory skipped: {}", exc)
+
+
+async def remember_report_insight(
+    db: AsyncSession,
+    *,
+    user_id: str,
+    period_type: str,
+    suggestion: str,
+    workspace_id: str | None = None,
+    service: LearningMemoryService | None = None,
+) -> None:
+    """Best-effort report insight memory; never raises into the caller."""
+    try:
+        cleaned = " ".join((suggestion or "").split())
+        if not cleaned:
+            return
+        writer = service or LearningMemoryService(db, user_id)
+        await writer.remember(
+            kind="insight",
+            title=f"{period_type} 学习报告建议",
+            content=cleaned[:1500],
+            workspace_id=workspace_id,
+            source_refs={"origin": "report", "period_type": period_type},
+        )
+    except Exception as exc:
+        logger.warning("Report insight memory skipped: {}", exc)

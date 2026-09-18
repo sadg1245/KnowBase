@@ -13,6 +13,7 @@ from app.config import settings
 from app.models.assessment import LearningTask, MistakeRecord, WeakKnowledgeState
 from app.models.learning import KnowledgePoint, LearningGoal, StudyActivity
 from app.models.user import LearningPreference, User
+from app.models.workspace import Workspace
 from app.services.hybrid_retrieval import _search_tokens
 
 _CACHE: dict[tuple[str, str | None], tuple[float, "LearnerProfileSnapshot"]] = {}
@@ -70,6 +71,16 @@ def invalidate_profile_cache(user_id: str, workspace_id: str | None = None) -> N
         return
     _CACHE.pop((user_id, workspace_id), None)
     _CACHE.pop((user_id, None), None)
+
+
+async def invalidate_workspace_profile(db: AsyncSession, workspace_id: str | None) -> None:
+    """Resolve the workspace owner and drop that owner's cached snapshots."""
+    if not workspace_id:
+        return
+    workspace = await db.get(Workspace, workspace_id)
+    owner = getattr(workspace, "owner_id", None)
+    if owner:
+        invalidate_profile_cache(owner, workspace_id)
 
 
 def _relevance(question: str, titles: list[str]) -> list[float]:

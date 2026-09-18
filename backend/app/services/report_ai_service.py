@@ -174,6 +174,11 @@ async def generate_suggestion(
         row.generated_at = now
         row.error_message = None
         await db.commit()
+        from app.services.learning_memory import remember_report_insight
+
+        await remember_report_insight(
+            db, user_id=user_id, period_type=period_type, suggestion=row.suggestion
+        )
         return _view(row)
     except Exception as exc:
         row.status = "failed"

@@ -20,6 +20,8 @@ from app.models.workspace import Workspace
 from app.services.conversation_service import ConversationService
 from app.services.hybrid_retrieval import HybridRetrievalService, RetrievalCandidate
 from app.services.ownership import owned_workspace
+from app.services.learner_profile import LearnerProfileService, format_profile_block
+from app.services.learning_memory import LearningMemoryService, format_memory_block
 from app.services.learning_answer import build_follow_up_suggestions
 from app.services.learning_answer_service import (
     DETERMINISTIC_RETRIEVAL_ERROR,
@@ -348,12 +350,24 @@ async def chat(
     history_lines = [
         f"{item.role}：{item.content}" for item in history[-settings.CONVERSATION_HISTORY_LIMIT:]
     ]
+    profile = await LearnerProfileService(db, current_user.id).build(
+        workspace_id=payload.workspace_id, question=payload.question
+    )
+    profile_block = format_profile_block(profile)
+    memory_service = LearningMemoryService(db, current_user.id)
+    recall = await memory_service.recall(
+        question=payload.question, workspace_id=payload.workspace_id
+    )
+    memory_block = format_memory_block(recall.hits)
+    await memory_service.record_usage([hit.memory for hit in recall.hits])
+    await db.commit()
+
     full_prompt = build_learning_prompt(
         question=payload.question,
         mode=mode,
         context_blocks=context_chunks,
-        profile_block="",
-        memory_block="",
+        profile_block=profile_block,
+        memory_block=memory_block,
         history_lines=history_lines,
     )
     suggestions = build_follow_up_suggestions(payload.question, mode)
@@ -379,9 +393,9 @@ async def chat(
                     "top_score": round(retrieval.top_score, 4),
                     "answer_policy": "source_first",
                     "model_fallback": retrievers_ok and retrieval.evidence_status != "supported",
-                    "profile_injected": False,
-                    "memory_hits": [],
-                    "memory_degraded_reason": None,
+                    "profile_injected": bool(profile_block),
+                    "memory_hits": [hit.memory.id for hit in recall.hits],
+                    "memory_degraded_reason": recall.degraded_reason,
                 }
             })
 
@@ -426,8 +440,8 @@ async def chat(
                 follow_up_questions=suggestions,
                 generation_status="complete",
                 answer_policy="source_first",
-                used_memory_ids=[],
-                profile_summary=None,
+                used_memory_ids=[hit.memory.id for hit in recall.hits],
+                profile_summary=profile_block[:500],
             )
             await _persist_stream_message(db, assistant_msg)
             yield event({"sources": source_items})

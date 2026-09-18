@@ -151,6 +151,7 @@ async def update_profile(
 ) -> dict:
     preference = await _preferences(db, current_user)
     values = payload.model_dump(exclude_none=True)
+    previous_mode = preference.preferred_mode
     goal_fields = {key: value for key, value in values.items() if key in {
         "daily_goal_minutes", "daily_review_target", "weekly_goal_days", "timezone_name"
     }}
@@ -170,6 +171,20 @@ async def update_profile(
         setattr(preference, key, value)
     preference.updated_at = datetime.now(timezone.utc)
     await db.flush()
+    if preference.preferred_mode and preference.preferred_mode != previous_mode:
+        from loguru import logger
+
+        from app.services.learning_memory import LearningMemoryService
+
+        try:
+            await LearningMemoryService(db, current_user.id).remember(
+                kind="preference",
+                title="讲解偏好",
+                content=f"学习者把默认学习方式改成了 {preference.preferred_mode}。",
+                source_refs={"origin": "preference", "previous_mode": previous_mode or ""},
+            )
+        except Exception as exc:
+            logger.warning("Preference memory skipped: {}", exc)
     return _profile_payload(current_user, preference)
 
 

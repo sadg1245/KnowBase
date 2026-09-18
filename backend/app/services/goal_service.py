@@ -246,6 +246,9 @@ async def update_global_goals(
     preference.timezone_name = request.timezone_name
     preference.updated_at = now
     await db.flush()
+    from app.services.learner_profile import invalidate_profile_cache
+
+    invalidate_profile_cache(user_id)
     return await get_goals(db, now=now, user_id=user_id)
 
 
@@ -333,6 +336,9 @@ async def update_workspace_goal(
             goal.is_active = True
             await _record_change(db, goal, before, _goal_state(goal), now)
     await db.flush()
+    from app.services.learner_profile import invalidate_workspace_profile
+
+    await invalidate_workspace_profile(db, workspace_id)
     return await _progress(db, goal, now, preference.timezone_name)
 
 
@@ -353,4 +359,7 @@ async def delete_workspace_goal(
         await _record_change(db, goal, before, _goal_state(goal), now)
         await db.flush()
     preference = await get_or_create_preferences_by_id(db, user_id)
+    from app.services.learner_profile import invalidate_workspace_profile
+
+    await invalidate_workspace_profile(db, workspace_id)
     return await _progress(db, goal, now, preference.timezone_name)

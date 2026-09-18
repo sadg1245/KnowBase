@@ -941,6 +941,12 @@ async def _apply_grade_effects(db, question, attempt, *, is_redo, rebuild_mistak
             correct=bool(grade.is_correct),
             attempt=attempt,
         )
+        if not grade.is_correct:
+            from app.services.learning_memory import remember_mistake_pattern
+
+            await remember_mistake_pattern(
+                db, workspace_id=question.workspace_id, question_id=question.id
+            )
 
 
 async def _rebuild_mistake_projection(db, question, revised_attempt):

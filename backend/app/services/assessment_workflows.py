@@ -134,6 +134,9 @@ async def complete_task(db, task_id):
             if task.knowledge_point_id:
                 await recalculate_knowledge_point(db, task.knowledge_point_id)
             await db.commit()
+            from app.services.learner_profile import invalidate_workspace_profile
+
+            await invalidate_workspace_profile(db, task.workspace_id)
             return task
         except Exception:
             await db.rollback()

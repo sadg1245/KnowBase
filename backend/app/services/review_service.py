@@ -248,6 +248,9 @@ async def apply_card_review(
     if card.knowledge_point_id:
         state = await recalculate_knowledge_point(db, card.knowledge_point_id, reviewed_at)
         await upsert_weak_learning_tasks(db, state, reviewed_at)
+    from app.services.learner_profile import invalidate_profile_cache
+
+    invalidate_profile_cache(user_id, card.workspace_id)
     return {
         "previous_mastery": previous_mastery,
         "next_mastery": next_mastery,
