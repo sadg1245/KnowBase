@@ -16,7 +16,8 @@ from app.models.user import LearningPreference, User
 from app.models.workspace import Workspace
 from app.services.hybrid_retrieval import _search_tokens
 
-_CACHE: dict[tuple[str, str | None], tuple[float, "LearnerProfileSnapshot"]] = {}
+_CACHE: dict[tuple[str, str | None, tuple[str, ...]], tuple[float, "LearnerProfileSnapshot"]] = {}
+_CACHE_MAX_ENTRIES = 256
 _RECENT_WINDOW_DAYS = 14
 _ROW_BUDGET = 20
 
@@ -65,12 +66,25 @@ class LearnerProfileSnapshot:
 
 def invalidate_profile_cache(user_id: str, workspace_id: str | None = None) -> None:
     """Drop cached snapshots; called by writers that change learning evidence."""
-    if workspace_id is None:
-        for key in [key for key in _CACHE if key[0] == user_id]:
-            _CACHE.pop(key, None)
+    for key in [
+        key
+        for key in _CACHE
+        if key[0] == user_id
+        and (workspace_id is None or key[1] is None or key[1] == workspace_id)
+    ]:
+        _CACHE.pop(key, None)
+
+
+def _prune_cache(now: float) -> None:
+    """Evict expired snapshots so an idle user's entry does not stay resident forever."""
+    ttl = settings.PROFILE_CACHE_TTL_SECONDS
+    expired = [key for key, (stamp, _) in _CACHE.items() if now - stamp >= ttl]
+    for key in expired:
+        _CACHE.pop(key, None)
+    if len(_CACHE) <= _CACHE_MAX_ENTRIES:
         return
-    _CACHE.pop((user_id, workspace_id), None)
-    _CACHE.pop((user_id, None), None)
+    for key, _ in sorted(_CACHE.items(), key=lambda item: item[1][0])[: len(_CACHE) - _CACHE_MAX_ENTRIES]:
+        _CACHE.pop(key, None)
 
 
 async def invalidate_workspace_profile(db: AsyncSession, workspace_id: str | None) -> None:
@@ -122,17 +136,35 @@ class LearnerProfileService:
         self.db = db
         self.user_id = user_id
 
-    async def build(self, *, workspace_id: str | None, question: str) -> LearnerProfileSnapshot:
-        key = (self.user_id, workspace_id)
+    async def build(
+        self,
+        *,
+        workspace_id: str | None,
+        question: str,
+        owned_workspace_ids: list[str] | None = None,
+    ) -> LearnerProfileSnapshot:
+        """Build the snapshot, scoped to workspaces this caller actually owns.
+
+        ``workspace_id`` narrows the scope to one knowledge base; otherwise the scope is every
+        workspace in ``owned_workspace_ids``. An empty scope fails closed and returns no
+        workspace-derived rows, so a missing or forged id can never widen the query to other users.
+        """
+        scope = [workspace_id] if workspace_id else list(owned_workspace_ids or [])
+        key = (self.user_id, workspace_id, tuple(sorted(scope)))
         cached = _CACHE.get(key)
         now = time.monotonic()
         if cached and now - cached[0] < settings.PROFILE_CACHE_TTL_SECONDS:
             return cached[1]
-        snapshot = await self._build_snapshot(workspace_id=workspace_id, question=question)
+        snapshot = await self._build_snapshot(
+            workspace_id=workspace_id, question=question, scope=scope
+        )
+        _prune_cache(now)
         _CACHE[key] = (now, snapshot)
         return snapshot
 
-    async def _build_snapshot(self, *, workspace_id: str | None, question: str) -> LearnerProfileSnapshot:
+    async def _build_snapshot(
+        self, *, workspace_id: str | None, question: str, scope: list[str]
+    ) -> LearnerProfileSnapshot:
         user = await self.db.get(User, self.user_id)
         preference = (
             await self.db.execute(
@@ -148,7 +180,7 @@ class LearnerProfileService:
             )
         ).scalar_one_or_none()
 
-        point_filter = [KnowledgePoint.workspace_id == workspace_id] if workspace_id else []
+        point_filter = [KnowledgePoint.workspace_id.in_(scope)]
         points = list(
             (
                 await self.db.execute(
@@ -165,9 +197,7 @@ class LearnerProfileService:
             (
                 await self.db.execute(
                     select(WeakKnowledgeState)
-                    .where(*(
-                        [WeakKnowledgeState.workspace_id == workspace_id] if workspace_id else []
-                    ))
+                    .where(WeakKnowledgeState.workspace_id.in_(scope))
                     .order_by(WeakKnowledgeState.weakness_score.desc())
                     .limit(_ROW_BUDGET)
                 )
@@ -177,11 +207,11 @@ class LearnerProfileService:
         if missing_ids:
             extra = list(
                 (
-                    await self.db.execute(
-                        select(KnowledgePoint).where(KnowledgePoint.id.in_(missing_ids))
-                    )
-                ).scalars().all()
-            )
+                await self.db.execute(
+                    select(KnowledgePoint).where(KnowledgePoint.id.in_(missing_ids))
+                )
+            ).scalars().all()
+        )
             titles.update({point.id: point.title for point in extra})
 
         mistake_rows = list(
@@ -189,7 +219,7 @@ class LearnerProfileService:
                 await self.db.execute(
                     select(MistakeRecord)
                     .where(
-                        *([MistakeRecord.workspace_id == workspace_id] if workspace_id else []),
+                        MistakeRecord.workspace_id.in_(scope),
                         MistakeRecord.last_wrong_at
                         >= datetime.now(timezone.utc) - timedelta(days=_RECENT_WINDOW_DAYS),
                     )
@@ -204,7 +234,7 @@ class LearnerProfileService:
                     select(LearningTask)
                     .where(
                         LearningTask.status == "pending",
-                        *([LearningTask.workspace_id == workspace_id] if workspace_id else []),
+                        LearningTask.workspace_id.in_(scope),
                     )
                     .order_by(LearningTask.priority.desc())
                     .limit(_ROW_BUDGET)

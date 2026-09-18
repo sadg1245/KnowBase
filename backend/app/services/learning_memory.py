@@ -44,7 +44,13 @@ class ChromaMemoryVectorStore:
     def _collection(self):
         from app.core.chroma import get_chroma_client
 
-        return get_chroma_client().get_or_create_collection(name=self.collection_name)
+        # Cosine space so ``1 - distance`` is a true similarity: the dedup threshold is expressed as
+        # a cosine similarity (settings.MEMORY_DEDUP_SIMILARITY) and the in-memory test doubles score
+        # the same way. The document path keeps Chroma's L2 default and is unaffected.
+        return get_chroma_client().get_or_create_collection(
+            name=self.collection_name,
+            metadata={"hnsw:space": "cosine"},
+        )
 
     def upsert(self, *, memory_id: str, embedding: list[float], metadata: dict, document: str) -> None:
         self._collection().upsert(

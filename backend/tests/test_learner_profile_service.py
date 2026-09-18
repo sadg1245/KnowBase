@@ -133,6 +133,48 @@ class LearnerProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("不是资料证据", block)
         self.assertNotIn("[资料", block)
 
+    async def test_profile_without_workspace_never_reads_other_users(self):
+        mine = await self._weak_point("闭包", 0.45, 72)
+        other_user = await create_user(self.db, display_name="别人")
+        other_workspace = await create_workspace(
+            self.db, other_user, name="别人的库", slug="profile-other"
+        )
+        other_point = KnowledgePoint(
+            workspace_id=other_workspace.id, title="闭包也是别人的", mastery=0.2
+        )
+        self.db.add(other_point)
+        await self.db.flush()
+        self.db.add(WeakKnowledgeState(
+            knowledge_point_id=other_point.id,
+            workspace_id=other_workspace.id,
+            weakness_score=95.0,
+            evidence={"reason": "别人的薄弱点"},
+        ))
+        await self.db.flush()
+
+        snapshot = await learner_profile.LearnerProfileService(self.db, self.user.id).build(
+            workspace_id=None,
+            question="闭包",
+            owned_workspace_ids=[self.workspace.id],
+        )
+
+        self.assertEqual(
+            [point.knowledge_point_id for point in snapshot.weak_points], [mine.id]
+        )
+        self.assertNotIn(other_point.id, [point.knowledge_point_id for point in snapshot.mastery])
+
+    async def test_profile_fails_closed_without_an_owned_scope(self):
+        await self._weak_point("闭包", 0.45, 72)
+
+        snapshot = await learner_profile.LearnerProfileService(self.db, self.user.id).build(
+            workspace_id=None, question="闭包", owned_workspace_ids=[]
+        )
+
+        self.assertEqual(snapshot.weak_points, [])
+        self.assertEqual(snapshot.mastery, [])
+        self.assertEqual(snapshot.common_mistakes, [])
+        self.assertEqual(snapshot.next_actions, [])
+
 
 if __name__ == "__main__":
     unittest.main()

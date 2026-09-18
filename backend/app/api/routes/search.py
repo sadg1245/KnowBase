@@ -351,7 +351,9 @@ async def chat(
         f"{item.role}：{item.content}" for item in history[-settings.CONVERSATION_HISTORY_LIMIT:]
     ]
     profile = await LearnerProfileService(db, current_user.id).build(
-        workspace_id=payload.workspace_id, question=payload.question
+        workspace_id=payload.workspace_id,
+        question=payload.question,
+        owned_workspace_ids=owned_ids,
     )
     profile_block = format_profile_block(profile)
     memory_service = LearningMemoryService(db, current_user.id)
