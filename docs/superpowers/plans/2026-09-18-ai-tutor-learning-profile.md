@@ -105,7 +105,8 @@
 - Produces: `LayeredAnswer(layers, content, answer_layers, invalid_citations, unstructured)`。
 - Produces: `parse_layered_answer(text: str, source_count: int) -> LayeredAnswer`。
 - Produces: `sources_layer_empty(parsed: LayeredAnswer) -> bool`。
-- Produces: `merged_evidence_status(evidence_status: str, parsed: LayeredAnswer) -> str`。
+- Produces: `merged_evidence_status(evidence_status: str, parsed: LayeredAnswer, *, retrievers_ok: bool = True) -> str`
+  （实现阶段补入 `retrievers_ok`：检索器整体故障时先返回 `error`，避免把中断记录成 `model_only`）。
 - Produces: `build_learning_prompt(*, question, mode, context_blocks, profile_block="", memory_block="", history_lines=None) -> str`。
 - Produces: `deterministic_empty_answer() -> str`、`DETERMINISTIC_RETRIEVAL_ERROR: str`。
 
@@ -308,9 +309,11 @@ def sources_layer_empty(parsed: LayeredAnswer) -> bool:
     return not any(layer.key in {"sources", "mixed"} and layer.citations for layer in parsed.layers)
 
 
-def merged_evidence_status(evidence_status: str, parsed: LayeredAnswer) -> str:
-    """Record model_only when the answer carries no usable private-source citation."""
-    if evidence_status == "error":
+def merged_evidence_status(
+    evidence_status: str, parsed: LayeredAnswer, *, retrievers_ok: bool = True
+) -> str:
+    """Record an outage as error, and model_only when no source citation survived."""
+    if not retrievers_ok or evidence_status == "error":
         return "error"
     if sources_layer_empty(parsed):
         return "model_only"
@@ -449,6 +452,9 @@ git commit -m "feat: add source-first answer layering and tutor prompt assembly"
 - Create: `backend/alembic/versions/0003_ai_tutor_memory.py`
 - Create: `backend/tests/test_phase_seven_models.py`
 - Modify: `backend/tests/test_chat_architecture.py`
+- Modify: `backend/tests/test_phase_one_migrations.py`、`backend/tests/test_local_app_mode.py`、
+  `backend/tests/test_phase_one_startup.py`：这三处断言"引导结束于迁移 head"，revision 0003 移动了 head，
+  需要把字面量从 `0002_account_foundation` 更新为 `0003_ai_tutor_memory`。
 
 **Interfaces:**
 - Produces: ORM 模型 `LearningMemory`，表名 `learning_memories`。
@@ -457,7 +463,7 @@ git commit -m "feat: add source-first answer layering and tutor prompt assembly"
 - Produces: 配置项 `MEMORY_RECALL_K=8`、`MEMORY_SELECTED_K=5`、`PROFILE_CACHE_TTL_SECONDS=30`、`MEMORY_DEDUP_SIMILARITY=0.92`、`MEMORY_MAX_CONTENT_LENGTH=2000`。
 - Consumes: 无。
 
-- [ ] **Step 1: 写失败的模型与迁移测试**
+- [x] **Step 1: 写失败的模型与迁移测试**
 
 创建 `backend/tests/test_phase_seven_models.py`：
 
@@ -531,12 +537,12 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `$env:PYTHONPATH="backend"; & ".\.venv\Scripts\python.exe" -m pytest backend/tests/test_phase_seven_models.py -q`
 Expected: FAIL，`ImportError: cannot import name 'MEMORY_FTS_STATEMENTS'`
 
-- [ ] **Step 3: 新增模型与配置**
+- [x] **Step 3: 新增模型与配置**
 
 在 `backend/app/models/learning.py` 末尾追加（沿用文件内已有的 `_uuid`、`_now` 与导入）：
 
@@ -588,7 +594,7 @@ class LearningMemory(Base):
     PROFILE_MAX_MISTAKES: int = 3
 ```
 
-- [ ] **Step 4: 新增 SQLite FTS 引导**
+- [x] **Step 4: 新增 SQLite FTS 引导**
 
 在 `backend/app/core/migrations.py` 的 `FTS_STATEMENTS` 之后追加：
 
@@ -641,7 +647,7 @@ async def ensure_memory_index(conn) -> bool:
         await ensure_memory_index(conn)
 ```
 
-- [ ] **Step 5: 写 Alembic 迁移**
+- [x] **Step 5: 写 Alembic 迁移**
 
 创建 `backend/alembic/versions/0003_ai_tutor_memory.py`：
 
@@ -730,7 +736,7 @@ def downgrade() -> None:
         op.drop_table("learning_memories")
 ```
 
-- [ ] **Step 6: 扩充既有架构测试并运行**
+- [x] **Step 6: 扩充既有架构测试并运行**
 
 在 `backend/tests/test_chat_architecture.py` 的 `test_messages_keep_session_and_evidence_metadata` 中，把断言列名改成：
 
@@ -749,7 +755,7 @@ def downgrade() -> None:
 Run: `$env:PYTHONPATH="backend"; & ".\.venv\Scripts\python.exe" -m pytest backend/tests/test_phase_seven_models.py backend/tests/test_chat_architecture.py backend/tests/test_phase_one_migrations.py -q`
 Expected: PASS
 
-- [ ] **Step 7: 在隔离数据库上验证迁移可升级可降级**
+- [x] **Step 7: 在隔离数据库上验证迁移可升级可降级**
 
 不要对开发数据库试迁移。用临时库验证：
 
@@ -766,7 +772,7 @@ cd ..
 Expected: 升级输出包含 `Running upgrade 0002_account_foundation -> 0003_ai_tutor_memory`；降级输出包含
 `Running downgrade 0003_ai_tutor_memory -> 0002_account_foundation`；两次退出码均为 0。
 
-- [ ] **Step 8: 提交**
+- [x] **Step 8: 提交**
 
 ```bash
 git add backend/app/models/learning.py backend/app/models/conversation.py backend/app/models/__init__.py backend/app/core/migrations.py backend/app/main.py backend/app/config.py backend/alembic/versions/0003_ai_tutor_memory.py backend/tests/test_phase_seven_models.py backend/tests/test_chat_architecture.py
@@ -781,6 +787,7 @@ git commit -m "feat: persist learning memories and tutor diagnostics"
 - Modify: `backend/app/api/routes/search.py`
 - Modify: `backend/app/services/learning_answer.py`
 - Modify: `backend/tests/test_learning_answer.py`
+- Modify: `backend/tests/test_regressions.py`：删除依赖已移除的严格模式辅助函数的断言。
 - Create: `backend/tests/test_chat_policy.py`
 
 **Interfaces:**
@@ -790,7 +797,7 @@ git commit -m "feat: persist learning memories and tutor diagnostics"
 - Produces: SSE `replace` 事件（清洗后正文）与 `done.answer_layers`。
 - Produces: 助手消息持久化 `answer_policy="source_first"`。
 
-- [ ] **Step 1: 写失败的策略契约测试**
+- [x] **Step 1: 写失败的策略契约测试**
 
 创建 `backend/tests/test_chat_policy.py`：
 
@@ -838,12 +845,12 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `$env:PYTHONPATH="backend"; & ".\.venv\Scripts\python.exe" -m pytest backend/tests/test_chat_policy.py -q`
 Expected: FAIL，`AttributeError: module 'app.services.learning_answer_service' has no attribute 'retrieval_available'`
 
-- [ ] **Step 3: 在装配模块补一个检索可用性判定**
+- [x] **Step 3: 在装配模块补一个检索可用性判定**
 
 在 `backend/app/services/learning_answer_service.py` 的 `merged_evidence_status` 之前插入：
 
@@ -853,7 +860,7 @@ def retrieval_available(*, vector_succeeded: bool, keyword_succeeded: bool) -> b
     return vector_succeeded or keyword_succeeded
 ```
 
-- [ ] **Step 4: 改为分层回答并移除严格模式分支**
+- [x] **Step 4: 改为分层回答并移除严格模式分支**
 
 在 `backend/app/api/routes/search.py` 中：
 
@@ -890,6 +897,10 @@ from app.services.learning_answer_service import (
 3. 把 `evidence` 事件替换为（画像与记忆字段在 Task 6 填充）：
 
 ```python
+            retrievers_ok = retrieval_available(
+                vector_succeeded=retrieval.vector_succeeded,
+                keyword_succeeded=retrieval.keyword_succeeded,
+            )
             yield event({
                 "evidence": {
                     "status": retrieval.evidence_status,
@@ -898,7 +909,7 @@ from app.services.learning_answer_service import (
                     "degradation_reason": retrieval.degradation_reason,
                     "top_score": round(retrieval.top_score, 4),
                     "answer_policy": "source_first",
-                    "model_fallback": retrieval.evidence_status != "supported",
+                    "model_fallback": retrievers_ok and retrieval.evidence_status != "supported",
                     "profile_injected": False,
                     "memory_hits": [],
                     "memory_degraded_reason": None,
@@ -909,10 +920,6 @@ from app.services.learning_answer_service import (
 4. 把「严格模式 / 非严格模式」两个分支替换为单一分支：
 
 ```python
-            retrievers_ok = retrieval_available(
-                vector_succeeded=retrieval.vector_succeeded,
-                keyword_succeeded=retrieval.keyword_succeeded,
-            )
             if not retrievers_ok:
                 streamed = DETERMINISTIC_RETRIEVAL_ERROR
                 yield event({"token": streamed})
@@ -936,7 +943,9 @@ from app.services.learning_answer_service import (
                 if parsed.content != streamed.strip():
                     yield event({"replace": parsed.content})
             full_answer = parsed.content
-            answer_status = merged_evidence_status(retrieval.evidence_status, parsed)
+            answer_status = merged_evidence_status(
+                retrieval.evidence_status, parsed, retrievers_ok=retrievers_ok
+            )
 ```
 
 5. 把助手消息构造中的 `evidence_status=retrieval.evidence_status` 改为 `evidence_status=answer_status`，并新增：
@@ -963,7 +972,7 @@ from app.services.learning_answer_service import (
 
 7. 异常分支里 `evidence_status="error"` 保持不变，并补 `answer_policy="source_first"`。
 
-- [ ] **Step 5: 精简 learning_answer 模块并重写既有测试**
+- [x] **Step 5: 精简 learning_answer 模块并重写既有测试**
 
 把 `backend/app/services/learning_answer.py` 精简为只保留 `build_follow_up_suggestions`（删除 `answer_requires_model`、`strict_refusal`、`filter_strict_answer` 及其 `re` 用法中不再需要的部分）。
 
@@ -990,12 +999,12 @@ from app.services.learning_answer_service import (
         self.assertEqual(len(module.build_follow_up_suggestions("问题", "unknown")), 3)
 ```
 
-- [ ] **Step 6: 运行策略与回归测试**
+- [x] **Step 6: 运行策略与回归测试**
 
 Run: `$env:PYTHONPATH="backend"; & ".\.venv\Scripts\python.exe" -m pytest backend/tests/test_chat_policy.py backend/tests/test_learning_answer.py backend/tests/test_learning_answer_policy.py backend/tests/test_conversation_service.py backend/tests/test_chat_architecture.py -q`
 Expected: PASS
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add backend/app/api/routes/search.py backend/app/services/learning_answer.py backend/app/services/learning_answer_service.py backend/tests/test_chat_policy.py backend/tests/test_learning_answer.py
