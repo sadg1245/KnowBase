@@ -206,3 +206,9 @@ def get_embedding_service() -> EmbeddingService:
         model_name=model_name,
     )
     return _embedding_service_instance
+
+
+def reset_embedding_service() -> None:
+    """Drop the cached service so tests and settings changes can rebuild it."""
+    global _embedding_service_instance
+    _embedding_service_instance = None

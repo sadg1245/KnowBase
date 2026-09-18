@@ -3,7 +3,7 @@
 import json
 import time
 import uuid
-from functools import lru_cache, partial
+from functools import partial
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db, get_settings
 from app.config import Settings
+from app.core.embedding import get_embedding_service
 from app.models.conversation import Conversation
 from app.models.user import User
 from app.models.workspace import Workspace
@@ -95,29 +96,6 @@ def _get_chroma_client():
         ) from exc
 
 
-@lru_cache(maxsize=1)
-def _get_embedding_function():
-    """返回嵌入函数，优先使用 sentence-transformers。"""
-    try:
-        from sentence_transformers import SentenceTransformer
-
-        settings = get_settings()
-
-        model = SentenceTransformer(settings.DEFAULT_EMBEDDING)
-
-        def embed(texts: list[str]) -> list[list[float]]:
-            embeddings = model.encode(texts, normalize_embeddings=True)
-            return embeddings.tolist()
-
-        return embed
-    except Exception as exc:
-        logger.error("Embedding model is unavailable: {}", exc)
-        raise HTTPException(
-            status_code=503,
-            detail=f"Embedding model is unavailable: {exc}",
-        ) from exc
-
-
 async def _call_llm_streaming(prompt: str, settings: Settings):
     """通过 litellm 调用配置的 LLM 并以 SSE 分块方式生成响应。"""
     try:
@@ -196,8 +174,7 @@ async def _vector_recall(
     owned_workspace_ids: list[str] | None = None,
 ) -> list[dict]:
     """Return vector candidates in the same shape used by hybrid retrieval."""
-    embed_fn = _get_embedding_function()
-    query_embedding = embed_fn([query])[0]
+    query_embedding = await get_embedding_service().embed_query(query)
     chroma_client = _get_chroma_client()
     if workspace_id:
         collection_names = [f"ws_{workspace_id}".replace("-", "_")]
