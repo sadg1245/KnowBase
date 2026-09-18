@@ -111,7 +111,7 @@ KnowBase 是一个自托管的私人知识数据库，核心理念是 **"你的�
 
 **核心能力：**
 
-- 支持 9 种文档格式导入（PDF、DOCX、PPTX、Markdown、TXT、XLSX、CSV、HTML、DOC）
+- 支持 9 类文档格式导入（PDF、DOCX、PPTX、Markdown/RST、TXT、XLSX、CSV、HTML、JSON/XML/YAML）
 - 飞书机器人 WebSocket 长连接，无需公网 IP，本地即可运行
 - 多模型 LLM 灵活切换（DeepSeek、OpenAI、通义千问、智谱 GLM、Ollama 本地模型）
 - 中文优化的 Embedding 模型（BGE-small-zh），检索精度高

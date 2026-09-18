@@ -13,6 +13,7 @@ from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db, get_settings
+from app.collector.pipeline import supported_file_types
 from app.config import Settings
 from app.core.tags import TagValidationError, normalize_tags
 from app.models.document import Document
@@ -33,25 +34,8 @@ from app.services.ownership import owned_document, owned_workspace
 
 router = APIRouter(tags=["documents"])
 
-# 允许上传的文件扩展名
-ALLOWED_EXTENSIONS: set[str] = {
-    # 文档
-    ".pdf",
-    ".docx",
-    ".pptx",
-    ".xlsx",
-    ".csv",
-    ".txt",
-    ".md",
-    ".rst",
-    # 标记语言 / 代码
-    ".html",
-    ".htm",
-    ".json",
-    ".xml",
-    ".yaml",
-    ".yml",
-}
+# 允许上传的文件扩展名：唯一来源是解析器工厂，避免"上传成功但解析必然失败"
+ALLOWED_EXTENSIONS: set[str] = {f".{name}" for name in supported_file_types()}
 
 
 def _validate_extension(filename: str) -> str:

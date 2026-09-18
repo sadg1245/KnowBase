@@ -30,7 +30,21 @@ _FILE_TYPE_MAP: dict[str, str] = {
     "csv": "csv",
     "html": "html",
     "htm": "html",
+    "rst": "md",
+    "json": "txt",
+    "xml": "txt",
+    "yaml": "txt",
+    "yml": "txt",
 }
+
+
+def supported_file_types() -> set[str]:
+    """Return every file type the parser factory can handle.
+
+    This is the single source of truth for the upload whitelist, so an
+    extension can never be accepted for upload and then fail to parse.
+    """
+    return set(_FILE_TYPE_MAP)
 
 
 # =========================================================================
