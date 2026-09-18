@@ -246,3 +246,27 @@ class ReportSuggestion(Base):
     generated_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now(), onupdate=_now)
+
+
+class LearningMemory(Base):
+    __tablename__ = "learning_memories"
+    __table_args__ = (
+        Index("ix_learning_memories_user_workspace", "user_id", "workspace_id"),
+        Index("ix_learning_memories_user_kind", "user_id", "kind", "is_active"),
+    )
+
+    id = Column(String(36), primary_key=True, default=_uuid)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="SET NULL"), nullable=True, index=True)
+    kind = Column(String(30), nullable=False, index=True)
+    title = Column(String(255), nullable=False)
+    content = Column(Text, nullable=False)
+    tokenized_content = Column(Text, nullable=False, default="")
+    source_refs = Column(JSON, nullable=False, default=dict)
+    importance = Column(Float, nullable=False, default=0.5)
+    is_active = Column(Boolean, nullable=False, default=True, index=True)
+    embedding_state = Column(String(20), nullable=False, default="pending")
+    last_used_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    use_count = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now(), onupdate=_now)

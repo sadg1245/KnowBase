@@ -8,6 +8,7 @@ from app.models.learning import (
     Flashcard,
     KnowledgePoint,
     LearningGoal,
+    LearningMemory,
     QuizQuestion,
     ReportSuggestion,
     ReviewLog,
@@ -29,5 +30,6 @@ __all__ = [
     "Conversation", "ChatSession", "LearningNote", "ChatFeedback", "DocumentChunk", "RetrievalRun", "RetrievalHit",
     "KnowledgePoint", "Flashcard", "ReviewLog", "QuizQuestion", "StudyActivity",
     "StudySession", "LearningGoal", "ReportSuggestion",
+    "LearningMemory",
     "QuizSet", "QuizRun", "QuizAttempt", "MistakeRecord", "WeakKnowledgeState", "LearningTask",
 ]

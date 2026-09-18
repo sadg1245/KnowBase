@@ -224,7 +224,7 @@ class UpgradeBackupTests(unittest.IsolatedAsyncioTestCase):
         report = await ensure_database_ready(self.database_url, backup_dir=self.backup_dir)
 
         self.assertEqual(report.action, "legacy")
-        self.assertEqual(report.revision, "0002_account_foundation")
+        self.assertEqual(report.revision, "0003_ai_tutor_memory")
         self.assertIsNotNone(report.backup_path)
         self.assertTrue(os.path.isfile(report.backup_path))
 

@@ -154,7 +154,7 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
 
         report = await ensure_database_ready("sqlite+aiosqlite:///" + path)
         self.assertEqual(report.action, "legacy")
-        self.assertEqual(report.revision, "0002_account_foundation")
+        self.assertEqual(report.revision, "0003_ai_tutor_memory")
 
         self.assertEqual(_table_counts(path, tuple(before)), before)
         connection = sqlite3.connect(path)

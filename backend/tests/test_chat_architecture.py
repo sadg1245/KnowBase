@@ -41,7 +41,15 @@ class ChatArchitectureTests(unittest.TestCase):
     def test_messages_keep_session_and_evidence_metadata(self):
         columns = Base.metadata.tables["conversations"].columns
 
-        for name in ("session_id", "mode", "evidence_status", "retrieval_run_id"):
+        for name in (
+            "session_id",
+            "mode",
+            "evidence_status",
+            "retrieval_run_id",
+            "answer_policy",
+            "used_memory_ids",
+            "profile_summary",
+        ):
             with self.subTest(column=name):
                 self.assertIn(name, columns)
 

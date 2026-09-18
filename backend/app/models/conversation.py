@@ -49,6 +49,9 @@ class Conversation(Base):
     )
     follow_up_questions = Column(JSON, nullable=False, default=list)
     generation_status = Column(String(20), nullable=False, default="complete")
+    answer_policy = Column(String(20), nullable=True)
+    used_memory_ids = Column(JSON, nullable=False, default=list)
+    profile_summary = Column(String(500), nullable=True)
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,

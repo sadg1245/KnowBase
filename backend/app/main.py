@@ -18,7 +18,7 @@ from app.core.auth import decode_token
 from app.core.chroma import initialize_chroma_client
 from app.core.db_bootstrap import ensure_database_ready
 from app.core.media import resolve_media_path
-from app.core.migrations import ensure_search_index
+from app.core.migrations import ensure_memory_index, ensure_search_index
 from app.core.secrets_store import resolve_jwt_secret
 from app.services.hybrid_retrieval import backfill_keyword_index
 import app.models  # noqa: F401 - register every ORM model before create_all
@@ -66,6 +66,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Database bootstrap action='{}' revision='{}'.", report.action, report.revision)
     async with engine.begin() as conn:
         await ensure_search_index(conn)
+        await ensure_memory_index(conn)
 
     # 向量库：默认嵌入模式，不依赖外部服务；不可用时不阻断启动
     chroma_client = initialize_chroma_client(settings)

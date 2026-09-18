@@ -68,6 +68,15 @@ class Settings(BaseSettings):
     RAG_SECOND_THRESHOLD: float = 0.45
     RAG_LIMITED_THRESHOLD: float = 0.42
 
+    # AI 导师画像与长期记忆
+    MEMORY_RECALL_K: int = 8
+    MEMORY_SELECTED_K: int = 5
+    MEMORY_DEDUP_SIMILARITY: float = 0.92
+    MEMORY_MAX_CONTENT_LENGTH: int = 2000
+    PROFILE_CACHE_TTL_SECONDS: int = 30
+    PROFILE_MAX_KNOWLEDGE_POINTS: int = 5
+    PROFILE_MAX_MISTAKES: int = 3
+
     # LLM 默认配置
     DEFAULT_LLM_PROVIDER: str = "deepseek"
     DEFAULT_LLM_MODEL: str = "deepseek-chat"

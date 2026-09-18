@@ -43,6 +43,48 @@ FTS_STATEMENTS: tuple[str, ...] = (
 )
 
 
+MEMORY_FTS_STATEMENTS: tuple[str, ...] = (
+    """
+    CREATE VIRTUAL TABLE IF NOT EXISTS learning_memories_fts USING fts5(
+        tokenized_content, title,
+        content='learning_memories', content_rowid='rowid')
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS learning_memories_fts_insert AFTER INSERT ON learning_memories BEGIN
+        INSERT INTO learning_memories_fts(rowid, tokenized_content, title)
+        VALUES (new.rowid, new.tokenized_content, new.title);
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS learning_memories_fts_delete AFTER DELETE ON learning_memories BEGIN
+        INSERT INTO learning_memories_fts(learning_memories_fts, rowid, tokenized_content, title)
+        VALUES ('delete', old.rowid, old.tokenized_content, old.title);
+    END
+    """,
+    """
+    CREATE TRIGGER IF NOT EXISTS learning_memories_fts_update AFTER UPDATE ON learning_memories BEGIN
+        INSERT INTO learning_memories_fts(learning_memories_fts, rowid, tokenized_content, title)
+        VALUES ('delete', old.rowid, old.tokenized_content, old.title);
+        INSERT INTO learning_memories_fts(rowid, tokenized_content, title)
+        VALUES (new.rowid, new.tokenized_content, new.title);
+    END
+    """,
+)
+
+
+async def ensure_memory_index(conn) -> bool:
+    """幂等地建立学习记忆的关键词索引；非 SQLite 方言直接跳过。"""
+    if conn.dialect.name != "sqlite":
+        return False
+    try:
+        for statement in MEMORY_FTS_STATEMENTS:
+            await conn.execute(text(statement))
+    except Exception as exc:
+        logger.warning("Memory keyword index unavailable: {}", exc)
+        return False
+    return True
+
+
 async def ensure_search_index(conn) -> bool:
     """幂等地建立 SQLite 关键词检索索引；非 SQLite 方言直接跳过。"""
     if conn.dialect.name != "sqlite":
