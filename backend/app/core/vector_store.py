@@ -10,6 +10,14 @@ from typing import Optional
 
 from loguru import logger
 
+COSINE_SPACE = "cosine"
+
+
+def describe_collection_space(collection) -> str | None:
+    """Return the collection's HNSW space, or None when ChromaDB would default to l2."""
+    metadata = getattr(collection, "metadata", None) or {}
+    return metadata.get("hnsw:space")
+
 
 # ---------------------------------------------------------------------------
 # 工厂函数
@@ -36,18 +44,20 @@ def get_vector_store() -> "VectorStore":
 class VectorStore:
     """基于 ChromaDB 的向量存储"""
 
-    def __init__(self, host: str = "local", port: int = 8000):
+    def __init__(self, host: str = "local", port: int = 8000, client=None):
         """
         初始化 VectorStore。
 
         Args:
             host: ChromaDB 服务器地址，"local" 表示使用本地持久化模式
             port: ChromaDB 服务器端口（仅远程模式有效）
+            client: 已构造的 ChromaDB 客户端；提供时跳过后端连接（测试与嵌入式场景）
         """
         self.host = host
         self.port = port
-        self._client = None
-        self._connect()
+        self._client = client
+        if self._client is None:
+            self._connect()
 
     def _connect(self):
         """建立与 ChromaDB 的连接"""
@@ -99,13 +109,22 @@ class VectorStore:
         try:
             collection = self._client.get_or_create_collection(
                 name=collection_name,
-                metadata={"workspace_id": workspace_id, "created_at": time.time()},
+                metadata={
+                    "hnsw:space": COSINE_SPACE,
+                    "workspace_id": workspace_id,
+                    "created_at": time.time(),
+                },
             )
             logger.debug(f"获取/创建 collection: {collection_name}")
             return collection
         except Exception as e:
             logger.error(f"创建 collection 失败 [{collection_name}]: {e}")
             raise
+
+    def describe_space(self, workspace_id: str) -> str | None:
+        """Report the live HNSW space so legacy L2 collections can be detected."""
+        collection = self._client.get_collection(name=self._get_collection_name(workspace_id))
+        return describe_collection_space(collection)
 
     async def add_documents(
         self,
