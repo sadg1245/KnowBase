@@ -4,6 +4,8 @@ import csv
 import io
 import json
 import os
+import time
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
@@ -430,6 +432,30 @@ class DocumentPipeline:
     # 主入口
     # ------------------------------------------------------------------ #
 
+    @asynccontextmanager
+    async def _stage(self, db_session: Any, document_id: str, node: str):
+        """Record one ingestion node as a durable audit row."""
+        from app.models.pipeline import DocumentPipelineEvent
+
+        started = time.perf_counter()
+        event = DocumentPipelineEvent(
+            document_id=document_id, node=node, status="started"
+        )
+        db_session.add(event)
+        await db_session.flush()
+        try:
+            yield
+        except Exception as exc:
+            event.status = "failed"
+            event.detail = str(exc)[:1000]
+            raise
+        else:
+            event.status = "succeeded"
+        finally:
+            event.finished_at = datetime.now(timezone.utc)
+            event.duration_ms = int((time.perf_counter() - started) * 1000)
+            await db_session.flush()
+
     async def process_document(
         self,
         document_id: str,
@@ -477,105 +503,123 @@ class DocumentPipeline:
                 logger.warning("Could not resolve original filename for {}: {}", document_id, exc)
 
             # 2. 解析
-            parser = self._get_parser(file_type)
-            raw_chunks = parser.parse(file_path)
-            logger.info(
-                "Parsed {} raw chunks from document {}.", len(raw_chunks), document_id,
-            )
-
-            parsed_count = len(raw_chunks)
-            raw_chunks = filter_learning_content(raw_chunks)
-            if len(raw_chunks) != parsed_count:
+            async with self._stage(db_session, document_id, "parsing"):
+                await self._update_document_status(
+                    db_session, document_id, pipeline_stage="parsing",
+                )
+                parser = self._get_parser(file_type)
+                raw_chunks = parser.parse(file_path)
                 logger.info(
-                    "Body boundary filter kept {} of {} parsed chunks for document {}.",
-                    len(raw_chunks), parsed_count, document_id,
+                    "Parsed {} raw chunks from document {}.", len(raw_chunks), document_id,
                 )
 
-            if not raw_chunks:
+                parsed_count = len(raw_chunks)
+                raw_chunks = filter_learning_content(raw_chunks)
+                if len(raw_chunks) != parsed_count:
+                    logger.info(
+                        "Body boundary filter kept {} of {} parsed chunks for document {}.",
+                        len(raw_chunks), parsed_count, document_id,
+                    )
+
+                if not raw_chunks:
+                    await self.vector_store.replace_document(
+                        workspace_id=workspace_id,
+                        document_id=document_id,
+                        doc_ids=[],
+                        texts=[],
+                        embeddings=[],
+                        metadatas=[],
+                    )
+                    from app.services.hybrid_retrieval import upsert_document_chunks
+                    await upsert_document_chunks(
+                        db_session,
+                        workspace_id,
+                        document_id,
+                        original_filename,
+                        [],
+                    )
+                    await self._update_document_status(
+                        db_session, document_id,
+                        status="ready", pipeline_stage="ready",
+                        chunk_count=0, error_message=None,
+                        processed_at=datetime.now(timezone.utc),
+                    )
+                    return {
+                        "chunks_count": 0,
+                        "embedding_count": 0,
+                        "status": "ready",
+                    }
+
+            # 3. 拆分为最优大小
+            async with self._stage(db_session, document_id, "chunking"):
+                await self._update_document_status(
+                    db_session, document_id, pipeline_stage="chunking",
+                )
+                split_chunks: list[dict[str, Any]] = self.text_splitter.split_documents(
+                    raw_chunks,
+                )
+                logger.info(
+                    "Text splitter produced {} chunks from document {}.",
+                    len(split_chunks), document_id,
+                )
+
+            # 4. 批量嵌入
+            async with self._stage(db_session, document_id, "embedding"):
+                await self._update_document_status(
+                    db_session, document_id, pipeline_stage="embedding",
+                )
+                texts = [chunk["content"] for chunk in split_chunks]
+                embeddings = await self.embedding_service.embed_texts(texts)
+                logger.info(
+                    "Generated {} embeddings for document {}.", len(embeddings), document_id,
+                )
+
+            # 5. 存储到向量存储
+            async with self._stage(db_session, document_id, "indexing"):
+                await self._update_document_status(
+                    db_session, document_id, pipeline_stage="indexing",
+                )
+                metadatas: list[dict[str, Any]] = []
+                for idx, chunk in enumerate(split_chunks):
+                    meta = dict(chunk.get("metadata", {}))
+                    meta["source_file"] = original_filename
+                    meta["doc_id"] = document_id
+                    meta["workspace_id"] = workspace_id
+                    meta["chunk_index"] = idx
+                    meta["section_path"] = json.dumps(
+                        meta.get("section_path") or [],
+                        ensure_ascii=False,
+                    )
+                    metadatas.append(meta)
+
+                doc_ids = [f"{document_id}_chunk_{idx}" for idx in range(len(texts))]
                 await self.vector_store.replace_document(
                     workspace_id=workspace_id,
                     document_id=document_id,
-                    doc_ids=[],
-                    texts=[],
-                    embeddings=[],
-                    metadatas=[],
+                    doc_ids=doc_ids,
+                    texts=texts,
+                    embeddings=embeddings,
+                    metadatas=metadatas,
                 )
+                logger.info(
+                    "Stored {} vectors for document {}.", len(embeddings), document_id,
+                )
+
                 from app.services.hybrid_retrieval import upsert_document_chunks
                 await upsert_document_chunks(
                     db_session,
                     workspace_id,
                     document_id,
                     original_filename,
-                    [],
+                    split_chunks,
                 )
-                await self._update_document_status(
-                    db_session, document_id,
-                    status="ready", chunk_count=0, error_message=None,
-                    processed_at=datetime.now(timezone.utc),
-                )
-                return {
-                    "chunks_count": 0,
-                    "embedding_count": 0,
-                    "status": "ready",
-                }
-
-            # 3. 拆分为最优大小
-            split_chunks: list[dict[str, Any]] = self.text_splitter.split_documents(
-                raw_chunks,
-            )
-            logger.info(
-                "Text splitter produced {} chunks from document {}.",
-                len(split_chunks), document_id,
-            )
-
-            # 4. 批量嵌入
-            texts = [chunk["content"] for chunk in split_chunks]
-            embeddings = await self.embedding_service.embed_texts(texts)
-            logger.info(
-                "Generated {} embeddings for document {}.", len(embeddings), document_id,
-            )
-
-            # 5. 存储到向量存储
-            metadatas: list[dict[str, Any]] = []
-            for idx, chunk in enumerate(split_chunks):
-                meta = dict(chunk.get("metadata", {}))
-                meta["source_file"] = original_filename
-                meta["doc_id"] = document_id
-                meta["workspace_id"] = workspace_id
-                meta["chunk_index"] = idx
-                meta["section_path"] = json.dumps(
-                    meta.get("section_path") or [],
-                    ensure_ascii=False,
-                )
-                metadatas.append(meta)
-
-            doc_ids = [f"{document_id}_chunk_{idx}" for idx in range(len(texts))]
-            await self.vector_store.replace_document(
-                workspace_id=workspace_id,
-                document_id=document_id,
-                doc_ids=doc_ids,
-                texts=texts,
-                embeddings=embeddings,
-                metadatas=metadatas,
-            )
-            logger.info(
-                "Stored {} vectors for document {}.", len(embeddings), document_id,
-            )
-
-            from app.services.hybrid_retrieval import upsert_document_chunks
-            await upsert_document_chunks(
-                db_session,
-                workspace_id,
-                document_id,
-                original_filename,
-                split_chunks,
-            )
-            logger.info("Stored {} keyword chunks for document {}.", len(split_chunks), document_id)
+                logger.info("Stored {} keyword chunks for document {}.", len(split_chunks), document_id)
 
             # 6. 标记为就绪
             await self._update_document_status(
                 db_session, document_id,
                 status="ready",
+                pipeline_stage="ready",
                 chunk_count=len(split_chunks),
                 error_message=None,
                 processed_at=datetime.now(timezone.utc),
@@ -596,6 +640,7 @@ class DocumentPipeline:
             await self._update_document_status(
                 db_session, document_id,
                 status="failed",
+                pipeline_stage="failed",
                 error_message=str(exc),
             )
             return {

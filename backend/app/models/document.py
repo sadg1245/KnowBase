@@ -34,6 +34,7 @@ class Document(Base):
         default="pending",
         index=True,
     )  # 状态值：pending / processing / ready / failed
+    pipeline_stage = Column(String(20), nullable=True)
     error_message = Column(Text, nullable=True)
     summary = Column(Text, nullable=True)
     outline = Column(Text, nullable=True)
