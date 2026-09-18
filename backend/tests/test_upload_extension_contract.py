@@ -41,3 +41,16 @@ class UploadExtensionContractTests(unittest.TestCase):
         with self.assertRaises(HTTPException) as caught:
             _validate_extension("legacy.doc")
         self.assertEqual(caught.exception.status_code, 400)
+
+
+class LegacyInlineProcessingTests(unittest.TestCase):
+    def test_inline_processing_helpers_are_removed(self):
+        from app.api.routes import documents
+
+        self.assertFalse(hasattr(documents, "_process_document"))
+        self.assertFalse(hasattr(documents, "_chunk_text"))
+
+    def test_text_extraction_helper_is_kept_for_content_filtering(self):
+        from app.api.routes import documents
+
+        self.assertTrue(callable(documents._extract_text))

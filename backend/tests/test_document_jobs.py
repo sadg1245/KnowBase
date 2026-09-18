@@ -5,7 +5,7 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 from fastapi import UploadFile
 from sqlalchemy import select
@@ -71,9 +71,6 @@ class DocumentJobDispatchTests(unittest.IsolatedAsyncioTestCase):
             ), patch(
                 "app.collector.tasks.process_document_task.delay",
                 side_effect=RuntimeError("broker unavailable"),
-            ), patch(
-                "app.api.routes.documents._process_document",
-                new=AsyncMock(),
             ):
                 await upload_documents(
             workspace_id=self.workspace_id,
@@ -99,10 +96,6 @@ class DocumentJobDispatchTests(unittest.IsolatedAsyncioTestCase):
                     "app.collector.tasks.process_document_task.delay",
                     side_effect=RuntimeError("broker unavailable"),
                 ),
-                patch(
-                    "app.api.routes.documents._process_document",
-                    new=AsyncMock(side_effect=AssertionError("inline processing is forbidden")),
-                ) as inline_processing,
             ):
                 response = await upload_documents(
             workspace_id=self.workspace_id,
@@ -114,7 +107,6 @@ class DocumentJobDispatchTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(response[0]["status"], "failed")
             self.assertIn("queue", response[0]["document"].error_message.lower())
-            inline_processing.assert_not_awaited()
 
     async def test_ready_document_commits_learning_queue_before_dispatch(self):
         observed_statuses = []

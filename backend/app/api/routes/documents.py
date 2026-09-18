@@ -64,86 +64,6 @@ def _normalized_tags(values: list[str] | None) -> list[str]:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-async def _process_document(db: AsyncSession, document: Document, settings: Settings) -> None:
-    """执行文档处理流水线（Celery 不可用时的同步回退方案）。
-
-    读取文件、分块文本并将向量嵌入存储到 ChromaDB。
-    当前为尽力而为的内联实现；后续可由 Celery 任务替代。
-    """
-    try:
-        document.status = "processing"
-        await db.flush()
-
-        # ------------------------------------------------------------------
-        # 第 1 步 — 从文件中提取文本
-        # ------------------------------------------------------------------
-        text = await _extract_text(document.file_path, document.file_type)
-        if not text or not text.strip():
-            document.status = "failed"
-            document.error_message = "Extracted text is empty."
-            await db.flush()
-            return
-
-        # ------------------------------------------------------------------
-        # 第 2 步 — 文本分块
-        # ------------------------------------------------------------------
-        chunks = _chunk_text(text, settings.CHUNK_SIZE, settings.CHUNK_OVERLAP)
-        document.chunk_count = len(chunks)
-
-        # ------------------------------------------------------------------
-        # 第 3 步 — 将向量存储到 ChromaDB
-        # ------------------------------------------------------------------
-        try:
-            from app.core.chroma import get_chroma_client
-            from app.core.embedding import get_embedding_service
-
-            chroma_client = get_chroma_client()
-            collection_name = f"ws_{document.workspace_id}".replace("-", "_")
-            collection = chroma_client.get_or_create_collection(
-                name=collection_name,
-                metadata={"hnsw:space": "cosine"},
-            )
-
-            ids = [f"{document.id}_chunk_{i}" for i in range(len(chunks))]
-            embeddings = await get_embedding_service().embed_texts(chunks)
-            metadatas = [
-                {
-                    "document_id": document.id,
-                    "filename": document.filename,
-                    "source_file": document.filename,
-                    "chunk_index": i,
-                    "page_num": 1,
-                }
-                for i in range(len(chunks))
-            ]
-
-            collection.add(
-                ids=ids,
-                documents=chunks,
-                embeddings=embeddings,
-                metadatas=metadatas,
-            )
-            logger.info(
-                "Stored {} chunks for document '{}' in ChromaDB collection '{}'",
-                len(chunks),
-                document.id,
-                collection_name,
-            )
-        except Exception as chroma_exc:
-            raise RuntimeError(f"ChromaDB storage failed: {chroma_exc}") from chroma_exc
-
-        document.status = "ready"
-        document.error_message = None
-        await db.flush()
-        logger.info("Document '{}' processed successfully ({} chunks)", document.id, len(chunks))
-
-    except Exception as exc:
-        logger.error("Document processing failed for '{}': {}", document.id, exc)
-        document.status = "failed"
-        document.error_message = str(exc)
-        await db.flush()
-
-
 async def _extract_text(file_path: str, file_type: str) -> str:
     """根据文件类型提取纯文本内容。"""
     import asyncio
@@ -209,22 +129,6 @@ async def _extract_text(file_path: str, file_type: str) -> str:
 
     logger.warning("No text extractor for file type '{}'", file_type)
     return ""
-
-
-def _chunk_text(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
-    """将文本拆分为大小约 chunk_size 字符、带有 chunk_overlap 重叠的分块。"""
-    if not text:
-        return []
-    chunks: list[str] = []
-    start = 0
-    text_len = len(text)
-    while start < text_len:
-        end = start + chunk_size
-        chunk = text[start:end]
-        if chunk.strip():
-            chunks.append(chunk)
-        start += chunk_size - chunk_overlap
-    return chunks
 
 
 # ---------------------------------------------------------------------------
