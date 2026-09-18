@@ -1031,15 +1031,21 @@ RAG_DEBUG_ENDPOINT_ENABLED=false
 
 ### 25.1 数据库迁移
 
-新增 Alembic 版本 `0004_rag_restructure`（`down_revision = "0003_ai_tutor_memory"`），内容：
+迁移按实施阶段拆分，每个 revision 只包含该阶段真正会用到的结构，避免先建空表再回填：
 
-1. `documents` 增加 `document_type / classification_meta / pipeline_stage / index_stale / parse_degraded`。
-2. `document_chunks` 增加 §12 列出的全部列与索引（`workspace_id + document_type`、`content_type`、`chunk_level`、`parent_id`）。
-3. 新建 `knowledge_units`、`structure_nodes`、`document_pipeline_events`。
-4. `knowledge_points` 增加可空 `unit_id`。
-5. `retrieval_runs` 增加 §23.3 列出的列。
-6. 全部 DDL 使用 `IF NOT EXISTS` 语义与可重复执行写法（与既有迁移风格一致）。
-7. `downgrade()` 只删除本 revision 新增的结构，不触碰既有数据。
+| revision | 阶段 | 内容 |
+|---|---|---|
+| `0004_rag_pipeline_events` | 阶段 0 | `documents.pipeline_stage`；新建 `document_pipeline_events` |
+| `0005_rag_parse_degradation` | 阶段 1 | `documents.parse_degraded` |
+| `0006_rag_structure_units` | 阶段 2 | `documents.document_type` / `classification_meta`；`document_chunks` 结构列（`unit_id`、`parent_id`、`chunk_level`、`content_type`、`document_type`、`subject`、`page_end`）及索引；新建 `knowledge_units`、`structure_nodes`；`knowledge_points.unit_id` |
+| `0007_rag_multivector_index` | 阶段 3 | `documents.index_stale`；`document_chunks` 富化与索引列（`summary`、`keywords`、`knowledge_points`、`difficulty`、`enrichment_status`、`index_version`、`metadata`）；`retrieval_runs.query_analysis` / `vector_kinds_hit` |
+| `0008_rag_rerank_profile` | 阶段 4 | `retrieval_runs.rerank_provider` / `rerank_time_ms` / `filter_snapshot` |
+
+每个 revision 的通用规则：
+
+1. 全部 DDL 使用 inspect 存在性判断，保持可重复执行（与 `0003_ai_tutor_memory.py` 的写法一致）。
+2. `downgrade()` 只删除本 revision 新增的结构，不触碰既有数据。
+3. `down_revision` 串联成链，任何阶段都可以单独升级到该阶段并保持应用可运行。
 
 ### 25.2 向量索引重建（换模型的必然动作）
 
