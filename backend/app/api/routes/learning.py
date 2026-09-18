@@ -17,12 +17,14 @@ from app.models.assessment import LearningTask, MistakeRecord, QuizAttempt, Quiz
 from app.models.document import Document
 from app.models.chat import DocumentChunk
 from app.models.learning import (
-    Flashcard, KnowledgePoint, LearningGoal, QuizQuestion, ReportSuggestion,
-    ReviewLog, StudyActivity, StudySession,
+    Flashcard, KnowledgePoint, LearningGoal, LearningMemory as LearningMemoryModel,
+    QuizQuestion, ReportSuggestion, ReviewLog, StudyActivity, StudySession,
 )
 from app.models.user import User
 from app.models.workspace import Workspace
 from app.services.learning_content import LearningGenerationError, generate_document_learning_content
+from app.services.learner_profile import LearnerProfileService
+from app.services.learning_memory import LearningMemoryService
 from app.services.review_service import apply_card_review, build_review_summary, schedule_review
 from app.services.weakness_service import weakness_priority_subquery
 from app.services import assessment_service, assessment_workflows
@@ -37,6 +39,12 @@ from app.services.ownership import (
     owned_workspace,
 )
 from app.schemas.assessment import QuestionSubmitRequest
+from app.schemas.memory import (
+    MemoryCreate,
+    MemoryListResponse,
+    MemoryResponse,
+    MemoryUpdate,
+)
 from app.schemas.learning import (
     ActivityCreate, AnalyzeRequest, FlashcardCreate, FlashcardGenerateRequest,
     FlashcardSelectionCreate, FlashcardUpdate, KnowledgePointCreate,
@@ -854,6 +862,9 @@ async def export_learning_data(
     suggestions = (await db.execute(select(ReportSuggestion).where(
         ReportSuggestion.user_id == current_user.id
     ))).scalars().all()
+    memories = (await db.execute(select(LearningMemoryModel).where(
+        LearningMemoryModel.user_id == current_user.id
+    ))).scalars().all()
     assessment_data = {}
     for key, model in (("quiz_sets", QuizSet), ("quiz_runs", QuizRun), ("quiz_attempts", QuizAttempt),
                        ("mistakes", MistakeRecord), ("weak_knowledge", WeakKnowledgeState), ("learning_tasks", LearningTask)):
@@ -885,6 +896,117 @@ async def export_learning_data(
             "created_at": _iso(a.created_at),
         } for a in activities],
         "learning_goals": [assessment_workflows.serialize_row(row) for row in goals],
+        "learning_memories": [_memory_payload(memory) for memory in memories],
         "study_sessions": [assessment_workflows.serialize_row(row) for row in sessions],
         "report_suggestions": [assessment_workflows.serialize_row(row) for row in suggestions],
     }
+
+
+def get_profile_service(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> "LearnerProfileService":
+    return LearnerProfileService(db, current_user.id)
+
+
+def get_memory_service(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> LearningMemoryService:
+    return LearningMemoryService(db, current_user.id)
+
+
+def _memory_payload(memory) -> dict:
+    return {
+        "id": memory.id,
+        "kind": memory.kind,
+        "title": memory.title,
+        "content": memory.content,
+        "workspace_id": memory.workspace_id,
+        "source_refs": memory.source_refs or {},
+        "importance": memory.importance,
+        "is_active": memory.is_active,
+        "embedding_state": memory.embedding_state,
+        "use_count": memory.use_count,
+        "last_used_at": memory.last_used_at.isoformat() if memory.last_used_at else None,
+        "created_at": memory.created_at.isoformat() if memory.created_at else "",
+        "updated_at": memory.updated_at.isoformat() if memory.updated_at else "",
+    }
+
+
+@router.get("/learner-profile")
+async def learner_profile(
+    workspace_id: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    service: LearnerProfileService = Depends(get_profile_service),
+) -> dict:
+    """Return the read-only snapshot the tutor uses to adjust its teaching."""
+    owned = list(
+        (
+            await db.execute(
+                select(Workspace.id).where(Workspace.owner_id == current_user.id)
+            )
+        ).scalars().all()
+    )
+    if workspace_id and workspace_id not in owned:
+        raise HTTPException(404, "Knowledge base not found")
+    snapshot = await service.build(
+        workspace_id=workspace_id, question="", owned_workspace_ids=owned
+    )
+    return snapshot.to_dict()
+
+
+@router.get("/memories", response_model=MemoryListResponse)
+async def list_memories(
+    kind: str | None = None,
+    workspace_id: str | None = None,
+    is_active: bool | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    service: LearningMemoryService = Depends(get_memory_service),
+) -> dict:
+    items, total = await service.list_memories(
+        kind=kind, workspace_id=workspace_id, is_active=is_active, limit=limit, offset=offset
+    )
+    return {"items": [_memory_payload(item) for item in items], "total": total}
+
+
+@router.post("/memories", status_code=201, response_model=MemoryResponse)
+async def create_memory(
+    payload: MemoryCreate,
+    service: LearningMemoryService = Depends(get_memory_service),
+) -> dict:
+    memory = await service.remember(
+        kind=payload.kind,
+        title=payload.title,
+        content=payload.content,
+        workspace_id=payload.workspace_id,
+        source_refs={"origin": "manual"},
+        importance=payload.importance,
+    )
+    if memory is None:
+        raise HTTPException(422, "记忆内容不完整，无法保存")
+    return _memory_payload(memory)
+
+
+@router.patch("/memories/{memory_id}", response_model=MemoryResponse)
+async def update_memory(
+    memory_id: str,
+    payload: MemoryUpdate,
+    service: LearningMemoryService = Depends(get_memory_service),
+) -> dict:
+    memory = await service.update_memory(memory_id, **payload.model_dump(exclude_none=True))
+    if memory is None:
+        raise HTTPException(404, "记忆不存在")
+    return _memory_payload(memory)
+
+
+@router.delete("/memories/{memory_id}", status_code=204)
+async def delete_memory(
+    memory_id: str,
+    service: LearningMemoryService = Depends(get_memory_service),
+) -> Response:
+    if not await service.delete_memory(memory_id):
+        raise HTTPException(404, "记忆不存在")
+    return Response(status_code=204)

@@ -149,7 +149,13 @@ class LearnerProfileService:
         workspace in ``owned_workspace_ids``. An empty scope fails closed and returns no
         workspace-derived rows, so a missing or forged id can never widen the query to other users.
         """
-        scope = [workspace_id] if workspace_id else list(owned_workspace_ids or [])
+        owned = list(owned_workspace_ids or [])
+        if workspace_id:
+            scope = [workspace_id] if (
+                owned_workspace_ids is None or workspace_id in owned
+            ) else []
+        else:
+            scope = owned
         key = (self.user_id, workspace_id, tuple(sorted(scope)))
         cached = _CACHE.get(key)
         now = time.monotonic()
