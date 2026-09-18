@@ -1,0 +1,5 @@
+{
+  "status": "no_ready_documents",
+  "recorded_at": "2026-09-18T20:22:44+08:00",
+  "reason": "当前工作区没有已就绪（status=ready）的文档与对应的 ChromaDB 向量索引，无法运行 label/run 采集真实基线；按计划禁止编造指标。"
+}
