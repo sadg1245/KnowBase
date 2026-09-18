@@ -1029,7 +1029,7 @@ git commit -m "feat: answer source-first with explicit model fallback"
 - Produces: `invalidate_profile_cache(user_id: str, workspace_id: str | None = None) -> None`。
 - Produces: `LearnerProfileResponse` Pydantic 模型（供 Task 7 使用）。
 
-- [ ] **Step 1: 写失败的画像测试**
+- [x] **Step 1: 写失败的画像测试**
 
 创建 `backend/tests/test_learner_profile_service.py`：
 
@@ -1174,12 +1174,12 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `$env:PYTHONPATH="backend"; & ".\.venv\Scripts\python.exe" -m pytest backend/tests/test_learner_profile_service.py -q`
 Expected: FAIL，`ModuleNotFoundError: No module named 'app.services.learner_profile'`
 
-- [ ] **Step 3: 实现画像服务**
+- [x] **Step 3: 实现画像服务**
 
 创建 `backend/app/services/learner_profile.py`：
 
@@ -1538,12 +1538,12 @@ class LeanerProfileResponse(BaseModel):
     generated_at: str
 ```
 
-- [ ] **Step 4: 运行画像测试**
+- [x] **Step 4: 运行画像测试**
 
 Run: `$env:PYTHONPATH="backend"; & ".\.venv\Scripts\python.exe" -m pytest backend/tests/test_learner_profile_service.py -q`
 Expected: PASS（5 passed）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/services/learner_profile.py backend/app/schemas/memory.py backend/tests/test_learner_profile_service.py
@@ -1566,7 +1566,7 @@ git commit -m "feat: aggregate a learner profile for the tutor prompt"
 - Produces: `LearningMemoryService(db, user_id, *, vector_store=None, embed=None)`，方法 `remember`、`recall`、`list_memories`、`update_memory`、`delete_memory`、`record_usage`。
 - Produces: `format_memory_block(hits: list[MemoryHit]) -> str`。
 
-- [ ] **Step 1: 写失败的记忆服务测试**
+- [x] **Step 1: 写失败的记忆服务测试**
 
 创建 `backend/tests/test_learning_memory_service.py`：
 
@@ -1791,12 +1791,12 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `$env:PYTHONPATH="backend"; & ".\.venv\Scripts\python.exe" -m pytest backend/tests/test_learning_memory_service.py -q`
 Expected: FAIL，`ModuleNotFoundError: No module named 'app.services.learning_memory'`
 
-- [ ] **Step 3: 实现记忆服务**
+- [x] **Step 3: 实现记忆服务**
 
 创建 `backend/app/services/learning_memory.py`：
 
@@ -2231,12 +2231,12 @@ class LearningMemoryService:
         await self.db.flush()
 ```
 
-- [ ] **Step 4: 运行记忆服务测试**
+- [x] **Step 4: 运行记忆服务测试**
 
 Run: `$env:PYTHONPATH="backend"; & ".\.venv\Scripts\python.exe" -m pytest backend/tests/test_learning_memory_service.py -q`
 Expected: PASS（9 passed）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add backend/app/services/learning_memory.py backend/tests/test_learning_memory_service.py
@@ -2265,7 +2265,7 @@ git commit -m "feat: add long-term learning memory with hybrid recall"
 
 三个 `remember_*` 助手必须自己吞掉全部异常：调用方不允许包 try/except，也不允许因为记忆写入失败而回滚主流程。
 
-- [ ] **Step 1: 写失败的接入点测试**
+- [x] **Step 1: 写失败的接入点测试**
 
 创建 `backend/tests/test_memory_hooks.py`：
 
@@ -2426,12 +2426,12 @@ if __name__ == "__main__":
         self.assertIn("format_memory_block", source)
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `$env:PYTHONPATH="backend"; & ".\.venv\Scripts\python.exe" -m pytest backend/tests/test_memory_hooks.py backend/tests/test_chat_policy.py -q`
 Expected: FAIL，`AttributeError: module 'app.services.learning_memory' has no attribute 'remember_session_summary'`
 
-- [ ] **Step 3: 实现三个写入助手**
+- [x] **Step 3: 实现三个写入助手**
 
 在 `backend/app/services/learning_memory.py` 顶部补充导入：
 
@@ -2566,7 +2566,7 @@ async def remember_report_insight(
 
 同时把 `from app.models.learning import LearningMemory` 改为 `from app.models.learning import LearningMemory, QuizQuestion as QuestionModel`，以便按 id 读取题目。
 
-- [ ] **Step 4: 接入三个写入点**
+- [x] **Step 4: 接入三个写入点**
 
 `backend/app/services/assessment_service.py` 的 `_apply_grade_effects(db, question, attempt, *, is_redo, rebuild_mistake=False)` 末尾（错误投影与掌握度更新之后）追加：
 
@@ -2603,7 +2603,7 @@ async def remember_report_insight(
         return _view(row)
 ```
 
-- [ ] **Step 5: 接入偏好记忆与画像缓存失效**
+- [x] **Step 5: 接入偏好记忆与画像缓存失效**
 
 在 `backend/app/services/learner_profile.py` 追加一个按知识库解析所有者的失效助手：
 
@@ -2648,7 +2648,7 @@ async def invalidate_workspace_profile(db: AsyncSession, workspace_id: str | Non
 
 把 `previous_mode = preference.preferred_mode` 放在 `for key, value in values.items()` 循环之前。
 
-- [ ] **Step 6: 在问答链路注入画像与记忆**
+- [x] **Step 6: 在问答链路注入画像与记忆**
 
 在 `backend/app/api/routes/search.py` 顶部补充导入：
 
@@ -2700,12 +2700,12 @@ from app.services.learner_profile import LearnerProfileService
 `asyncio.gather`——同一个异步会话不能被并发使用。两者都只做本地查询，因此相对资料检索只增加一次
 本地往返；这也是与设计中"并行执行"一词的差异，以本节描述为准。
 
-- [ ] **Step 7: 运行接入点与回归测试**
+- [x] **Step 7: 运行接入点与回归测试**
 
 Run: `$env:PYTHONPATH="backend"; & ".\.venv\Scripts\python.exe" -m pytest backend/tests/test_memory_hooks.py backend/tests/test_chat_policy.py backend/tests/test_learner_profile_service.py backend/tests/test_learning_memory_service.py backend/tests/test_report_ai_service.py backend/tests/test_review_service.py backend/tests/test_goal_service.py backend/tests/test_assessment_service.py -q`
 Expected: PASS
 
-- [ ] **Step 8: 提交**
+- [x] **Step 8: 提交**
 
 ```bash
 git add backend/app/services/learning_memory.py backend/app/services/learner_profile.py backend/app/services/assessment_service.py backend/app/services/report_ai_service.py backend/app/services/review_service.py backend/app/services/goal_service.py backend/app/services/assessment_workflows.py backend/app/api/routes/chat_sessions.py backend/app/api/routes/learning.py backend/app/api/routes/search.py backend/tests/test_memory_hooks.py backend/tests/test_chat_policy.py
@@ -2726,7 +2726,7 @@ git commit -m "feat: feed learner profile and memory into the tutor"
 - Produces: `GET /api/learning/memories`、`POST /api/learning/memories`、`PATCH /api/learning/memories/{memory_id}`、`DELETE /api/learning/memories/{memory_id}`。
 - Produces: FastAPI 依赖 `get_profile_service` 与 `get_memory_service`，供路由测试覆盖。
 
-- [ ] **Step 1: 写失败的接口测试**
+- [x] **Step 1: 写失败的接口测试**
 
 创建 `backend/tests/test_tutor_api.py`：
 
@@ -2871,12 +2871,12 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `$env:PYTHONPATH="backend"; & ".\.venv\Scripts\python.exe" -m pytest backend/tests/test_tutor_api.py -q`
 Expected: FAIL，`ImportError: cannot import name 'get_memory_service'`
 
-- [ ] **Step 3: 实现接口**
+- [x] **Step 3: 实现接口**
 
 在 `backend/app/api/routes/learning.py` 顶部补充导入：
 
@@ -2988,12 +2988,12 @@ async def delete_memory(
 
 如果 `learning.py` 尚未导入 `Response`，从 `fastapi` 一并导入。
 
-- [ ] **Step 4: 运行接口测试**
+- [x] **Step 4: 运行接口测试**
 
 Run: `$env:PYTHONPATH="backend"; & ".\.venv\Scripts\python.exe" -m pytest backend/tests/test_tutor_api.py backend/tests/test_learning_insights_api.py -q`
 Expected: PASS
 
-- [ ] **Step 5: 让导出覆盖学习记忆**
+- [x] **Step 5: 让导出覆盖学习记忆**
 
 在 `backend/app/api/routes/learning.py` 的 `export_learning_data` 中，于 `suggestions` 查询之后追加：
 
@@ -3026,7 +3026,7 @@ Expected: PASS
 Run: `$env:PYTHONPATH="backend"; & ".\.venv\Scripts\python.exe" -m pytest backend/tests/test_tutor_api.py -q`
 Expected: PASS
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add backend/app/api/routes/learning.py backend/tests/test_tutor_api.py
@@ -3056,7 +3056,7 @@ git commit -m "feat: expose tutor profile and memory endpoints"
 - Produces: `splitAnswerSections(content): AnswerSection[]`、`layerNotice(key): string | undefined`、`answerPolicyLabel(status?: string): string`。
 - Produces: `EvidenceStatus` 增加 `'model_only'`；`DisplayMessage.answerLayers: string[]`；`ChatEvent` 增加 `{ replace: string }`。
 
-- [ ] **Step 1: 写失败的前端纯函数测试**
+- [x] **Step 1: 写失败的前端纯函数测试**
 
 创建 `frontend/tests/answerLayers.test.ts`：
 
@@ -3099,12 +3099,12 @@ test('answer policy labels describe retrieval outcome', () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `node --import tsx --test tests/answerLayers.test.ts`（在 `frontend/` 目录下）
 Expected: FAIL，`Cannot find module '../src/features/learning/answerLayers'`
 
-- [ ] **Step 3: 实现纯函数并接入消息渲染**
+- [x] **Step 3: 实现纯函数并接入消息渲染**
 
 创建 `frontend/src/features/learning/answerLayers.ts`：
 
@@ -3192,7 +3192,7 @@ export const LearningMessageContent: React.FC<Props> = React.memo(({ content, so
 });
 ```
 
-- [ ] **Step 4: 移除严格开关并更新流式契约**
+- [x] **Step 4: 移除严格开关并更新流式契约**
 
 `frontend/src/services/api.ts`：
 
@@ -3269,7 +3269,7 @@ export const evidenceStatusLabel = (status?: string): string => ({
 
 在 `frontend/src/styles/app.css` 追加 `.learning-answer-layer.layer-model { background: #f7f7f5; border-left: 3px solid #d9d9d9; padding: 8px 12px; border-radius: 6px; }`、`.learning-layer-heading { display: flex; gap: 8px; align-items: baseline; font-weight: 600; }`、`.learning-layer-heading small { color: #8c8c8c; font-weight: 400; }`。
 
-- [ ] **Step 5: 写组件测试并运行前端测试**
+- [x] **Step 5: 写组件测试并运行前端测试**
 
 创建 `frontend/tests/learningModePanel.test.tsx`：
 
@@ -3307,7 +3307,7 @@ Expected: PASS
 Run: `npm test`（在 `frontend/` 目录下）
 Expected: PASS（原有 137 项 + 新增项）
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add frontend/src frontend/tests
@@ -3332,7 +3332,7 @@ git commit -m "feat: render layered answers and drop the strict-sources switch"
 - Produces: `profileSummary(profile)`、`memoryKindLabel(kind)`、`memorySourceLabel(memory)`、`filterMemories(items, kind)`。
 - Produces: `TutorProfilePanel`（纯展示组件，供 `renderToStaticMarkup` 测试）与 `TutorProfileDrawer`（antd Drawer 包装）。
 
-- [ ] **Step 1: 写失败的视图模型测试**
+- [x] **Step 1: 写失败的视图模型测试**
 
 创建 `frontend/tests/tutorProfile.test.ts`：
 
@@ -3376,12 +3376,12 @@ test('profile summary counts weak points and next actions', () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `node --import tsx --test tests/tutorProfile.test.ts`（在 `frontend/` 目录下）
 Expected: FAIL，`Cannot find module '../src/features/learning/tutorProfile'`
 
-- [ ] **Step 3: 实现视图模型与 API 客户端**
+- [x] **Step 3: 实现视图模型与 API 客户端**
 
 创建 `frontend/src/features/learning/tutorProfile.ts`：
 
@@ -3476,7 +3476,7 @@ export const deleteMemory = async (id: string): Promise<void> => {
 };
 ```
 
-- [ ] **Step 4: 写并运行展示组件测试**
+- [x] **Step 4: 写并运行展示组件测试**
 
 创建 `frontend/src/components/learning/TutorProfileDrawer.tsx`，导出纯展示组件 `TutorProfilePanel` 与 `TutorProfileDrawer`：
 
@@ -3592,7 +3592,7 @@ test('tutor profile panel renders an empty state without memories', () => {
 });
 ```
 
-- [ ] **Step 5: 在学习页接入抽屉**
+- [x] **Step 5: 在学习页接入抽屉**
 
 在 `frontend/src/pages/LearningChat.tsx` 增加状态与加载逻辑：
 
@@ -3651,7 +3651,7 @@ test('tutor profile panel renders an empty state without memories', () => {
 Run: `npm test`（在 `frontend/` 目录下）
 Expected: PASS
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add frontend/src frontend/tests
@@ -3670,7 +3670,7 @@ git commit -m "feat: show the tutor profile and manage learning memories"
 - Consumes: 前九个任务的全部产出。
 - Produces: 可复核的验收记录。
 
-- [ ] **Step 1: 更新 README**
+- [x] **Step 1: 更新 README**
 
 在「学习版新增能力」清单后追加一节：
 
@@ -3697,12 +3697,12 @@ cd frontend; npm test
 注意：`frontend/src/pages/SearchTest.tsx` 也调用了 `streamChat`，但它只传前三个参数，
 删除 `strictSources` 形参不会影响它；改动后需要确认该文件仍然能通过 `npm run build`。
 
-- [ ] **Step 2: 全量后端回归**
+- [x] **Step 2: 全量后端回归**
 
 Run: `$env:PYTHONPATH="backend"; & ".\.venv\Scripts\python.exe" -m pytest backend/tests -q`
 Expected: 基线之外无新增失败；`test_docker_architecture.py` 的 docker buildx 权限失败属于环境问题，如仍失败需在交付说明中注明。
 
-- [ ] **Step 3: 全量前端测试与构建**
+- [x] **Step 3: 全量前端测试与构建**
 
 Run: `cd frontend; npm test`
 Expected: PASS
@@ -3710,7 +3710,7 @@ Expected: PASS
 Run: `cd frontend; npm run build`
 Expected: 退出码 0（TypeScript 严格检查通过）
 
-- [ ] **Step 4: 浏览器验收**
+- [x] **Step 4: 浏览器验收**
 
 1. 启动后端与前端开发服务，登录后进入「AI 学习」。
 2. 选一个有资料的知识库，问一个资料里明确写过的问题：回答第一层为「来自私人资料」，`[资料N]` 可点击跳转来源，顶部徽标显示「资料命中」。
@@ -3718,7 +3718,7 @@ Expected: 退出码 0（TypeScript 严格检查通过）
 4. 打开「导师眼中的我」：能看到画像与记忆；删除一条记忆后重新提问相关内容，确认该记忆不再出现。
 5. 确认页面上不再存在「严格依据资料」开关。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add README.md docs/superpowers
