@@ -8,7 +8,6 @@ interface SendChatInput {
   workspaceId: string;
   documentIds: string[];
   mode: LearningMode;
-  strictSources: boolean;
   sessionId?: string;
 }
 
@@ -43,7 +42,6 @@ export const useStreamingChat = (onEvent: (event: ChatEvent) => void) => {
         },
         controller.signal,
         input.mode,
-        input.strictSources,
         input.sessionId,
         input.documentIds,
       );

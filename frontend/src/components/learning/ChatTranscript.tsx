@@ -33,7 +33,7 @@ export const ChatTranscript: React.FC<Props> = ({ messages, endRef, onSource, on
   </div> : messages.map((item) => <article key={item.id} className={`learning-message learning-message-${item.role}`}>
     <Avatar className="learning-avatar">{item.role === 'user' ? '我' : <BulbOutlined />}</Avatar>
     <div className="learning-message-body">
-      {item.role === 'assistant' && item.evidenceStatus ? <Tag className="learning-evidence-tag" color={item.evidenceStatus === 'supported' ? 'success' : item.evidenceStatus === 'error' ? 'error' : 'warning'}>{evidenceStatusLabel(item.evidenceStatus)}</Tag> : null}
+      {item.role === 'assistant' && item.evidenceStatus ? <Tag className="learning-evidence-tag" color={item.evidenceStatus === 'supported' ? 'success' : item.evidenceStatus === 'error' ? 'error' : item.evidenceStatus === 'model_only' ? 'default' : 'warning'}>{evidenceStatusLabel(item.evidenceStatus)}</Tag> : null}
       <div className="learning-message-content">{item.content
         ? <LearningMessageContent content={item.content} sources={item.sources} onSource={onSource} />
         : <Text type="secondary">正在检索并整理证据…</Text>}

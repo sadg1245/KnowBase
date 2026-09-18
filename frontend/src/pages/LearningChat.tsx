@@ -74,7 +74,6 @@ const LearningChat: React.FC = () => {
   const [documentIds, setDocumentIds] = useState<string[]>([]);
   const [documentsLoading, setDocumentsLoading] = useState(false);
   const [mode, setMode] = useState<LearningMode>('simple');
-  const [strict, setStrict] = useState(true);
   const [question, setQuestion] = useState(initialQuickQuestion?.question || '');
   const [presetPointTitle, setPresetPointTitle] = useState<string>();
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
@@ -132,6 +131,7 @@ const LearningChat: React.FC = () => {
       sources: Array.isArray(draft.sources) ? normalizeChatSources(draft.sources as Parameters<typeof normalizeChatSources>[0]) : [],
       evidenceStatus: draft.evidence?.status,
       suggestions: draft.suggestions,
+      answerLayers: draft.answerLayers,
       status: draft.status,
     } : item));
     if ('done' in event) void sessionState.refresh();
@@ -226,7 +226,6 @@ const LearningChat: React.FC = () => {
       setWorkspaceId(detail.workspace_id || undefined);
       setDocumentIds(detail.document_ids || []);
       setMode(detail.mode);
-      setStrict(detail.strict_sources);
       setMessages((detail.messages || []).map(historyMessage));
       const latestAssistant = [...(detail.messages || [])].reverse().find((item) => item.role === 'assistant');
       setCurrentEvidence({ status: latestAssistant?.evidence_status });
@@ -257,13 +256,13 @@ const LearningChat: React.FC = () => {
       workspace_id: workspaceId,
       document_ids: documentIds,
       mode,
-      strict_sources: strict,
+      strict_sources: false,
     });
     setMessages([]);
     setCurrentEvidence({});
     setSessionsDrawer(false);
     return created;
-  }, [documentIds, message, mode, sessionState.newSession, streaming.cancel, strict, workspaceId]);
+  }, [documentIds, message, mode, sessionState.newSession, streaming.cancel, workspaceId]);
 
   const sendQuestion = useCallback(async (value = question) => {
     const text = value.trim();
@@ -286,7 +285,6 @@ const LearningChat: React.FC = () => {
         workspaceId,
         documentIds,
         mode,
-        strictSources: strict,
         sessionId: activeSession.id,
       });
     } catch (error) {
@@ -295,7 +293,7 @@ const LearningChat: React.FC = () => {
       message.error(detail);
       setMessages((current) => current.map((item) => item.id === draftId ? { ...item, status: item.content ? 'partial' : 'failed' } : item));
     }
-  }, [createSession, documentIds, message, mode, question, sessionState.activeSession, streaming, strict, workspaceId]);
+  }, [createSession, documentIds, message, mode, question, sessionState.activeSession, streaming, workspaceId]);
 
   const patchScope = useCallback((changes: Parameters<typeof sessionState.patchSession>[1]) => {
     if (sessionState.activeSession) void sessionState.patchSession(sessionState.activeSession.id, changes);
@@ -312,8 +310,6 @@ const LearningChat: React.FC = () => {
   };
   const handleDocuments = (values: string[]) => { setDocumentIds(values); patchScope({ document_ids: values }); };
   const handleMode = (value: LearningMode) => { setMode(value); patchScope({ mode: value }); };
-  const handleStrict = (value: boolean) => { setStrict(value); patchScope({ strict_sources: value }); };
-
   const deleteSession = useCallback(async (id: string) => {
     const activeId = sessionState.activeSession?.id;
     await sessionState.removeSession(id);
@@ -350,13 +346,11 @@ const LearningChat: React.FC = () => {
     documentIds={documentIds}
     documentsLoading={documentsLoading}
     mode={mode}
-    strict={strict}
     evidenceStatus={currentEvidence.status}
     degradationReason={currentEvidence.degradationReason}
     onWorkspace={handleWorkspace}
     onDocuments={handleDocuments}
     onMode={handleMode}
-    onStrict={handleStrict}
   />;
 
   return <div className="learning-page">

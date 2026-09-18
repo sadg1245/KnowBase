@@ -44,9 +44,10 @@ test('证据状态使用面向学习者的明确文案', () => {
   assert.equal(typeof label, 'function');
   const resolve = label as (status?: string) => string;
 
-  assert.equal(resolve('supported'), '资料证据充分');
-  assert.equal(resolve('limited'), '资料证据有限');
-  assert.equal(resolve('insufficient'), '资料不足');
+  assert.equal(resolve('supported'), '资料命中');
+  assert.equal(resolve('limited'), '资料不足，已用模型补充');
+  assert.equal(resolve('insufficient'), '资料不足，已用模型补充');
+  assert.equal(resolve('model_only'), '仅模型补充');
   assert.equal(resolve(), '尚未检索');
 });
 

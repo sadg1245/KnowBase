@@ -7,6 +7,7 @@ export interface DisplayMessage {
   content: string;
   sources: SourceItem[];
   evidenceStatus?: EvidenceStatus;
+  answerLayers?: string[];
   suggestions: string[];
   status: 'streaming' | 'complete' | 'partial' | 'failed';
 }

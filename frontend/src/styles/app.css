@@ -755,3 +755,21 @@ button, input, textarea { font: inherit; }
   .review-rating-grid { gap:7px; }
   .review-rating-grid .ant-btn { padding:8px 9px; font-size:12px; }
 }
+.learning-answer-layer.layer-model {
+  background: #f7f7f5;
+  border-left: 3px solid #d9d9d9;
+  padding: 8px 12px;
+  border-radius: 6px;
+}
+
+.learning-layer-heading {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-weight: 600;
+}
+
+.learning-layer-heading small {
+  color: #8c8c8c;
+  font-weight: 400;
+}

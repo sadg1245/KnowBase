@@ -222,11 +222,12 @@ export interface BackendSourceItem {
 
 export type ChatEvent =
   | { token: string }
+  | { replace: string }
   | { session: { id: string; title: string; title_changed?: boolean } }
-  | { evidence: { status: 'supported' | 'limited' | 'insufficient' | 'error'; vector_succeeded: boolean; keyword_succeeded: boolean; degradation_reason?: string; top_score: number } }
+  | { evidence: { status: 'supported' | 'limited' | 'insufficient' | 'model_only' | 'error'; vector_succeeded: boolean; keyword_succeeded: boolean; degradation_reason?: string; top_score: number; answer_policy?: string; model_fallback?: boolean; profile_injected?: boolean; memory_hits?: string[]; memory_degraded_reason?: string | null } }
   | { sources: BackendSourceItem[] }
   | { suggestions: string[] }
-  | { done: true; message_id?: string; session_id?: string; conversation_id?: string; confidence?: number; full_text?: string; generation_status?: 'complete' | 'partial' }
+  | { done: true; message_id?: string; session_id?: string; conversation_id?: string; confidence?: number; full_text?: string; generation_status?: 'complete' | 'partial'; answer_layers?: string[] }
   | { error: string; retryable?: boolean; message_id?: string };
 
 const normalizeSource = (source: BackendSourceItem): SourceItem => ({
@@ -403,14 +404,13 @@ export const streamChat = async (
   onEvent: (event: ChatEvent) => void,
   signal?: AbortSignal,
   mode = 'explain',
-  strictSources = true,
   sessionId?: string,
   documentIds: string[] = [],
 ): Promise<void> => {
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(authToken() ? { Authorization: `Bearer ${authToken()}` } : {}) },
-    body: JSON.stringify({ question, workspace_id: workspaceId, document_ids: documentIds, mode, strict_sources: strictSources, session_id: sessionId }),
+    body: JSON.stringify({ question, workspace_id: workspaceId, document_ids: documentIds, mode, strict_sources: false, session_id: sessionId }),
     signal,
   });
   if (!response.ok) {
@@ -441,7 +441,7 @@ export const normalizeChatSources = (sources: BackendSourceItem[]): SourceItem[]
   sources.map(normalizeSource);
 
 export type LearningMode = 'direct' | 'simple' | 'deep' | 'socratic' | 'feynman' | 'quiz';
-export type EvidenceStatus = 'supported' | 'limited' | 'insufficient' | 'error';
+export type EvidenceStatus = 'supported' | 'limited' | 'insufficient' | 'model_only' | 'error';
 
 export interface ChatMessage {
   id: string;

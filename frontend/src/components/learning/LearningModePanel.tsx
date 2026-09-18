@@ -1,9 +1,10 @@
 import React from 'react';
-import { Select, Switch, Tag, Typography } from 'antd';
+import { Select, Tag, Typography } from 'antd';
 import { CheckCircleFilled, ExclamationCircleFilled } from '@ant-design/icons';
 
 import type { Document, LearningMode, Workspace } from '../../services/api';
 import { evidenceStatusLabel } from '../../features/learning/learningConversationState';
+import { answerPolicyLabel } from '../../features/learning/answerLayers';
 import { learningModes } from '../../features/learning/types';
 import { documentSelectionOption } from '../../pages/documentScope';
 
@@ -17,19 +18,17 @@ interface Props {
   documentIds: string[];
   documentsLoading: boolean;
   mode: LearningMode;
-  strict: boolean;
   evidenceStatus?: string;
   degradationReason?: string;
   onWorkspace: (value?: string) => void;
   onDocuments: (value: string[]) => void;
   onMode: (value: LearningMode) => void;
-  onStrict: (value: boolean) => void;
 }
 
 
 export const LearningModePanel: React.FC<Props> = ({
-  workspaces, workspaceId, documents, documentIds, documentsLoading, mode, strict,
-  evidenceStatus, degradationReason, onWorkspace, onDocuments, onMode, onStrict,
+  workspaces, workspaceId, documents, documentIds, documentsLoading, mode,
+  evidenceStatus, degradationReason, onWorkspace, onDocuments, onMode,
 }) => <aside className="learning-mode-panel" aria-label="学习设置">
   <section>
     <Text className="learning-panel-label">资料范围</Text>
@@ -63,15 +62,15 @@ export const LearningModePanel: React.FC<Props> = ({
       </button>)}
     </div>
   </section>
-  <section className="learning-strict-row">
-    <div><strong>严格依据资料</strong><span>资料不足时明确拒答</span></div>
-    <Switch checked={strict} onChange={onStrict} />
+  <section className="learning-policy-row">
+    <div><strong>资料优先</strong><span>先查你的资料；没查到就明确标注为模型补充</span></div>
   </section>
   <section className="learning-evidence-card">
     <Text className="learning-panel-label">当前证据</Text>
     <Tag icon={evidenceStatus === 'supported' ? <CheckCircleFilled /> : <ExclamationCircleFilled />} color={evidenceStatus === 'supported' ? 'success' : evidenceStatus ? 'warning' : 'default'}>
-      {evidenceStatusLabel(evidenceStatus)}
+      {answerPolicyLabel(evidenceStatus)}
     </Tag>
+    <Text type="secondary">{evidenceStatusLabel(evidenceStatus)}</Text>
     {degradationReason ? <Text type="secondary">{degradationReason}</Text> : null}
   </section>
 </aside>;

@@ -6,6 +6,11 @@ export interface EvidenceInfo {
   keyword_succeeded: boolean;
   degradation_reason?: string;
   top_score: number;
+  answer_policy?: string;
+  model_fallback?: boolean;
+  profile_injected?: boolean;
+  memory_hits?: string[];
+  memory_degraded_reason?: string | null;
 }
 
 export interface AssistantDraft {
@@ -14,6 +19,7 @@ export interface AssistantDraft {
   content: string;
   sources: unknown[];
   suggestions: string[];
+  answerLayers: string[];
   messageId?: string;
   status: 'streaming' | 'complete' | 'partial' | 'failed';
 }
@@ -22,12 +28,14 @@ export const createAssistantDraft = (): AssistantDraft => ({
   content: '',
   sources: [],
   suggestions: [],
+  answerLayers: [],
   status: 'streaming',
 });
 
 export const applyChatEvent = (state: AssistantDraft, event: Record<string, any>): AssistantDraft => {
   if (event.session) return { ...state, session: event.session };
   if (event.evidence) return { ...state, evidence: event.evidence };
+  if (typeof event.replace === 'string') return { ...state, content: event.replace };
   if (typeof event.token === 'string') return { ...state, content: state.content + event.token };
   if (Array.isArray(event.sources)) return { ...state, sources: event.sources };
   if (Array.isArray(event.suggestions)) return { ...state, suggestions: event.suggestions.slice(0, 3) };
@@ -35,6 +43,7 @@ export const applyChatEvent = (state: AssistantDraft, event: Record<string, any>
     return {
       ...state,
       messageId: event.message_id,
+      answerLayers: Array.isArray(event.answer_layers) ? event.answer_layers : state.answerLayers,
       status: event.generation_status === 'partial' ? 'partial' : 'complete',
     };
   }
@@ -49,9 +58,10 @@ export const learningLayoutForWidth = (width: number): 'three-column' | 'two-col
 };
 
 export const evidenceStatusLabel = (status?: string): string => ({
-  supported: '资料证据充分',
-  limited: '资料证据有限',
-  insufficient: '资料不足',
+  supported: '资料命中',
+  limited: '资料不足，已用模型补充',
+  insufficient: '资料不足，已用模型补充',
+  model_only: '仅模型补充',
   error: '检索异常',
 }[status || ''] || '尚未检索');
 
