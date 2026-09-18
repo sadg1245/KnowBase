@@ -109,7 +109,7 @@
 - Produces: `build_learning_prompt(*, question, mode, context_blocks, profile_block="", memory_block="", history_lines=None) -> str`。
 - Produces: `deterministic_empty_answer() -> str`、`DETERMINISTIC_RETRIEVAL_ERROR: str`。
 
-- [ ] **Step 1: 写失败的分层解析与引用校验测试**
+- [x] **Step 1: 写失败的分层解析与引用校验测试**
 
 创建 `backend/tests/test_learning_answer_policy.py`：
 
@@ -180,12 +180,12 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `$env:PYTHONPATH="backend"; & ".\.venv\Scripts\python.exe" -m pytest backend/tests/test_learning_answer_policy.py -q`
 Expected: FAIL，`ModuleNotFoundError: No module named 'app.services.learning_answer_service'`
 
-- [ ] **Step 3: 实现分层解析模块**
+- [x] **Step 3: 实现分层解析模块**
 
 创建 `backend/app/services/learning_answer_service.py`：
 
@@ -353,12 +353,12 @@ def build_learning_prompt(
     return "\n\n".join(sections)
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `$env:PYTHONPATH="backend"; & ".\.venv\Scripts\python.exe" -m pytest backend/tests/test_learning_answer_policy.py -q`
 Expected: PASS（6 passed）
 
-- [ ] **Step 5: 写失败的提示词装配测试**
+- [x] **Step 5: 写失败的提示词装配测试**
 
 创建 `backend/tests/test_prompt_assembly.py`：
 
@@ -423,12 +423,12 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 6: 运行测试确认通过**
+- [x] **Step 6: 运行测试确认通过**
 
 Run: `$env:PYTHONPATH="backend"; & ".\.venv\Scripts\python.exe" -m pytest backend/tests/test_prompt_assembly.py -q`
 Expected: PASS（4 passed）
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add backend/app/services/learning_answer_service.py backend/tests/test_learning_answer_policy.py backend/tests/test_prompt_assembly.py
