@@ -15,8 +15,9 @@ from app.config import settings as app_settings
 from app.core.app_settings_store import apply_persisted, load_raw
 from app.main import app
 from app.models.base import Base
+from app.models.user import User
 from app.services import feishu_status
-from tests.support import create_user
+from tests.support import create_user, wire_test_app
 
 
 FEISHU_FIELDS = ("FEISHU_APP_ID", "FEISHU_APP_SECRET")
@@ -147,6 +148,73 @@ class FeishuSettingsTests(unittest.IsolatedAsyncioTestCase):
         await self.client.post("/api/settings/feishu/status", json={"state": "banana"})
 
         self.assertEqual(feishu_status.current()["state"], "unknown")
+
+
+class FeishuRuntimeServiceTokenTests(unittest.IsolatedAsyncioTestCase):
+    """机器人是靠服务令牌取配置的，这条路径必须走真实认证中间件验证一次。"""
+
+    async def asyncSetUp(self):
+        self.engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+        async with self.engine.begin() as connection:
+            await connection.run_sync(Base.metadata.create_all)
+        self.sessions = async_sessionmaker(self.engine, expire_on_commit=False)
+        self.db = self.sessions()
+        self.app, self.client = wire_test_app(self.sessions, self.db)
+        self.original = {
+            field: getattr(app_settings, field, None) for field in FEISHU_FIELDS
+        }
+        self.original_service_token = app_settings.SERVICE_TOKEN
+        app_settings.SERVICE_TOKEN = "service-secret"
+        app_settings.FEISHU_APP_ID = "cli_from_settings"
+        app_settings.FEISHU_APP_SECRET = "secret-from-settings"
+
+    async def asyncTearDown(self):
+        app_settings.SERVICE_TOKEN = self.original_service_token
+        for field, value in self.original.items():
+            setattr(app_settings, field, value)
+        app.dependency_overrides.clear()
+        await self.client.aclose()
+        await self.db.close()
+        await self.engine.dispose()
+
+    async def test_service_token_binds_to_the_account_and_rejects_wrong_tokens(self):
+        await create_user(self.db)
+        await self.db.commit()
+
+        ok = await self.client.get(
+            "/api/settings/feishu/runtime",
+            headers={"X-KnowBase-Service-Token": "service-secret"},
+        )
+        self.assertEqual(ok.status_code, 200, ok.text)
+        self.assertEqual(ok.json()["app_id"], "cli_from_settings")
+        self.assertEqual(ok.json()["app_secret"], "secret-from-settings")
+
+        rejected = await self.client.get(
+            "/api/settings/feishu/runtime",
+            headers={"X-KnowBase-Service-Token": "wrong-secret"},
+        )
+        self.assertEqual(rejected.status_code, 401)
+
+        await self.db.execute(User.__table__.delete())
+        await self.db.commit()
+        unbound = await self.client.get(
+            "/api/settings/feishu/runtime",
+            headers={"X-KnowBase-Service-Token": "service-secret"},
+        )
+        self.assertEqual(unbound.status_code, 503)
+
+    async def test_status_reporting_also_accepts_the_service_token(self):
+        await create_user(self.db)
+        await self.db.commit()
+
+        reported = await self.client.post(
+            "/api/settings/feishu/status",
+            json={"state": "connected", "app_id": "cli_from_settings"},
+            headers={"X-KnowBase-Service-Token": "service-secret"},
+        )
+
+        self.assertEqual(reported.status_code, 200, reported.text)
+        self.assertEqual(feishu_status.current()["state"], "connected")
 
 
 if __name__ == "__main__":
