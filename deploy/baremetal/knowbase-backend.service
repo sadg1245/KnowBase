@@ -1,0 +1,29 @@
+[Unit]
+Description=KnowBase backend API (uvicorn)
+Documentation=file:/opt/knowbase/deploy/baremetal/README.md
+After=network-online.target redis.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=knowbase
+Group=knowbase
+WorkingDirectory=/opt/knowbase/backend
+# 所有环境变量（DATA_ROOT、API Key、Redis 地址等）都从这个文件读取
+EnvironmentFile=/opt/knowbase/.env
+# 数据目录由 systemd 保证存在且属主正确
+StateDirectory=knowbase
+StateDirectoryMode=0700
+# 先跑 Alembic 迁移，失败则服务不启动，避免 API 对着过期结构提供服务
+ExecStartPre=/opt/knowbase/.venv/bin/python -m app.cli migrate
+ExecStart=/opt/knowbase/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 9000 --workers 1
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=knowbase-backend
+
+[Install]
+WantedBy=multi-user.target

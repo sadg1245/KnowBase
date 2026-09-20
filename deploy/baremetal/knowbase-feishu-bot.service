@@ -1,0 +1,27 @@
+[Unit]
+Description=KnowBase Feishu bot (WebSocket long connection)
+Documentation=file:/opt/knowbase/deploy/baremetal/README.md
+After=network-online.target redis.service knowbase-backend.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=knowbase
+Group=knowbase
+WorkingDirectory=/opt/knowbase/feishu-bot
+EnvironmentFile=/opt/knowbase/.env
+StateDirectory=knowbase
+StateDirectoryMode=0700
+# 机器人状态放在 db1，和后端/Celery 的键名不会撞车（与容器方案一致）
+Environment=REDIS_URL=redis://127.0.0.1:6379/1
+Environment=BACKEND_URL=http://127.0.0.1:9000
+ExecStart=/opt/knowbase/.venv/bin/python -m bot.main
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=knowbase-feishu-bot
+
+[Install]
+WantedBy=multi-user.target

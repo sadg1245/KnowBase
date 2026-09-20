@@ -1,0 +1,29 @@
+# Python 缓存与编译产物
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 本地虚拟环境与工具缓存
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 本地运行时数据（容器内用卷挂载，不该进镜像）
+data/
+tmp/
+uploads/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# 本地配置与系统垃圾文件
+.env
+.DS_Store
+Thumbs.db
+Desktop.ini

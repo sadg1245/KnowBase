@@ -1,0 +1,14 @@
+# 依赖与构建产物：镜像里会重新 npm ci / npm run build。
+# 若不排除，宿主机（Windows）装的 node_modules 会覆盖容器内的 Linux 依赖，导致构建失败。
+node_modules/
+dist/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# 本地配置与日志
+.env
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db

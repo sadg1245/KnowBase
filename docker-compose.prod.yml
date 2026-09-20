@@ -1,0 +1,43 @@
+# 生产部署覆盖文件，面向 2 vCPU / 2 GiB 的 ECS 等小规格机器。
+#
+# 用法：
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#   或直接用 deploy/deploy.sh
+#
+# 依赖 Docker Compose v2.24+（backend 用了 ports 的 !override 标签），
+# deploy/ecs-init.sh 安装的 docker-compose-plugin 满足该版本要求。
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  backend:
+    # 默认 compose 把 9000 绑在 0.0.0.0 上，等于把 API 直接暴露到公网。
+    # 生产只允许本机访问：Web 走 frontend 容器的 nginx 反代，调试用 SSH 隧道。
+    ports: !override
+      - "127.0.0.1:9000:8000"
+    logging: *default-logging
+
+  worker:
+    # 2 GiB 内存下 4 个 Celery 子进程会各自加载一份 embedding 模型，必然 OOM。
+    # 同时限制单个子进程处理的任务数，避免长跑后内存只涨不降。
+    command: celery -A app.collector.tasks worker --loglevel=info --concurrency=1 --max-tasks-per-child=20
+    logging: *default-logging
+
+  feishu-bot:
+    logging: *default-logging
+
+  frontend:
+    logging: *default-logging
+
+  chromadb:
+    # latest 可能拉到比本地客户端更新的版本导致协议不匹配。
+    # 核对可用 tag 后在 .env 里固定，例如：CHROMA_IMAGE=chromadb/chroma:1.5.9
+    image: ${CHROMA_IMAGE:-chromadb/chroma:latest}
+    logging: *default-logging
+
+  redis:
+    logging: *default-logging

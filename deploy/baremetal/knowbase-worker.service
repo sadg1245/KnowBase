@@ -1,0 +1,26 @@
+[Unit]
+Description=KnowBase Celery worker (document parsing and learning generation)
+Documentation=file:/opt/knowbase/deploy/baremetal/README.md
+# 等 backend 起来（它会先跑完迁移）再启动，避免在迁移完成前写数据库
+After=network-online.target redis.service knowbase-backend.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=knowbase
+Group=knowbase
+WorkingDirectory=/opt/knowbase/backend
+EnvironmentFile=/opt/knowbase/.env
+StateDirectory=knowbase
+StateDirectoryMode=0700
+# 2 GiB 内存下并发必须为 1：每个子进程都会各自加载一份 embedding 模型
+ExecStart=/opt/knowbase/.venv/bin/celery -A app.collector.tasks worker --loglevel=info --concurrency=1 --max-tasks-per-child=20
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=knowbase-worker
+
+[Install]
+WantedBy=multi-user.target
