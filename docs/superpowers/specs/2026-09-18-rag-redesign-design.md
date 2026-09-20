@@ -1157,6 +1157,8 @@ RAG_DEBUG_ENDPOINT_ENABLED=false
 - Reranker 三态接入与超时降级。
 - 阈值重标定。
 - Context Builder 与 Parent Expansion。
+- 学习范围（`RetrievalScope` + `ScopeResolver`）插入在 Query Rewrite 与 RetrievalRouter 之间，
+  见 `docs/superpowers/specs/2026-09-18-ai-learning-scope-dynamic-retrieval-design.md`。
 
 验收：评测指标显著优于基线；练习模式不返回答案；降级路径可复现。
 
