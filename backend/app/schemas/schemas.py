@@ -275,9 +275,43 @@ class EmbeddingSettings(BaseModel):
     dimension: Optional[int] = None
 
 
+class FeishuBotStatus(BaseModel):
+    """机器人最近一次上报的运行状态（内存态，超时即视为未知）。"""
+
+    state: str = "unknown"  # pending / connecting / connected / error / restart_required / unknown
+    detail: Optional[str] = None
+    app_id: Optional[str] = None
+    updated_at: Optional[str] = None
+    stale: bool = False
+
+
 class FeishuSettings(BaseModel):
     app_id: Optional[str] = None
     app_secret_masked: Optional[str] = None
+    configured: bool = False
+    source: str = "none"  # settings / env / none
+    bot: FeishuBotStatus = FeishuBotStatus()
+
+
+class FeishuSettingsUpdate(BaseModel):
+    """不传 = 保持原值；显式传空字符串 = 清除该项（与 /settings/llm 同一语义）。"""
+
+    app_id: Optional[str] = None
+    app_secret: Optional[str] = None
+
+
+class FeishuRuntimeSettings(BaseModel):
+    """只发给机器人（服务令牌认证）的明文配置。"""
+
+    app_id: str = ""
+    app_secret: str = ""
+    configured: bool = False
+
+
+class FeishuBotStatusUpdate(BaseModel):
+    state: str = Field("unknown", max_length=32)
+    detail: Optional[str] = Field(None, max_length=500)
+    app_id: Optional[str] = Field(None, max_length=128)
 
 
 class SettingsResponse(BaseModel):

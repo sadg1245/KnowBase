@@ -9,9 +9,14 @@ from loguru import logger
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_user, get_db, get_settings
+from app.api.deps import get_current_user, get_db, get_settings, log_owner_scope
 from app.config import Settings
 from app.core.app_settings_store import has_llm_api_key
+from app.core.app_settings_store import (
+    feishu_configured,
+    feishu_source,
+    save_feishu as save_feishu_settings,
+)
 from app.core.app_settings_store import save as save_app_settings
 from app.models.document import Document
 from app.models.user import User
@@ -21,6 +26,10 @@ from app.schemas.schemas import (
     EmbeddingSettings,
     EmbeddingSettingsUpdate,
     FeishuSettings,
+    FeishuSettingsUpdate,
+    FeishuRuntimeSettings,
+    FeishuBotStatus,
+    FeishuBotStatusUpdate,
     LLMSettings,
     LLMSettingsUpdate,
     LLMTestRequest,
@@ -28,6 +37,7 @@ from app.schemas.schemas import (
     SettingsResponse,
     SystemInfoResponse,
 )
+from app.services import feishu_status
 
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -350,3 +360,79 @@ async def get_system_info(
         "storage_used_bytes": storage_bytes,
         "storage_used_human": _human_readable_size(storage_bytes),
     }
+
+
+# ---------------------------------------------------------------------------
+# 飞书机器人配置
+#
+# 过去飞书凭证只能写进 .env（本机文件）并重启机器人；现在改为在设置页填写，
+# 与模型配置一起落在 <应用主目录>/settings.json，机器人启动时向后端取用。
+# ---------------------------------------------------------------------------
+
+
+def _feishu_view(settings: Settings) -> dict:
+    return {
+        "app_id": settings.FEISHU_APP_ID,
+        "app_secret_masked": _mask_key(settings.FEISHU_APP_SECRET),
+        "configured": feishu_configured(settings),
+        "source": feishu_source(settings),
+        "bot": feishu_status.current(),
+    }
+
+
+@router.get("/feishu", response_model=FeishuSettings)
+async def get_feishu_settings(settings: Settings = Depends(get_settings)) -> dict:
+    """返回飞书机器人配置（密钥脱敏）与机器人最近上报的状态。"""
+    return _feishu_view(settings)
+
+
+@router.put("/feishu", response_model=FeishuSettings)
+async def update_feishu_settings(
+    payload: FeishuSettingsUpdate,
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    """更新飞书凭证。
+
+    不传的字段保持原值；显式传空字符串表示清除该项。写入本机 settings.json 后，
+    机器人最迟在下一次刷新（默认 60 秒）时取到新配置；已经连上的连接需要重启机器人才会换用新凭证。
+    """
+    changed: list[str] = []
+    for field, value in (
+        ("FEISHU_APP_ID", payload.app_id),
+        ("FEISHU_APP_SECRET", payload.app_secret),
+    ):
+        if value is None:
+            continue
+        setattr(settings, field, value.strip())
+        changed.append(field)
+
+    if changed:
+        save_feishu_settings(settings)
+    logger.info("飞书配置已更新：{}", ", ".join(changed) or "无变化")
+    return _feishu_view(settings)
+
+
+@router.get("/feishu/runtime", response_model=FeishuRuntimeSettings)
+async def get_feishu_runtime(
+    settings: Settings = Depends(get_settings),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """只给机器人用的明文配置（服务令牌或登录令牌认证，走内网）。"""
+    log_owner_scope("settings.feishu.runtime", current_user)
+    return {
+        "app_id": settings.FEISHU_APP_ID or "",
+        "app_secret": settings.FEISHU_APP_SECRET or "",
+        "configured": feishu_configured(settings),
+    }
+
+
+@router.post("/feishu/status", response_model=FeishuBotStatus)
+async def report_feishu_status(
+    payload: FeishuBotStatusUpdate,
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """机器人上报运行状态，供设置页显示（内存态，90 秒未上报即过期）。"""
+    log_owner_scope("settings.feishu.status", current_user)
+    return feishu_status.record(
+        payload.state, detail=payload.detail, app_id=payload.app_id
+    )

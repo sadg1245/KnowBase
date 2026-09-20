@@ -16,6 +16,10 @@ from app.schemas.schemas import (
     LLMSettings,
     EmbeddingSettings,
     FeishuSettings,
+    FeishuSettingsUpdate,
+    FeishuBotStatus,
+    FeishuBotStatusUpdate,
+    FeishuRuntimeSettings,
     SystemInfoResponse,
 )
 
@@ -37,5 +41,9 @@ __all__ = [
     "LLMSettings",
     "EmbeddingSettings",
     "FeishuSettings",
+    "FeishuSettingsUpdate",
+    "FeishuBotStatus",
+    "FeishuBotStatusUpdate",
+    "FeishuRuntimeSettings",
     "SystemInfoResponse",
 ]
