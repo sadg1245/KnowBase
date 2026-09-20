@@ -179,23 +179,32 @@ def _wait_for_credentials(config: BotConfig, loop, reporter: StatusReporter) -> 
         time.sleep(max(5, int(config.CONFIG_REFRESH_SECONDS)))
 
 
-def _watch_credentials(
+def _watch_connection(
+    *,
     config: BotConfig,
-    loop,
-    reporter: StatusReporter,
     active: FeishuCredentials,
+    report,
+    resolve,
     stop_event: threading.Event,
 ) -> None:
-    """连接期间盯住设置页有没有换凭证。
+    """连接期间的心跳与凭证监视线程。
 
-    lark-oapi 的长连接没有受支持的停止/重建入口，硬拆会造成重复收消息，
-    所以这里如实上报「需要重启」，而不是偷偷半重启。
+    两件事分开做：每 `STATUS_REPORT_SECONDS` 心跳一次（后端 90 秒没收到就判过期，
+    设置页会把「已连接」显示成「状态未更新」），每 `CONFIG_REFRESH_SECONDS` 检查一次
+    设置页有没有换凭证。换了之后**不**偷偷半重启——lark-oapi 的长连接没有受支持的
+    停止/重建入口，硬拆会造成重复收消息——而是如实上报 `restart_required`。
     """
-    while not stop_event.wait(max(5, int(config.CONFIG_REFRESH_SECONDS))):
+    report_every = max(1, int(config.STATUS_REPORT_SECONDS))
+    check_every = max(report_every, int(config.CONFIG_REFRESH_SECONDS))
+    elapsed = 0
+    while not stop_event.wait(report_every):
+        elapsed += report_every
+        report("connected", app_id=active.app_id)
+        if elapsed < check_every:
+            continue
+        elapsed = 0
         try:
-            latest, _reason = asyncio.run_coroutine_threadsafe(
-                resolve_credentials(config), loop
-            ).result()
+            latest, _reason = resolve()
         except Exception:
             continue
         if latest is None or latest == active:
@@ -204,9 +213,7 @@ def _watch_credentials(
             f"设置页里的飞书凭证已更新（{latest.label}），但当前长连接仍在用旧凭证："
             "请重启机器人容器（docker compose restart feishu-bot）后生效。"
         )
-        _report_status(
-            loop,
-            reporter,
+        report(
             "restart_required",
             detail="设置页已更新飞书凭证，重启机器人后生效",
             app_id=latest.app_id,
@@ -320,8 +327,16 @@ def main() -> None:
 
         # 连接期间盯住设置页有没有换凭证（换了要重启才生效，如实上报）
         watcher = threading.Thread(
-            target=_watch_credentials,
-            args=(config, loop, reporter, credentials, watcher_stop),
+            target=_watch_connection,
+            kwargs={
+                "config": config,
+                "active": credentials,
+                "report": lambda state, **kwargs: _report_status(loop, reporter, state, **kwargs),
+                "resolve": lambda: asyncio.run_coroutine_threadsafe(
+                    resolve_credentials(config), loop
+                ).result(),
+                "stop_event": watcher_stop,
+            },
             name="knowbase-credential-watch",
             daemon=True,
         )

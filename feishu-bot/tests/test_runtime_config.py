@@ -1,5 +1,6 @@
 """飞书凭证来源：本机 .env 优先，其次取后端设置页里保存的那一份。"""
 
+import threading
 import unittest
 
 import httpx
@@ -11,6 +12,7 @@ from bot.runtime_config import (
     local_credentials,
     resolve_credentials,
 )
+from bot.main import _watch_connection
 
 
 def build_config(**overrides) -> BotConfig:
@@ -122,6 +124,70 @@ class RuntimeConfigTests(unittest.IsolatedAsyncioTestCase):
         async with client_for(broken) as client:
             reporter = StatusReporter(build_config(), client=client)
             await reporter.report("connected")  # 不应抛出
+
+
+class ConnectionWatchTests(unittest.TestCase):
+    """心跳要压过后端 90 秒的过期判定；凭证变了要如实上报“需要重启”。"""
+
+    def test_heartbeat_keeps_status_fresh_and_flags_credential_changes(self):
+        active = local_credentials(
+            build_config(FEISHU_APP_ID="cli_a", FEISHU_APP_SECRET="secret-a")
+        )
+        changed = local_credentials(
+            build_config(FEISHU_APP_ID="cli_a", FEISHU_APP_SECRET="secret-b")
+        )
+        config = build_config()
+        config.STATUS_REPORT_SECONDS = 1
+        config.CONFIG_REFRESH_SECONDS = 2
+
+        events: list[tuple[str, str | None]] = []
+        stop_event = threading.Event()
+        worker = threading.Thread(
+            target=_watch_connection,
+            kwargs={
+                "config": config,
+                "active": active,
+                "report": lambda state, **kwargs: events.append((state, kwargs.get("app_id"))),
+                "resolve": lambda: (changed, ""),
+                "stop_event": stop_event,
+            },
+            daemon=True,
+        )
+        worker.start()
+        worker.join(timeout=5)
+
+        self.assertFalse(worker.is_alive(), "识别到凭证变化后监视线程应结束")
+        self.assertEqual(events[:2], [("connected", "cli_a"), ("connected", "cli_a")])
+        self.assertEqual(events[-1], ("restart_required", "cli_a"))
+
+    def test_unchanged_credentials_keep_reporting_heartbeats(self):
+        active = local_credentials(
+            build_config(FEISHU_APP_ID="cli_a", FEISHU_APP_SECRET="secret-a")
+        )
+        config = build_config()
+        config.STATUS_REPORT_SECONDS = 1
+        config.CONFIG_REFRESH_SECONDS = 1
+
+        events: list[str] = []
+        stop_event = threading.Event()
+        worker = threading.Thread(
+            target=_watch_connection,
+            kwargs={
+                "config": config,
+                "active": active,
+                "report": lambda state, **kwargs: events.append(state),
+                "resolve": lambda: (active, ""),
+                "stop_event": stop_event,
+            },
+            daemon=True,
+        )
+        worker.start()
+        threading.Event().wait(2.5)
+        stop_event.set()
+        worker.join(timeout=5)
+
+        self.assertGreaterEqual(events.count("connected"), 2)
+        self.assertNotIn("restart_required", events)
 
 
 if __name__ == "__main__":
