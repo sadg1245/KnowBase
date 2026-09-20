@@ -1,7 +1,10 @@
 """飞书凭证来源：本机 .env 优先，其次取后端设置页里保存的那一份。"""
 
 import threading
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import httpx
 
@@ -10,7 +13,10 @@ from bot.runtime_config import (
     StatusReporter,
     fetch_credentials,
     local_credentials,
+    resolve_access_token,
     resolve_credentials,
+    service_headers,
+    service_token_file,
 )
 from bot.main import _watch_connection
 
@@ -28,6 +34,66 @@ def build_config(**overrides) -> BotConfig:
 
 def client_for(handler) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+
+class AccessTokenTests(unittest.TestCase):
+    """服务令牌由后端自动生成，用户只填飞书 App ID / App Secret。"""
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+
+    def _write_token(self, value: str) -> Path:
+        token_file = self.root / "secrets" / "service_token"
+        token_file.parent.mkdir(parents=True, exist_ok=True)
+        token_file.write_text(value, encoding="utf-8")
+        return token_file
+
+    def test_token_is_read_from_the_app_home_secrets_file(self):
+        self._write_token("generated-by-backend\n")
+        config = build_config(DATA_ROOT=str(self.root), BACKEND_ACCESS_TOKEN="")
+
+        token, source = resolve_access_token(config)
+
+        self.assertEqual(token, "generated-by-backend")
+        self.assertEqual(source, "file")
+        self.assertEqual(service_headers(config), {"X-KnowBase-Service-Token": "generated-by-backend"})
+        self.assertEqual(service_token_file(config), self.root / "secrets" / "service_token")
+
+    def test_explicit_token_still_wins(self):
+        self._write_token("from-file")
+        config = build_config(DATA_ROOT=str(self.root), BACKEND_ACCESS_TOKEN="from-env")
+
+        token, source = resolve_access_token(config)
+
+        self.assertEqual((token, source), ("from-env", "configured"))
+
+    def test_missing_token_file_is_reported_with_its_path(self):
+        config = build_config(DATA_ROOT=str(self.root), BACKEND_ACCESS_TOKEN="")
+
+        token, source = resolve_access_token(config)
+
+        self.assertEqual(token, "")
+        self.assertTrue(source.startswith("missing:"))
+        self.assertIn("service_token", source)
+        self.assertEqual(service_headers(config), {})
+
+    def test_service_token_file_override_wins_over_app_home(self):
+        custom = self.root / "custom-token"
+        custom.write_text("custom", encoding="utf-8")
+        config = build_config(
+            DATA_ROOT=str(self.root), SERVICE_TOKEN_FILE=str(custom), BACKEND_ACCESS_TOKEN=""
+        )
+
+        self.assertEqual(resolve_access_token(config), ("custom", "file"))
+
+    def test_default_app_home_follows_knowbase_home_when_set(self):
+        with patch.dict("os.environ", {"KNOWBASE_HOME": str(self.root / "home")}):
+            config = build_config()
+            self.assertEqual(
+                service_token_file(config), self.root / "home" / "secrets" / "service_token"
+            )
 
 
 class RuntimeConfigTests(unittest.IsolatedAsyncioTestCase):

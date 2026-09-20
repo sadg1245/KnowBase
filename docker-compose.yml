@@ -94,11 +94,16 @@ services:
     environment:
       - BACKEND_URL=http://backend:8000
       - REDIS_URL=redis://redis:6379/1
-      # 服务令牌是后端与机器人之间的共享密钥：这里直接跟随 SERVICE_TOKEN，
-      # 避免两个值不一致导致机器人拿到 401。
+      # 应用主目录（与 backend 同一个卷）：机器人从这里读后端自动生成的服务令牌，
+      # 所以用户既不用填令牌，也不用担心两边不一致。
+      - DATA_ROOT=/app/data
+      # 只有想显式指定服务令牌时才需要设置；一般留空，机器人读 DATA_ROOT/secrets/service_token。
       - BACKEND_ACCESS_TOKEN=${SERVICE_TOKEN:-}
       # 飞书凭证不再是启动必需：机器人在网页「设置 → 飞书机器人」里取配置，
       # .env 的 FEISHU_APP_ID / FEISHU_APP_SECRET 只作为兜底。
+    volumes:
+      # 只读挂载：机器人只读取 secrets/ 下的服务令牌，不写后端数据
+      - backend_data:/app/data:ro
     depends_on:
       backend:
         condition: service_healthy

@@ -1,11 +1,19 @@
 """程序自管的本地密钥。
 
-令牌签名密钥（JWT_SECRET）在本地部署里不需要用户知道，也不需要跨机器一致；
-唯一要求是"足够随机 + 重启后保持不变"。因此：
+两个密钥在本地部署里都不需要用户知道，也不需要跨机器一致，唯一要求是
+"足够随机 + 重启后保持不变"：
+
+- 令牌签名密钥（JWT_SECRET）：给登录态签名；
+- 服务令牌（SERVICE_TOKEN）：让飞书机器人以唯一账号的身份访问私人接口。
+
+因此：
 
 - 运维/自托管显式配置了强密钥 → 直接使用，不落盘；
 - 未配置或配置了不安全的值 → 首次启动自动生成，写到 `<应用主目录>/secrets/`（0600），
   之后一直复用。用户永远不需要看到它，丢失它的代价也只是"重新登录一次"。
+
+服务令牌额外放宽一点：只要显式配置了非空值就直接沿用（它是两个本机进程之间的共享口令，
+不是签名密钥），这样已有的短令牌部署不会被悄悄换掉。
 """
 
 from __future__ import annotations
@@ -23,6 +31,7 @@ from app.core.app_paths import ensure_directory
 
 
 JWT_SECRET_FILENAME = "jwt_secret"
+SERVICE_TOKEN_FILENAME = "service_token"
 MANAGED_SECRET_BYTES = 48
 MIN_SECRET_LENGTH = 32
 
@@ -92,4 +101,18 @@ def resolve_jwt_secret(
     resolved = managed_secret(path)
     if resolved.source == "generated":
         logger.info("已生成并保存本机令牌密钥（{}），后续启动会继续使用它。", path)
+    return resolved
+
+
+def resolve_service_token(settings: Settings | None = None) -> ResolvedSecret:
+    """返回机器人访问后端用的服务令牌，未配置时自动生成并持久化。"""
+    config = settings or global_settings
+    configured = (config.SERVICE_TOKEN or "").strip()
+    if configured:
+        return ResolvedSecret(configured, "configured")
+
+    path = os.path.join(config.SECRETS_DIR, SERVICE_TOKEN_FILENAME)
+    resolved = managed_secret(path)
+    if resolved.source == "generated":
+        logger.info("已生成并保存本机服务令牌（{}），飞书机器人会读取同一份文件。", path)
     return resolved

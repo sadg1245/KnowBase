@@ -1651,6 +1651,10 @@ quiz_set（题组） → quiz_run（一轮作答） → quiz_attempt（单题单
   取到凭证后自动建连，并把连接状态上报给后端（设置页据此显示状态）。已经建立的长连接
   在凭证变更后需要重启机器人容器——lark-oapi 的长连接没有受支持的停止/重建入口，
   硬拆会造成重复收消息，因此如实上报 `restart_required` 而不是半重启。
+- **服务令牌自管（同一批调整）**：`SERVICE_TOKEN` 与 `JWT_SECRET` 一样由程序生成并保存在
+  `<应用主目录>/secrets/service_token`（0660/0600），后端启动时自动生效；机器人优先用显式
+  配置的 `BACKEND_ACCESS_TOKEN`，否则读同一个文件。用户需要填的只有飞书 App ID / App Secret。
+  Docker 部署里机器人只读挂载 `backend_data:/app/data` 并设 `DATA_ROOT=/app/data`。
 
 ---
 

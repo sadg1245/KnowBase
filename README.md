@@ -40,10 +40,9 @@
 需要在公网暴露时才配置：
 
 ```env
-# 飞书机器人使用；服务令牌会绑定到唯一账号，未绑定账号时私人请求返回 503
-SERVICE_TOKEN=飞书机器人专用随机令牌
-BACKEND_ACCESS_TOKEN=与 SERVICE_TOKEN 保持一致
 CORS_ORIGINS=https://你的访问域名
+# 服务令牌由程序自管：首次启动自动生成并存到 <应用主目录>/secrets/service_token，
+# 飞书机器人读同一份文件。只有想显式指定时才设置 SERVICE_TOKEN。
 ```
 
 ### 应用主目录（本地优先，用户零配置）
@@ -262,7 +261,7 @@ cd E:\anything_llm
 cp .env.example .env
 # 编辑 .env：只需要填写你自己的模型 API Key（也可以在首次打开页面时按向导填写）
 # JWT_SECRET 留空即可，程序会自动生成并保存在数据目录里
-# 想用飞书机器人时，再把 SERVICE_TOKEN 与 BACKEND_ACCESS_TOKEN 设为同一个随机值
+# 飞书机器人不需要额外配置令牌：后端首次启动会自动生成服务令牌，机器人读同一份文件
 
 # 3. 一键启动所有服务
 docker compose up -d
@@ -382,6 +381,8 @@ python -m bot.main
 凭证在网页里配置，不需要改任何文件：登录后打开**设置 → 飞书机器人**，
 把飞书开放平台的 `App ID` 与 `App Secret` 填进去保存即可。机器人每 60 秒读取一次配置，
 填好以后会自动上线；「设置 → 飞书机器人」页面上会显示机器人当前是「等待填写凭证 / 连接中 / 已连接 / 连接失败」。
+**服务令牌由程序自管**：后端首次启动会生成 `<应用主目录>/secrets/service_token`（0600），
+机器人读同一份文件，所以用户需要填的只有飞书 App ID 与 App Secret 两项。
 
 飞书开放平台那边需要做三件事：
 
@@ -531,7 +532,7 @@ AI 导师相关的接口：`GET /api/learning/learner-profile` 返回画像快�
 | `RAG_TOP_K` | 检索返回条数 | `5` |
 | `JWT_SECRET` | 令牌密钥；留空自动生成并存到应用主目录 | 留空即可 |
 | `KNOWBASE_HOME` / `DATA_ROOT` | 应用主目录（数据库、媒体、密钥、备份、偏好） | `%APPDATA%\KnowBase` |
-| `SERVICE_TOKEN` | 飞书机器人服务令牌，绑定唯一账号 | 随机字符串 |
+| `SERVICE_TOKEN` | 飞书机器人服务令牌；留空自动生成并存到应用主目录，机器人自动读取 | 留空即可 |
 | `MEDIA_DIR` | 头像与封面受控目录 | `./data/media` |
 | `IMAGE_MAX_SIZE_MB` | 图片上传大小上限 | `4` |
 | `IMAGE_MAX_PIXELS` | 图片像素总量上限 | `20000000` |

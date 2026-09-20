@@ -16,7 +16,7 @@ from app.core.app_paths import default_app_home
 from app.core.chroma import describe_backend, get_chroma_client, reset_chroma_client
 from app.core.db_bootstrap import BASELINE_REVISION, backup_database, ensure_database_ready
 from app.core.legacy_schema import legacy_metadata
-from app.core.secrets_store import is_strong_secret, resolve_jwt_secret
+from app.core.secrets_store import is_strong_secret, resolve_jwt_secret, resolve_service_token
 
 
 DEFAULT_SECRET = "replace-with-a-long-random-secret"
@@ -125,6 +125,33 @@ class ManagedSecretTests(unittest.TestCase):
         self.assertEqual(resolved.source, "configured")
         self.assertEqual(resolved.value, strong)
         self.assertFalse(os.path.exists(os.path.join(config.SECRETS_DIR, "jwt_secret")))
+
+    def test_service_token_is_generated_and_reused_without_user_input(self):
+        with isolated_settings_env():
+            config = Settings(DATA_ROOT=self.root, _env_file=None)
+
+            first = resolve_service_token(config)
+            self.assertEqual(first.source, "generated")
+            self.assertTrue(is_strong_secret(first.value))
+            token_file = os.path.join(config.SECRETS_DIR, "service_token")
+            self.assertTrue(os.path.isfile(token_file))
+            self.assertEqual(open(token_file, encoding="utf-8").read().strip(), first.value)
+
+            # 重启后复用同一个令牌：机器人不需要跟着改配置
+            restarted = Settings(DATA_ROOT=self.root, _env_file=None)
+            second = resolve_service_token(restarted)
+        self.assertEqual(second.source, "stored")
+        self.assertEqual(second.value, first.value)
+
+    def test_explicit_service_token_wins_even_when_short(self):
+        with isolated_settings_env():
+            config = Settings(DATA_ROOT=self.root, SERVICE_TOKEN="short-but-mine", _env_file=None)
+
+            resolved = resolve_service_token(config)
+
+        self.assertEqual(resolved.source, "configured")
+        self.assertEqual(resolved.value, "short-but-mine")
+        self.assertFalse(os.path.exists(os.path.join(config.SECRETS_DIR, "service_token")))
 
 
 class PersistedSettingsTests(unittest.TestCase):

@@ -19,7 +19,7 @@ from app.core.chroma import initialize_chroma_client
 from app.core.db_bootstrap import ensure_database_ready
 from app.core.media import resolve_media_path
 from app.core.migrations import ensure_memory_index, ensure_search_index
-from app.core.secrets_store import resolve_jwt_secret
+from app.core.secrets_store import resolve_jwt_secret, resolve_service_token
 from app.services.hybrid_retrieval import backfill_keyword_index
 import app.models  # noqa: F401 - register every ORM model before create_all
 
@@ -53,6 +53,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 令牌签名密钥由程序自管：未配置或不安全时自动生成并持久化，用户不需要关心
     secret = resolve_jwt_secret(settings)
     settings.JWT_SECRET = secret.value
+
+    # 服务令牌同样由程序自管：飞书机器人读同一份文件，用户不需要填写任何令牌
+    settings.SERVICE_TOKEN = resolve_service_token(settings).value
 
     # 用户自己的模型配置（含 API Key）从本机读取，重启后依然生效
     if apply_persisted(settings):

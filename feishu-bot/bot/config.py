@@ -15,6 +15,10 @@ class BotConfig(BaseSettings):
 
     # 后端 API 地址
     BACKEND_URL: str = "http://localhost:8000"
+    # 应用主目录（与后端同一个）：用于读取后端自动生成的服务令牌。留空则按平台默认目录推导
+    DATA_ROOT: str = ""
+    # 也可以直接指定服务令牌文件；一般不需要
+    SERVICE_TOKEN_FILE: str = ""
 
     # Redis 地址，用于状态管理
     REDIS_URL: str = "redis://localhost:6379/1"
@@ -24,6 +28,7 @@ class BotConfig(BaseSettings):
 
     # 日志级别
     LOG_LEVEL: str = "INFO"
+    # 显式指定的服务令牌（可选）。留空时机器人读后端自动生成的那一份，用户不需要填写。
     BACKEND_ACCESS_TOKEN: str = ""
     REMINDERS_ENABLED: bool = True
     REMINDER_TIMEZONE: str = "Asia/Shanghai"
