@@ -1,6 +1,6 @@
 import React from 'react';
 import { Button, Progress, Tag } from 'antd';
-import { FileSearchOutlined, RedoOutlined, ReloadOutlined } from '@ant-design/icons';
+import { BulbOutlined, FileSearchOutlined, RedoOutlined, ReloadOutlined } from '@ant-design/icons';
 
 import type {
   AssessmentQuestion,
@@ -44,6 +44,7 @@ interface ResultQuestionProps {
   retryingAttemptId?: string;
   onRetryGrading: (attemptId: string) => void | Promise<void>;
   onSource?: (href: string, source: AssessmentSourceSnapshot) => void;
+  onAskTutor?: (question: AssessmentQuestion) => void;
 }
 
 export const ResultQuestion: React.FC<ResultQuestionProps> = ({
@@ -53,6 +54,7 @@ export const ResultQuestion: React.FC<ResultQuestionProps> = ({
   retryingAttemptId,
   onRetryGrading,
   onSource,
+  onAskTutor,
 }) => {
   const state = attemptState(attempt);
   return <article className={`practice-result-question ${state.className}`}>
@@ -62,6 +64,15 @@ export const ResultQuestion: React.FC<ResultQuestionProps> = ({
       <h3>{question.prompt}</h3>
       <dl className="practice-answer-review">
         <div><dt>你的答案</dt><dd>{displayValue(attempt?.user_answer)}</dd></div>
+        {onAskTutor ? <div className="practice-tutor-ask">
+          <dt>继续追问</dt>
+          <dd>
+            <Button size="small" icon={<BulbOutlined />} onClick={() => onAskTutor(question)}>
+              问 AI 老师（不透露答案）
+            </Button>
+            <small>练习语境只在题干与概念范围内检索，不会带上参考答案。</small>
+          </dd>
+        </div> : null}
         {attempt?.evaluation_status === 'grading_failed' ? <div className="practice-grading-note">
           <dt>评分状态</dt>
           <dd>
@@ -106,6 +117,7 @@ interface QuizResultsProps {
   onRetry: () => void | Promise<void>;
   onRetryGrading: (attemptId: string) => void | Promise<void>;
   onSource?: (href: string, source: AssessmentSourceSnapshot) => void;
+  onAskTutor?: (question: AssessmentQuestion) => void;
 }
 
 export const QuizResults: React.FC<QuizResultsProps> = ({
@@ -115,6 +127,7 @@ export const QuizResults: React.FC<QuizResultsProps> = ({
   onRetry,
   onRetryGrading,
   onSource,
+  onAskTutor,
 }) => {
   if (run.status !== 'submitted') return null;
   const session = createPracticeSession(run, run.quiz_set.questions, Date.now());
@@ -153,6 +166,7 @@ export const QuizResults: React.FC<QuizResultsProps> = ({
         retryingAttemptId={retryingAttemptId}
         onRetryGrading={onRetryGrading}
         onSource={onSource}
+        onAskTutor={onAskTutor}
       />)}
     </div>
     {summary.pendingQuestionIds.length ? <Tag color="processing">{summary.pendingQuestionIds.length} 题 AI 评分中</Tag> : null}

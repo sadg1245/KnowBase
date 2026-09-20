@@ -94,7 +94,7 @@ const LearningChat: React.FC = () => {
   const urlDocumentId = params.get('document_id') || undefined;
   const [documentIds, setDocumentIds] = useState<string[]>(urlDocumentId ? [urlDocumentId] : []);
   const [documentsLoading, setDocumentsLoading] = useState(false);
-  const [mode, setMode] = useState<LearningMode>('simple');
+  const [mode, setMode] = useState<LearningMode>(initialQuickQuestion?.mode || 'simple');
   const [scopeChoice, setScopeChoice] = useState<ScopeChoice>(urlDocumentId ? 'document' : 'smart');
   const [allowScopeExpansion, setAllowScopeExpansion] = useState(false);
   const [knowledgePointId, setKnowledgePointId] = useState<string | undefined>(initialPreset.knowledgePointId);
@@ -227,6 +227,7 @@ const LearningChat: React.FC = () => {
     if (!quick) return;
     consumedQuickNonceRef.current = quick.nonce;
     if (quick.workspaceId) setWorkspaceId(quick.workspaceId);
+    if (quick.mode) setMode(quick.mode);
     setQuestion(quick.question);
     navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
   }, [location.pathname, location.search, location.state, navigate]);

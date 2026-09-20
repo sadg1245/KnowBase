@@ -20,3 +20,20 @@ test('navigation nonce is consumed once and invalid state is ignored', () => {
   assert.equal(consumeQuickQuestion(state, 'nonce-1'), null);
   assert.equal(consumeQuickQuestion({ quickQuestion: '', nonce: 'nonce-2' }, undefined), null);
 });
+
+test('practice context travels with the quick question state', () => {
+  const result = quickQuestionDestination('这道题该怎么想', 'ws-1', 'nonce-practice', 'practice');
+
+  assert.deepEqual(result.state, {
+    quickQuestion: '这道题该怎么想', workspaceId: 'ws-1', nonce: 'nonce-practice', mode: 'practice',
+  });
+  assert.deepEqual(consumeQuickQuestion(result.state, undefined), {
+    question: '这道题该怎么想', workspaceId: 'ws-1', nonce: 'nonce-practice', mode: 'practice',
+  });
+});
+
+test('unknown quick question modes are dropped instead of forwarded', () => {
+  assert.deepEqual(consumeQuickQuestion({ quickQuestion: '问题', nonce: 'nonce-x', mode: 'exam' }, undefined), {
+    question: '问题', nonce: 'nonce-x',
+  });
+});

@@ -113,6 +113,7 @@ from app.api.routes import (  # noqa: E402
     learning_domains,
     learning_insights,
     me,
+    rag,
     search,
     workspaces,
 )
@@ -129,6 +130,7 @@ app.include_router(chat_sessions.router, prefix="/api")
 app.include_router(assessments.router, prefix="/api")
 app.include_router(me.router, prefix="/api")
 app.include_router(learning_domains.router, prefix="/api")
+app.include_router(rag.router, prefix="/api")
 
 
 def _public_path(path: str) -> bool:

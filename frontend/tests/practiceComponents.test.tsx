@@ -335,6 +335,25 @@ test('results reveal answer explanation feedback and traceable source links', ()
   assert.match(html, /href="\/knowledge\/workspace-1\/documents\/document-1\?chunk=chunk-7&amp;page=3"/);
 });
 
+test('练习结果只在明确提供追问入口时渲染「问 AI 老师」', () => {
+  const submittedRun = makeRun({ status: 'submitted', submitted_at: '2026-09-01T00:01:15Z' });
+  const withoutHandler = renderToStaticMarkup(<QuizResults
+    run={submittedRun}
+    onRetry={() => undefined}
+    onRetryGrading={() => undefined}
+  />);
+  assert.doesNotMatch(withoutHandler, /问 AI 老师/);
+
+  const html = renderToStaticMarkup(<QuizResults
+    run={submittedRun}
+    onRetry={() => undefined}
+    onRetryGrading={() => undefined}
+    onAskTutor={() => undefined}
+  />);
+  assert.match(html, /问 AI 老师（不透露答案）/);
+  assert.match(html, /练习语境只在题干与概念范围内检索，不会带上参考答案。/);
+});
+
 test('grading failures stay retryable and are not rendered as wrong answers', () => {
   const failedAttempt = {
     id: 'attempt-failed', quiz_set_id: 'set-1', quiz_run_id: 'run-1', question_id: question.id,

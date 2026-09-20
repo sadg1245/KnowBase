@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Button, Progress, Tag } from 'antd';
 import { ArrowLeftOutlined, ArrowRightOutlined, CheckOutlined, ClockCircleOutlined } from '@ant-design/icons';
 
-import type { PracticeAnswer, PracticeSessionState, QuizAttempt, QuizRunView } from '../../features/practice/types';
+import type { AssessmentQuestion, PracticeAnswer, PracticeSessionState, QuizAttempt, QuizRunView } from '../../features/practice/types';
 import { remainingSeconds, unansweredQuestionIds } from '../../features/practice/practiceSession';
 import { QuestionInput, answerIsPresent } from './QuestionInput';
 import { QuizResults, ResultQuestion } from './QuizResults';
@@ -53,6 +53,7 @@ interface QuizRunnerProps {
   onSubmitPaper: () => void | Promise<void>;
   onRetry: () => void | Promise<void>;
   onRetryGrading: (attemptId: string) => void | Promise<void>;
+  onAskTutor?: (question: AssessmentQuestion) => void;
 }
 
 export const QuizRunner: React.FC<QuizRunnerProps> = ({
@@ -65,6 +66,7 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
   onSubmitPaper,
   onRetry,
   onRetryGrading,
+  onAskTutor,
 }) => {
   const [activeIndex, setActiveIndex] = useState(0);
   const [now, setNow] = useState(() => Date.now());
@@ -104,6 +106,7 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
       retryingAttemptId={retryingAttemptId}
       onRetry={onRetry}
       onRetryGrading={onRetryGrading}
+      onAskTutor={onAskTutor}
     />;
   }
 
@@ -170,6 +173,7 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
         {isRevealed ? <div className="practice-inline-feedback"><ResultQuestion
           question={current} attempt={attempt} workspaceId={session.run.quiz_set.workspace_id}
           retryingAttemptId={retryingAttemptId} onRetryGrading={onRetryGrading}
+          onAskTutor={onAskTutor}
         /></div> : null}
 
         <footer className="practice-paper-actions">

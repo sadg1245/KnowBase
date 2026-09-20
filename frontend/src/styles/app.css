@@ -148,6 +148,8 @@ button, input, textarea { font: inherit; }
 .practice-answer-review dd { min-width:0; margin:0; color:#263f4b; line-height:1.65; white-space:pre-wrap; overflow-wrap:anywhere; }
 .practice-answer-review dd small { display:block; margin:4px 0 8px; color:#8b6330; }
 .practice-grading-note { background:#fffaf1; }
+.practice-tutor-ask { background:#f5fbfb; }
+.practice-tutor-ask dd small { margin:6px 0 0; color:#5e7680; }
 .practice-source-notes { margin-top:22px; padding:18px 20px; border-radius:10px; color:#5e7680; background:#f4f7f7; }
 .practice-source-notes > strong { color:#315363; font-size:12px; }
 .practice-source-note { display:grid; grid-template-columns:20px minmax(0,1fr); gap:4px; margin-top:12px; }

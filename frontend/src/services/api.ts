@@ -489,7 +489,8 @@ export const streamChat = async (
 export const normalizeChatSources = (sources: BackendSourceItem[]): SourceItem[] =>
   sources.map(normalizeSource);
 
-export type LearningMode = 'direct' | 'simple' | 'deep' | 'socratic' | 'feynman' | 'quiz';
+// `practice` 不是学习方式面板上的选项，而是练习语境：检索层会排除解答与答案（设计文档 §16.2）。
+export type LearningMode = 'direct' | 'simple' | 'deep' | 'socratic' | 'feynman' | 'quiz' | 'practice';
 export type EvidenceStatus = 'supported' | 'limited' | 'insufficient' | 'model_only' | 'error';
 
 export interface RetrievalRunHit {

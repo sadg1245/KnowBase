@@ -181,7 +181,11 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = Field(
         None, description="Persistent learning session id; preferred over conversation_id"
     )
-    mode: str = Field("explain", pattern="^(direct|simple|deep|socratic|feynman|quiz|explain)$")
+    mode: str = Field(
+        "explain",
+        pattern="^(direct|simple|deep|socratic|feynman|quiz|explain|practice)$",
+        description="Teaching mode; `practice` keeps solution/answer chunks out of retrieval (design §16.2)",
+    )
     strict_sources: bool = True
     scope_mode: Optional[str] = Field(
         None,

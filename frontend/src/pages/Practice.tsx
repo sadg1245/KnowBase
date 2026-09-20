@@ -8,7 +8,7 @@ import { QuizRunner } from '../components/practice/QuizRunner';
 import { QuizHistoryPanel } from '../components/practice/QuizHistoryPanel';
 import { MistakeNotebook } from '../components/practice/MistakeNotebook';
 import { WeakKnowledgePanel } from '../components/practice/WeakKnowledgePanel';
-import type { AssessmentAnswerMode, AssessmentListScope, MistakeFilters, MistakeRecord, PracticeAnswer, PracticeSessionState, QuizAttempt, QuizSetGenerateRequest, QuizSetHistoryItem, QuizSetHistoryScope, QuizRunView, WeakKnowledgeState } from '../features/practice/types';
+import type { AssessmentAnswerMode, AssessmentListScope, AssessmentQuestion, MistakeFilters, MistakeRecord, PracticeAnswer, PracticeSessionState, QuizAttempt, QuizSetGenerateRequest, QuizSetHistoryItem, QuizSetHistoryScope, QuizRunView, WeakKnowledgeState } from '../features/practice/types';
 import {
   clearPracticeSessionDraft,
   createPracticeSession,
@@ -49,6 +49,7 @@ import {
   weakKnowledgeRecalculationScope,
 } from '../features/practice/learningLoop';
 import { documentSelectionOption, resetDocumentScope } from './documentScope';
+import { quickQuestionDestination } from '../features/learning/quickQuestion';
 import {
   createPracticeRequestGuard,
   finishMatchingPracticeOperation,
@@ -249,6 +250,17 @@ const Practice: React.FC = () => {
   const [gradingOperation, setGradingOperation] = useState<{ token: number; attemptId: string }>();
   const [session, setSession] = useState<PracticeSessionState | null>(null);
   const [pageError, setPageError] = useState<string>();
+
+  // 练习结果里追问 AI 老师：带上 practice 语境，检索层不会召回参考答案与解答（§16.2）。
+  const askTutor = (question: AssessmentQuestion) => {
+    const scope = session?.run.quiz_set.workspace_id || workspaceId;
+    navigate(quickQuestionDestination(
+      question.prompt,
+      scope,
+      `practice-${question.id}-${Date.now()}`,
+      'practice',
+    ));
+  };
 
   const [legacyQuestions, setLegacyQuestions] = useState<QuizQuestion[]>([]);
   const [legacyIndex, setLegacyIndex] = useState(0);
@@ -909,6 +921,7 @@ const Practice: React.FC = () => {
       onSubmitPaper={submitPaper}
       onRetry={retryRun}
       onRetryGrading={retryGrading}
+      onAskTutor={askTutor}
     /> : <><PracticeBuilder
       workspaces={workspaces}
       documents={documents}
