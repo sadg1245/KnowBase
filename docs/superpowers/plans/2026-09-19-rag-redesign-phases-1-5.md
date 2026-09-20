@@ -67,7 +67,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml exec backend pyth
 | 富化：规则 + LLM 批量 + 状态 + 补跑端点 | ✅ | `app/rag/enrichment/metadata_enricher.py`、`POST /api/documents/{id}/enrich`、`test_rag_enrichment.py` |
 | 多向量（content / summary / question）+ 归并 + kind 白名单 | ✅ | `app/rag/indexing/multivector.py`（写入展开）、`search._vector_recall`（按逻辑 chunk_id 归并、证据正文取 content 向量）、`retrieval_hits.vector_kinds`（迁移 0009） |
 | 索引指纹与 `index_stale` 提示（§15.2） | ✅ | `app/rag/indexing/index_versions.py`（读 / 写 / gap 判定）+ 入库后写入指纹 + `/api/chat` 的 `evidence.index_stale` 可选键 |
-| embedding 切换到 bge-m3 并全量重建 | 🚧 机制就绪 | 指纹含 `embedding_model` 与维度：换模型后 self-check 会报 `index_stale`，重新入库即重建；真正切换需模型可用（本地缓存或云端 provider） |
+| embedding 保持现状（不切换到 bge-m3） | ⛔ 已决策不做 | 2026-09-20 决策：继续使用现有 embedding 模型，不做 bge-m3 切换与全量重建。指纹与 `index_stale` 机制保留，将来需要时仍可切换（见下方「决策记录」）。阶段 3 验收不再要求换模型 |
 | 验收：评测指标不低于阶段 0 基线 | ⛔ 待执行 | 依赖阶段 0 基线采集 |
 
 ## 阶段 4：查询理解、重排与上下文 ✅
@@ -116,6 +116,17 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml exec backend pyth
 | 11 | 长期知识记忆 | 记忆落库 + 混合召回 + 导师注入 | `test_learning_memory_service`、`test_tutor_api` |
 
 ## 阶段 4 补充：练习语境端到端可达（2026-09-20 追加）
+
+### 决策记录（2026-09-20）：不切换 embedding 模型
+
+- **决策**：保持当前 embedding 模型，不做 `bge-m3` 切换，也不做全量重建。
+- **直接后果**：切分上限 `MAX_CHUNK_TOKENS = 1200` 大于当前模型窗口（`bge-small-zh-v1.5` 为 512 token），
+  `sentence-transformers` 会静默截断，超出窗口的尾部不会进入向量。设计文档 §10.4 的 400–800 目标块大小
+  原本是按 `bge-m3` 的 8192 窗口定的，现在这条前提不再成立。
+- **本次已采取**：embedding 侧显式统计并告警（`EmbeddingService.last_truncation`、`max_input_tokens`），
+  把静默截断变成可读信号；原子块（公式/代码/表格）按设计不细分，所以即使将来收紧切分上限，这条检查仍然必要。
+- **仍待决策**：是否把切分上限收到模型窗口内（例如 ~480 token）。代价是重新入库生成索引；
+  当前重构尚未发布、也还没有真实基线，所以现在做的成本接近 0，越晚做越贵。
 
 问题：检索层已经能按 `practice` 排除答案，但 `ChatRequest.mode` 的模式白名单里没有 `practice`，
 HTTP 层根本进不到这条路径；前端练习页也没有任何追问入口，所以「练习页尚未切换调用」一直悬着。

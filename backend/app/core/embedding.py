@@ -27,6 +27,14 @@ class EmbeddingService:
         "text-embedding-3-small": 1536,
     }
 
+    # 各模型的输入窗口（token）。模型已加载时以 tokenizer 的真实窗口为准，
+    # 这张表只用于「未加载模型」时判断切分上限是否安全。
+    MODEL_MAX_TOKENS = {
+        "BAAI/bge-small-zh-v1.5": 512,
+        "BAAI/bge-m3": 8192,
+        "text-embedding-3-small": 8191,
+    }
+
     def __init__(self, provider: str = "local", model_name: Optional[str] = None):
         """
         初始化 EmbeddingService。
@@ -39,11 +47,45 @@ class EmbeddingService:
         self.model_name = model_name or self.DEFAULT_MODELS.get(provider)
         self._model = None  # 延迟加载本地模型
         self._dimension: Optional[int] = None
+        # 最近一批 embedding 的窗口截断情况，供调用方与排障读取。
+        self.last_truncation: dict[str, int] = {"over_window": 0, "batch": 0, "worst_tokens": 0}
 
         if not self.model_name:
             raise ValueError(f"未知的 embedding 提供商: {provider}，且未指定模型名称")
 
         logger.info(f"EmbeddingService 初始化完成: provider={provider}, model={self.model_name}")
+
+    @property
+    def max_input_tokens(self) -> Optional[int]:
+        """模型输入窗口：优先取已加载模型的真实值，否则查已知模型表。"""
+        if self._model is not None:
+            window = int(getattr(self._model, "max_seq_length", 0) or 0)
+            if window:
+                return window
+        return self.MODEL_MAX_TOKENS.get(self.model_name)
+
+    def _count_over_window(self, texts: list[str]) -> tuple[int, int]:
+        """统计本批有多少条输入超出模型窗口（超出的部分不会进入向量）。
+
+        sentence-transformers 默认静默截断，这里显式统计，避免「切分上限比模型窗口大」
+        这类配置问题变成无声的质量损失。原子块（公式/代码/表格）按设计不细分，
+        因此这条检查在收紧切分上限之后仍然必要。
+        """
+        window = self.max_input_tokens
+        tokenizer = getattr(self._model, "tokenizer", None)
+        if not window or tokenizer is None:
+            return 0, 0
+        over = 0
+        worst = 0
+        for text in texts:
+            try:
+                length = len(tokenizer.encode(text, add_special_tokens=True, truncation=False))
+            except TypeError:  # 某些 tokenizer 不接受 truncation 参数
+                length = len(tokenizer.encode(text))
+            if length > window:
+                over += 1
+                worst = max(worst, length)
+        return over, worst
 
     def _load_local_model(self):
         """延迟加载 sentence-transformers 本地模型"""
@@ -141,6 +183,18 @@ class EmbeddingService:
     async def _embed_local(self, texts: list[str]) -> list[list[float]]:
         """使用 sentence-transformers 本地推理"""
         self._load_local_model()
+        over, worst = self._count_over_window(texts)
+        self.last_truncation = {"over_window": over, "batch": len(texts), "worst_tokens": worst}
+        if over:
+            logger.warning(
+                "embedding 输入超出模型窗口：{}/{} 条被截断（模型 {}，窗口 {} token，最长 {} token）。"
+                "被截断的尾部不会进入向量，请核对切分上限与原子块长度。",
+                over,
+                len(texts),
+                self.model_name,
+                self.max_input_tokens,
+                worst,
+            )
 
         def _run():
             # sentence-transformers 的 encode 是同步的，放到线程池执行

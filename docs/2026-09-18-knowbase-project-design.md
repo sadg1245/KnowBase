@@ -187,7 +187,7 @@ POST /api/chat → 所有权校验 → 建立/更新会话 → 持久化用户�
 | 权威数据库 | SQLite（aiosqlite，WAL） | 单账号本地优先；与 FTS5 同库，无需额外服务 |
 | 关键词索引 | SQLite FTS5 + jieba | 与权威库同事务、触发器自动同步、零运维 |
 | 向量库 | ChromaDB（嵌入或 HTTP） | 万级 chunk 规模下 HNSW + 元数据过滤足够；换库成本高于收益 |
-| 嵌入模型 | 现状 `BAAI/bge-small-zh-v1.5`(512) → 重构 `BAAI/bge-m3`(1024) | 中文效果好；重构后 8192 上下文窗口才能承载 400–800 token 的目标块 |
+| 嵌入模型 | 保持 `BAAI/bge-small-zh-v1.5`(512)，不改动 | 2026-09-20 决策：不切换模型。代价是切分上限（1200）大于模型窗口，超出部分不会进入向量，已改为显式告警；详见阶段 1–5 追踪表的「决策记录」 |
 | 重排 | 现状确定性公式 → 重构 `bge-reranker-v2-m3`（local/api/none 三态） | 先保证零依赖可用，再逐步提升排序质量 |
 | LLM 接入 | LiteLLM 统一代理 | 一套代码支持 DeepSeek / OpenAI / 通义 / 智谱 / Ollama |
 | 异步任务 | Celery + Redis（可降级为进程内） | 入库与学习生成耗时长；已有 Redis 依赖 |
@@ -1756,7 +1756,7 @@ content / source_file / page_num / score / document_id / heading / chunk_id
 | AI 导师、分层回答、画像与长期记忆 | ✅ 已实现 |
 | 复习、练习、错题、报告 | ✅ 已实现 |
 | 飞书机器人、PWA | ✅ 已实现 |
-| RAG 重构（阶段 0–5） | 🟡 阶段 0 完成（真实评测基线未采集）；阶段 1–5 代码已落地，评测基线与 §16.3 题目来源升级待补 |
+| RAG 重构（阶段 0–5） | 🟡 阶段 0 完成（真实评测基线未采集）；阶段 1–5 代码已落地；待补：评测基线、§16.3 题目来源升级、切分上限与 embedding 窗口的对齐决策 |
 
 ### 13.2 路线图
 
@@ -1764,7 +1764,7 @@ content / source_file / page_num / score / document_id / heading / chunk_id
 阶段 0  基线与安全网            修复 5 项缺陷 + 评测基线 + 阶段事件        ✅ 除真实基线
 阶段 1  统一文档模型与解析层    Document/Block + ParserFactory + 8 类解析器 ✅
 阶段 2  分类、结构、单元与切分  Classifier + Structure + ChunkRouter + Parent-Child ✅
-阶段 3  富化与多向量索引        知识单元落库 + 多向量 + 换 bge-m3 + 全量重建 🟡 bge-m3 尚未切换
+阶段 3  富化与多向量索引        知识单元落库 + 多向量 + 索引指纹          🟡 不切换 embedding 模型（2026-09-20）；切分上限仍大于模型窗口，已改为显式告警
 阶段 4  查询理解与重排          Analyze/Rewrite/Filter + Reranker + ContextBuilder ✅
 阶段 5  学习场景与个性化        题目分索引 + 难度适配 + 调试端点            ✅
 ```
@@ -1797,6 +1797,7 @@ content / source_file / page_num / score / document_id / heading / chunk_id
 | 6 | `core/rag_engine.py` 是早期编排，与主链路并存 | ✅ 已在模块文档字符串标注为兼容层并说明删除条件（生产链路已无引用） |
 | 7 | 入库无阶段耗时观测 | ✅ `document_pipeline_events.duration_ms` |
 | 8 | 无检索调试接口 | ✅ `POST /api/debug/retrieval`（默认关闭） |
+| 9 | 切分上限 1200 token 大于当前 embedding 模型窗口（512 token），尾部不进向量 | ⛔ 已显式告警；是否收紧切分上限待决策（见阶段 1–5 追踪表「决策记录」） |
 
 ---
 

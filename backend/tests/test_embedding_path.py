@@ -71,3 +71,60 @@ class QueryEmbeddingPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0]["score"], 0.8)
         self.assertEqual(rows[0]["document_id"], "doc-1")
         self.assertEqual(rows[0]["workspace_id"], "ws-1")
+
+
+class _FakeTokenizer:
+    """1 个字符 = 1 个 token，便于构造超出窗口的输入。"""
+
+    def encode(self, text: str, add_special_tokens: bool = True, truncation: bool = True):
+        return list(range(len(text)))
+
+
+class _FakeLocalModel:
+    def __init__(self, max_seq_length: int) -> None:
+        self.max_seq_length = max_seq_length
+        self.tokenizer = _FakeTokenizer()
+
+    def encode(self, texts, **kwargs):
+        import numpy as np
+
+        return np.array([[0.1, 0.2] for _ in texts])
+
+
+class EmbeddingWindowGuardTests(unittest.IsolatedAsyncioTestCase):
+    """模型窗口静默截断必须变成可读的显式信号（模型保持现状的前提）。"""
+
+    def test_window_falls_back_to_the_known_model_table(self):
+        from app.core.embedding import EmbeddingService
+
+        service = EmbeddingService(provider="local", model_name="BAAI/bge-small-zh-v1.5")
+
+        self.assertEqual(service.max_input_tokens, 512)
+        self.assertIsNone(
+            EmbeddingService(provider="local", model_name="unknown/model").max_input_tokens
+        )
+
+    async def test_over_window_inputs_are_counted_and_reported(self):
+        from app.core.embedding import EmbeddingService
+
+        service = EmbeddingService(provider="local", model_name="BAAI/bge-small-zh-v1.5")
+        service._model = _FakeLocalModel(max_seq_length=4)
+
+        embeddings = await service._embed_local(["abc", "abcdefgh"])
+
+        self.assertEqual(len(embeddings), 2)
+        self.assertEqual(service.last_truncation, {
+            "over_window": 1, "batch": 2, "worst_tokens": 8,
+        })
+
+    async def test_inputs_within_the_window_report_nothing(self):
+        from app.core.embedding import EmbeddingService
+
+        service = EmbeddingService(provider="local", model_name="BAAI/bge-small-zh-v1.5")
+        service._model = _FakeLocalModel(max_seq_length=4)
+
+        await service._embed_local(["abc", "abcd"])
+
+        self.assertEqual(service.last_truncation, {
+            "over_window": 0, "batch": 2, "worst_tokens": 0,
+        })
