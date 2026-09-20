@@ -373,18 +373,26 @@ cd feishu-bot
 # 安装依赖
 pip install -r requirements.txt
 
-# 启动 Bot（确保 .env 中已配置 FEISHU_APP_ID 和 FEISHU_APP_SECRET）
+# 启动 Bot；凭证先在网页「设置 → 飞书机器人」里填好即可
 python -m bot.main
 ```
 
 ### 飞书机器人配置
 
-1. 登录 [飞书开放平台](https://open.feishu.cn/)，进入开发者后台
-2. 创建「自建应用」，获取 `App ID` 和 `App Secret`
-3. 在「应用功能」中启用「机器人」能力
-4. 配置 API 权限：`im:message`、`im:message:send_as_bot`、`im:chat`、`im:resource`
-5. 在「事件与回调」中选择「使用长连接接收事件」，订阅 `im.message.receive_v1`
-6. 发布应用版本
+凭证在网页里配置，不需要改任何文件：登录后打开**设置 → 飞书机器人**，
+把飞书开放平台的 `App ID` 与 `App Secret` 填进去保存即可。机器人每 60 秒读取一次配置，
+填好以后会自动上线；「设置 → 飞书机器人」页面上会显示机器人当前是「等待填写凭证 / 连接中 / 已连接 / 连接失败」。
+
+飞书开放平台那边需要做三件事：
+
+1. 登录 [飞书开放平台](https://open.feishu.cn/)，创建「自建应用」，在「应用功能」中启用「机器人」能力
+2. 在「事件与回调」中选择「使用长连接接收事件」，订阅 `im.message.receive_v1`；
+   配置 API 权限：`im:message`、`im:message:send_as_bot`、`im:chat`、`im:resource`
+3. 发布应用版本，把应用凭证页的 `App ID` / `App Secret` 填进上面的设置页
+
+想用环境变量也可以：`.env` 里的 `FEISHU_APP_ID` / `FEISHU_APP_SECRET` 仍然生效，优先级低于设置页
+（和模型配置同一条规则：界面里保存过的以 `settings.json` 为准）。已经连上的机器人在凭证变更后需要重启
+一次机器人容器（`docker compose restart feishu-bot`）才会换用新凭证。
 
 ### 飞书指令
 
@@ -510,8 +518,8 @@ AI 导师相关的接口：`GET /api/learning/learner-profile` 返回画像快�
 
 | 变量 | 说明 | 示例 |
 |------|------|------|
-| `FEISHU_APP_ID` | 飞书应用 App ID | `cli_xxxxxxxxxx` |
-| `FEISHU_APP_SECRET` | 飞书应用 App Secret | `xxxxxxxxxxxxxxxxxx` |
+| `FEISHU_APP_ID` | 飞书应用 App ID（可选，推荐在设置页填写） | `cli_xxxxxxxxxx` |
+| `FEISHU_APP_SECRET` | 飞书应用 App Secret（可选，推荐在设置页填写） | `xxxxxxxxxxxxxxxxxx` |
 | `DEFAULT_LLM_PROVIDER` | 默认 LLM 提供商 | `deepseek` |
 | `DEFAULT_LLM_MODEL` | 默认模型名称 | `deepseek-chat` |
 | `DEEPSEEK_API_KEY` | DeepSeek API Key | `sk-xxxxxxxx` |

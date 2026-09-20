@@ -11,7 +11,10 @@ import {
   clearAvatar, getMe, updateMe, uploadAvatar,
   getLLMSettings, updateLLMSettings, testLLM, getSystemInfo,
   getEmbeddingSettings, updateEmbeddingSettings, exportLearningData, getLearningProfile, updateLearningProfile,
+  getFeishuSettings, updateFeishuSettings, FeishuSettings,
 } from '../services/api';
+import { FeishuBotCard } from '../components/settings/FeishuBotCard';
+import type { FeishuSettingsValues } from '../components/settings/FeishuBotCard';
 import { EMBEDDING_MODELS, MODELS, PROVIDERS } from '../features/account/llmProviders';
 
 const { Title, Text } = Typography;
@@ -31,6 +34,8 @@ const Settings: React.FC = () => {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ success: boolean; message: string } | null>(null);
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null);
+  const [feishu, setFeishu] = useState<FeishuSettings | null>(null);
+  const [savingFeishu, setSavingFeishu] = useState(false);
   const [selectedProvider, setSelectedProvider] = useState('openai');
   const [selectedEmbedProvider, setSelectedEmbedProvider] = useState('local');
 
@@ -38,12 +43,13 @@ const Settings: React.FC = () => {
     const fetchData = async () => {
       setLoading(true);
       try {
-        const [settings, embedding, info, learningProfile, account] = await Promise.all([
+        const [settings, embedding, info, learningProfile, account, feishuSettings] = await Promise.all([
           getLLMSettings(),
           getEmbeddingSettings(),
           getSystemInfo(),
           getLearningProfile(),
           getMe(),
+          getFeishuSettings(),
         ]);
         llmForm.setFieldsValue(settings);
         setSelectedProvider(settings.provider || 'openai');
@@ -57,6 +63,7 @@ const Settings: React.FC = () => {
         setProfile(account);
         profileForm.setFieldsValue({ display_name: account.display_name });
         setAvatarUrl(account.avatar_url || '');
+        setFeishu(feishuSettings);
       } catch {
         message.error('加载设置失败');
       } finally {
@@ -64,6 +71,14 @@ const Settings: React.FC = () => {
       }
     };
     fetchData();
+  }, []);
+
+  // 机器人状态是它自己上报的：保存配置后在这里轻量轮询，用户能直接看到“连接中 → 已连接”。
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      getFeishuSettings().then(setFeishu).catch(() => undefined);
+    }, 20000);
+    return () => window.clearInterval(timer);
   }, []);
 
   const handleSaveLLM = async () => {
@@ -89,6 +104,32 @@ const Settings: React.FC = () => {
       message.error('保存 Embedding 设置失败');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSaveFeishu = async (values: FeishuSettingsValues) => {
+    try {
+      setSavingFeishu(true);
+      const updated = await updateFeishuSettings(values);
+      setFeishu(updated);
+      message.success('飞书配置已保存，机器人会自动读取');
+    } catch (error: any) {
+      message.error(error?.response?.data?.detail || '保存飞书配置失败');
+    } finally {
+      setSavingFeishu(false);
+    }
+  };
+
+  const handleClearFeishu = async () => {
+    try {
+      setSavingFeishu(true);
+      const updated = await updateFeishuSettings({ app_id: '', app_secret: '' });
+      setFeishu(updated);
+      message.success('飞书配置已清除');
+    } catch (error: any) {
+      message.error(error?.response?.data?.detail || '清除飞书配置失败');
+    } finally {
+      setSavingFeishu(false);
     }
   };
 
@@ -349,6 +390,18 @@ const Settings: React.FC = () => {
                   </Form.Item>
                 </Form>
               </Card>
+            ),
+          },
+          {
+            key: 'feishu',
+            label: '飞书机器人',
+            children: (
+              <FeishuBotCard
+                settings={feishu}
+                saving={savingFeishu}
+                onSave={handleSaveFeishu}
+                onClear={handleClearFeishu}
+              />
             ),
           },
           {

@@ -293,6 +293,30 @@ export interface EmbeddingSettings {
   dimension?: number | null;
 }
 
+export type FeishuBotState =
+  | 'pending'
+  | 'connecting'
+  | 'connected'
+  | 'error'
+  | 'restart_required'
+  | 'unknown';
+
+export interface FeishuBotStatus {
+  state: FeishuBotState;
+  detail?: string | null;
+  app_id?: string | null;
+  updated_at?: string | null;
+  stale: boolean;
+}
+
+export interface FeishuSettings {
+  app_id?: string | null;
+  app_secret_masked?: string | null;
+  configured: boolean;
+  source: 'settings' | 'env' | 'none';
+  bot: FeishuBotStatus;
+}
+
 // ============ 工作区接口 ============
 
 export const getWorkspaces = async (): Promise<Workspace[]> => {
@@ -1152,6 +1176,18 @@ export const updateEmbeddingSettings = async (
 ): Promise<EmbeddingSettings> => {
   const payload = typeof values === 'string' ? { model: values } : values;
   const res = await api.put('/settings/embedding', payload);
+  return res.data;
+};
+
+export const getFeishuSettings = async (): Promise<FeishuSettings> => {
+  const res = await api.get('/settings/feishu');
+  return res.data;
+};
+
+export const updateFeishuSettings = async (
+  payload: { app_id?: string; app_secret?: string },
+): Promise<FeishuSettings> => {
+  const res = await api.put('/settings/feishu', payload);
   return res.data;
 };
 

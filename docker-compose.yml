@@ -97,6 +97,8 @@ services:
       # 服务令牌是后端与机器人之间的共享密钥：这里直接跟随 SERVICE_TOKEN，
       # 避免两个值不一致导致机器人拿到 401。
       - BACKEND_ACCESS_TOKEN=${SERVICE_TOKEN:-}
+      # 飞书凭证不再是启动必需：机器人在网页「设置 → 飞书机器人」里取配置，
+      # .env 的 FEISHU_APP_ID / FEISHU_APP_SECRET 只作为兜底。
     depends_on:
       backend:
         condition: service_healthy
