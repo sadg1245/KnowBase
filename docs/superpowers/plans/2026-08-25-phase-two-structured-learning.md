@@ -2,6 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> 执行状态：本计划的复选框未回填（TDD 步骤留痕），不代表未执行。
+> 实际实现状态见 `docs/2026-09-18-knowbase-project-design.md` §13 与对应阶段测试。
+
 **Goal:** Complete the second-stage document-to-learning pipeline so uploads asynchronously produce structured study content, document sources are precisely browsable, and users can fully manage generated knowledge points.
 
 **Architecture:** Extend the existing SQLAlchemy document and chunk models, keep Celery/Redis as the two-stage parsing and generation pipeline, and read generation input from the durable `document_chunks` table. Add focused FastAPI services and endpoints, then build a document detail page and knowledge-management components on top of typed frontend APIs.

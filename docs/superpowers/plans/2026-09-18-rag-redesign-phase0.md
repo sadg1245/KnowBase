@@ -2,6 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> 执行状态：本计划的复选框未回填（TDD 步骤留痕），不代表未执行。阶段 0 的完成判据逐条核对见
+> `docs/2026-09-18-knowbase-project-design.md` §13.3：除「真实评测基线」外均已满足。
+
 **Goal:** 在改动 RAG 主链路之前建立可复现的检索质量基线，修掉已确认的缺陷，并给入库流水线装上阶段可观测性。
 
 **Architecture:** 本阶段不动切分与检索算法，只做五件事：新增 `app.rag.eval` 评测包（指标 + 用例装载 + 离线运行器 + 基线记录）；把查询侧 embedding 统一到 `EmbeddingService`；把 Chroma collection 的距离度量固定为 cosine；让上传白名单与解析器工厂共用一份真相并删除遗留内联处理死代码；为入库增加 `document_pipeline_events` 阶段事件与 `documents.pipeline_stage`。

@@ -1,8 +1,13 @@
 """
 RAGEngine — 检索增强生成引擎
 
-KnowBase 的核心编排模块，协调向量化、检索、LLM 生成三大环节，
-支持普通查询和流式查询两种模式。
+兼容层（legacy）：产品主链路已改为
+`app/api/routes/search.py` → `app/services/hybrid_retrieval.py` →
+`app/rag/retrieval/orchestrator.py`，本模块不再被任何生产代码引用。
+
+保留原因：`_build_context` 的旧索引元数据兼容逻辑（`chunk_id` 优先、回退 `id`）仍由
+`backend/tests/test_source_navigation.py` 守着，避免历史数据在迁移期丢来源标识。
+新功能不要再依赖本模块；确认历史数据全部迁移后可整体删除。
 """
 
 from typing import AsyncGenerator, Optional

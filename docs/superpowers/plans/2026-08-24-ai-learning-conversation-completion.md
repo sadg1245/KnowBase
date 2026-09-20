@@ -2,6 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> 执行状态：本计划的复选框未回填（TDD 步骤留痕），不代表未执行。
+> 实际实现状态见 `docs/2026-09-18-knowbase-project-design.md` §13 与对应阶段测试。
+
 **Goal:** Finish the persistence, evidence-audit, interrupted-generation recovery, and responsive browser acceptance work that remains after the first implementation of the AI learning conversation design.
 
 **Architecture:** Keep the existing FastAPI/SQLAlchemy modular monolith and React page decomposition. Complete compatibility and evidence correctness in small backend helpers that are directly unit tested, then add frontend recovery state without expanding `LearningChat.tsx` further, and finish with browser and Docker verification.

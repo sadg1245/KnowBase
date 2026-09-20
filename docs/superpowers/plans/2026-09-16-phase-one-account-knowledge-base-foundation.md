@@ -2,6 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> 执行状态：本计划的复选框未回填（TDD 步骤留痕），不代表未执行。
+> 实际实现状态见 `docs/2026-09-18-knowbase-project-design.md` §13 与对应阶段测试。
+
 **Goal:** Add a single-account login experience backed by multi-user ownership, expand compatible workspaces into personal knowledge bases with domains, covers, statistics, and editable tags, and migrate existing installations safely with Alembic.
 
 **Architecture:** Keep `Workspace`, `workspaces`, and `/api/workspaces` as compatibility contracts while adding explicit `User`, `LearningPreference`, and `LearningDomain` models. Resolve the authenticated user in FastAPI dependencies, pass that identity into every private query and service, and keep Feishu's service token bound to the single configured user. Replace startup DDL with an Alembic baseline plus an inspected legacy bootstrap path, then add focused APIs and minimal additions to the existing React/Ant Design screens.

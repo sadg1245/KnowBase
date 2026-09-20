@@ -2,6 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> 执行状态：本计划的复选框未回填（TDD 步骤留痕），不代表未执行。
+> 实际实现状态见 `docs/2026-09-18-knowbase-project-design.md` §13 与对应阶段测试。
+
 **Goal:** Build AI-generated six-type assessments, durable quiz runs and attempts, a complete mistake notebook, explainable weak-knowledge scoring, and review-task integration without losing existing learning data.
 
 **Architecture:** Add a focused assessment domain beside the existing learning models: `QuizSet` owns generated questions, `QuizRun` owns one answer round, and `QuizAttempt` owns immutable submissions. Dedicated scoring, AI, and weakness services keep business rules out of routes; a new assessment router exposes the workflow while the existing quiz endpoints remain compatible. The React practice page becomes a small state-driven shell composed from focused configuration, runner, results, mistake, and weakness components.

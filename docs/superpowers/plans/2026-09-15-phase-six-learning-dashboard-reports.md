@@ -2,6 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> 执行状态：本计划的复选框未回填（TDD 步骤留痕），不代表未执行。
+> 实际实现状态见 `docs/2026-09-18-knowbase-project-design.md` §13 与对应阶段测试。
+
 **Goal:** Build a timezone-correct learning homepage, auditable activity ledger, measurable learning goals, and traceable day/week/month reports with cached AI advice.
 
 **Architecture:** Extend the existing learning domain with append-only activity evidence, server-validated active study sessions, generic measurable goals, and cached report suggestions. Keep FastAPI routes thin by adding focused services; integrate activity creation at existing business transaction boundaries; expose typed React view models and small components for the dashboard and report UI.

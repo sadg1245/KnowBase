@@ -926,7 +926,7 @@ final = 0.55·rerank_norm + 0.25·rrf_norm + 0.15·vector_norm + 0.05·structure
 
 ---
 
-## 9. RAG 重构设计：多格式、多类型知识库 🚧
+## 9. RAG 重构设计：多格式、多类型知识库（阶段 1–5 已落地，测量项待补）
 
 > 本章是 `docs/superpowers/specs/2026-09-18-rag-redesign-design.md` 的结构化摘要与设计意图说明，**状态全部为"设计已定、待实施"**。
 
@@ -1756,43 +1756,47 @@ content / source_file / page_num / score / document_id / heading / chunk_id
 | AI 导师、分层回答、画像与长期记忆 | ✅ 已实现 |
 | 复习、练习、错题、报告 | ✅ 已实现 |
 | 飞书机器人、PWA | ✅ 已实现 |
-| RAG 重构（阶段 0–5） | 🚧 设计 + 阶段 0 计划已定，代码未落地 |
+| RAG 重构（阶段 0–5） | 🟡 阶段 0 完成（真实评测基线未采集）；阶段 1–5 代码已落地，评测基线与 §16.3 题目来源升级待补 |
 
 ### 13.2 路线图
 
 ```text
-阶段 0  基线与安全网            修复 5 项缺陷 + 评测基线 + 阶段事件
-阶段 1  统一文档模型与解析层    Document/Block + ParserFactory + 8 类解析器
-阶段 2  分类、结构、单元与切分  Classifier + Structure + ChunkRouter + Parent-Child
-阶段 3  富化与多向量索引        知识单元落库 + 多向量 + 换 bge-m3 + 全量重建
-阶段 4  查询理解与重排          Analyze/Rewrite/Filter + Reranker + ContextBuilder
-阶段 5  学习场景与个性化        题目分索引 + 难度适配 + 调试端点
+阶段 0  基线与安全网            修复 5 项缺陷 + 评测基线 + 阶段事件        ✅ 除真实基线
+阶段 1  统一文档模型与解析层    Document/Block + ParserFactory + 8 类解析器 ✅
+阶段 2  分类、结构、单元与切分  Classifier + Structure + ChunkRouter + Parent-Child ✅
+阶段 3  富化与多向量索引        知识单元落库 + 多向量 + 换 bge-m3 + 全量重建 🟡 bge-m3 尚未切换
+阶段 4  查询理解与重排          Analyze/Rewrite/Filter + Reranker + ContextBuilder ✅
+阶段 5  学习场景与个性化        题目分索引 + 难度适配 + 调试端点            ✅
 ```
+
+进度以 `docs/superpowers/plans/2026-09-19-rag-redesign-phases-1-5.md` 的分阶段状态表为准，
+该文件逐步记录证据文件与尚未闭合的验收项。
 
 每个阶段结束都必须保持**可部署、可回滚、测试全绿**。
 
-### 13.3 阶段 0 完成判据 🚧
+### 13.3 阶段 0 完成判据
 
-- `backend/tests/rag_eval/baseline.json` 存在，数字来自真实运行（或如实标记 `no_ready_documents`），用例数 ≥ 8。
-- 查询侧只有一条 embedding 路径，`_get_embedding_function` 已删除并有测试断言其不存在。
-- 新建 Chroma collection 声明 `hnsw:space=cosine`，并提供存量 collection 检测能力。
-- `ALLOWED_EXTENSIONS` 与解析器工厂严格相等，且每个允许扩展名都能构造出解析器。
-- `_process_document` / `_chunk_text` 已删除，`_extract_text` 保留。
-- 每次入库写满四个阶段事件，`documents.pipeline_stage` 落到 `ready` / `failed`。
-- 全量后端测试通过。
+- ✅ `backend/tests/rag_eval/baseline.json` 存在并如实标记 `no_ready_documents`；
+  ⛔ **真实指标与 ≥8 条标注用例仍未采集**，需要可用 embedding/模型与至少一份 ready 文档。
+- ✅ 查询侧只有一条 embedding 路径，`_get_embedding_function` 已删除并有测试断言其不存在（`test_embedding_path.py`）。
+- ✅ 新建 Chroma collection 声明 `hnsw:space=cosine`，并提供存量 collection 检测能力（`test_vector_store_space.py`）。
+- ✅ `ALLOWED_EXTENSIONS` 与解析器工厂严格相等（`documents.ALLOWED_EXTENSIONS ← pipeline.supported_file_types() ← ParserFactory.supported_types()`）。
+- ✅ `_process_document` / `_chunk_text` 已删除，`_extract_text` 保留。
+- ✅ 每次入库写满四个阶段事件并记录 `duration_ms`，`documents.pipeline_stage` 落到 `ready` / `failed`（`test_pipeline_events.py`）。
+- ✅ 全量后端测试通过（518 passed；唯一失败是沙箱内 Docker 配置不可读的环境问题）。
 
 ### 13.4 已知技术债清单
 
 | # | 债务 | 计划 |
 |---|---|---|
-| 1 | Chroma 距离度量不一致（默认 L2 被当作余弦） | 阶段 0 |
-| 2 | 查询与入库走两条 embedding 加载路径 | 阶段 0 |
-| 3 | 上传白名单与解析器工厂不一致（`.rst/.json/.xml/.yaml/.yml`） | 阶段 0 |
-| 4 | README 宣称支持 `.doc` 但无解析器 | 阶段 0（补齐或更正） |
-| 5 | `documents.py::_process_document()` / `_chunk_text()` 死代码 | 阶段 0 |
-| 6 | `core/rag_engine.py` 是早期编排，与主链路并存 | 后续清理或标注为兼容层 |
-| 7 | 入库无阶段耗时观测 | 阶段 0 |
-| 8 | 无检索调试接口 | 阶段 4 |
+| 1 | Chroma 距离度量不一致（默认 L2 被当作余弦） | ✅ 阶段 0 已修 |
+| 2 | 查询与入库走两条 embedding 加载路径 | ✅ 阶段 0 已修 |
+| 3 | 上传白名单与解析器工厂不一致（`.rst/.json/.xml/.yaml/.yml`） | ✅ 阶段 0 已修 |
+| 4 | README 宣称支持 `.doc` 但无解析器 | ✅ 已更正为「转换后解析」 |
+| 5 | `documents.py::_process_document()` / `_chunk_text()` 死代码 | ✅ 已删除 |
+| 6 | `core/rag_engine.py` 是早期编排，与主链路并存 | ✅ 已在模块文档字符串标注为兼容层并说明删除条件（生产链路已无引用） |
+| 7 | 入库无阶段耗时观测 | ✅ `document_pipeline_events.duration_ms` |
+| 8 | 无检索调试接口 | ✅ `POST /api/debug/retrieval`（默认关闭） |
 
 ---
 

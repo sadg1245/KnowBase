@@ -81,9 +81,9 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml exec backend pyth
 | Parent Expansion（父块整节 + 超预算退回子块与相邻块 + 同父去重） | ✅ | `app/rag/retrieval/parent.py` |
 | Context Builder（[资料N] 编号、预算、重复块跳过） | ✅ 已接线 | `app/rag/retrieval/context.py`，`/api/chat` 上下文改用该构建器（格式与既有提示词一致） |
 | 重排 / Parent Expansion / 练习模式过滤接入 `/api/chat` 主链路 | ✅ | `app/rag/retrieval/orchestrator.py`（sources 仍逐条子块、引用编号沿用首个命中；上下文用父块去重）+ `/api/chat` 接线；证据事件新增 `query_intent / rerank_degraded / context_notes` 可选键 |
-| Metadata 预过滤（subject / difficulty / content_type / document_type） | ⛔ 待实施 | 需要扩展 chroma `where` 与 FTS SQL 两条召回路径 |
-| 阈值重标定（用标注集回写 supported / second / limited） | ⛔ 待实施 | 依赖阶段 0 基线用例 |
-| 题目 / 答案分索引接入练习与错题（§16） | 🚧 部分 | chunk 级 `content_type=question/answer` 已落库；排障计划与编排支持 `mode="practice"` 排除答案（已测）；练习页尚未切换调用 |
+| Metadata 预过滤（subject / difficulty / content_type / document_type） | ✅ | `build_metadata_where`（Chroma）+ `build_sql_metadata_filter`（FTS）语义一致、两条召回都下推；`test_rag_metadata_filter.py` |
+| 阈值重标定（用标注集回写 supported / second / limited） | 🚧 机制就绪 | `app/rag/eval/calibration.py` + `runner calibrate`；样本不足或标签单一显式拒绝给建议，真实数字仍需标注集 |
+| 题目 / 答案分索引接入练习与错题（§16） | ✅ | chunk 级 `content_type=question/answer` 已落库；`/api/chat` 接受 `mode="practice"` 并在召回层排除 answer/solution；练习结果页「问 AI 老师（不透露答案）」入口；`POST /api/rag/practice` 返回资料原题（见下方补充） |
 | 验收：降级路径可复现 | ✅ | `test_rag_query_retrieval.py` 覆盖重排超时 / 分数不匹配 / 父块超预算 |
 
 ## 阶段 5：学习场景与个性化
@@ -114,6 +114,18 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml exec backend pyth
 | 9 | 学习路径推荐 | 仪表盘知识库排序 + 目标进度 + 学习顺序 | `test_dashboard_service`、`test_goal_service` |
 | 10 | 上下文补全 | Parent Expansion + Context Builder + 会话历史 | `test_rag_orchestrator`、`test_prompt_assembly` |
 | 11 | 长期知识记忆 | 记忆落库 + 混合召回 + 导师注入 | `test_learning_memory_service`、`test_tutor_api` |
+
+## 阶段 4 补充：练习语境端到端可达（2026-09-20 追加）
+
+问题：检索层已经能按 `practice` 排除答案，但 `ChatRequest.mode` 的模式白名单里没有 `practice`，
+HTTP 层根本进不到这条路径；前端练习页也没有任何追问入口，所以「练习页尚未切换调用」一直悬着。
+
+| 任务 | 状态 | 证据 |
+| --- | --- | --- |
+| `/api/chat` 接受 `mode="practice"` 并给出练习语境提示词 | ✅ | `app/schemas/schemas.py` 模式白名单 + `learning_answer_service.MODE_INSTRUCTIONS["practice"]`；`test_chat_practice_context.py` |
+| `POST /api/rag/practice` 按知识点/难度返回资料原题 | ✅ | `app/api/routes/rag.py`、`app/schemas/rag.py`；`test_rag_practice_endpoint.py`（只返回 child 原题、排除 solution/answer、未知知识点 fail-closed、跨库 404、limit 校验） |
+| 练习结果页「问 AI 老师（不透露答案）」入口 | ✅ | `QuizResults` / `QuizRunner` / `Practice` 透传 handler，经 `quickQuestionDestination(..., 'practice')` 进入学习会话；`practiceComponents.test.tsx`、`quickQuestion.test.tsx` |
+| quiz 生成的题目来源升级（§16.3「先检索原题、命中不足再用 LLM 补足」） | ⛔ 待实施 | 生成链路目前仍是「知识点证据 + LLM 出题」；`/api/rag/practice` 已就绪，等生成器接入 |
 
 ## 每阶段通用约束
 
