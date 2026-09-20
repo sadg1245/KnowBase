@@ -81,8 +81,10 @@ class IndexFingerprintTests(unittest.TestCase):
         fingerprint = index_fingerprint(embedding_model="BAAI/bge-m3", embedding_dimension=1024)
         write_fingerprint(collection, fingerprint)
 
-        # 写入指纹不能丢掉既有 collection 元数据
-        self.assertEqual(collection.modified["hnsw:space"], "cosine")
+        # 写入指纹不能丢掉其它既有元数据；hnsw:space 例外——Chroma 拒绝修改距离函数，
+        # 回写它会整条 metadata 更新失败，所以改由指纹里的 distance 承载（见向量库诊断回退）。
+        self.assertNotIn("hnsw:space", collection.modified)
+        self.assertEqual(collection.modified["knowbase_index_distance"], "cosine")
         self.assertEqual(read_fingerprint(collection)["embedding_model"], "BAAI/bge-m3")
         self.assertEqual(fingerprint_gap(read_fingerprint(collection), fingerprint), [])
 

@@ -42,6 +42,11 @@ class VectorStoreSpaceTests(unittest.TestCase):
             describe_collection_space(_FakeCollection({"hnsw:space": "cosine"})),
             "cosine",
         )
+        # 写入索引指纹后 hnsw:space 不再回写，诊断改用指纹里的 distance
+        self.assertEqual(
+            describe_collection_space(_FakeCollection({"knowbase_index_distance": "cosine"})),
+            "cosine",
+        )
 
     def test_describe_space_reads_the_live_collection(self):
         client = _FakeClient()

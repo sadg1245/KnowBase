@@ -7,9 +7,14 @@ distance`；指纹不一致时该知识库标记 `index_stale`，检索仍可用
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 CHUNK_SCHEMA_VERSION = 2
+
+# ChromaDB 的 collection metadata 不接受嵌套 dict，因此指纹按键前缀摊平存储。
+# 早期实现直接写入 `knowbase_index: {...}`，写入必然失败（只有告警），这里保留读取兼容。
+FINGERPRINT_PREFIX = "knowbase_index_"
 
 
 def index_fingerprint(
@@ -40,14 +45,38 @@ def current_fingerprint(settings, embedding_service=None) -> dict[str, Any]:
 
 def read_fingerprint(collection) -> dict[str, Any]:
     metadata = getattr(collection, "metadata", None) or {}
-    stored = metadata.get("knowbase_index")
-    return dict(stored) if isinstance(stored, dict) else {}
+    stored: dict[str, Any] = {
+        str(key)[len(FINGERPRINT_PREFIX):]: value
+        for key, value in metadata.items()
+        if isinstance(key, str) and key.startswith(FINGERPRINT_PREFIX)
+    }
+    legacy = metadata.get("knowbase_index")
+    if isinstance(legacy, dict):
+        return {**legacy, **stored}
+    return stored
 
 
 def write_fingerprint(collection, fingerprint: dict[str, Any]) -> None:
-    """把指纹写进 collection metadata（与 hnsw:space 等既有键合并）。"""
-    metadata = dict(getattr(collection, "metadata", None) or {})
-    metadata["knowbase_index"] = dict(fingerprint)
+    """把指纹摊平成标量键写进 collection metadata。
+
+    两个实测约束（ChromaDB）：
+
+    - metadata 不接受嵌套 dict，因此指纹按键前缀摊平；
+    - `modify` 会整体替换 metadata，而带上 `hnsw:space` 又会被拒绝
+      （"Changing the distance function ... is not supported"），
+      所以这里保留其它既有键、但不再回写 `hnsw:space`。
+      距离本身是不可变的，读侧改用指纹里的 `distance` 兜底。
+    """
+    metadata = {
+        key: value
+        for key, value in (getattr(collection, "metadata", None) or {}).items()
+        if not (isinstance(key, str) and key.startswith(FINGERPRINT_PREFIX))
+        and key != "hnsw:space"
+    }
+    for key, value in fingerprint.items():
+        metadata[f"{FINGERPRINT_PREFIX}{key}"] = (
+            value if isinstance(value, (str, int, float, bool)) else json.dumps(value, ensure_ascii=False)
+        )
     collection.modify(metadata=metadata)
 
 
@@ -71,4 +100,3 @@ def fingerprint_gap(stored: dict[str, Any], current: dict[str, Any]) -> list[str
 
 def collection_is_stale(collection, current: dict[str, Any]) -> bool:
     return bool(fingerprint_gap(read_fingerprint(collection), current))
-

@@ -14,9 +14,14 @@ COSINE_SPACE = "cosine"
 
 
 def describe_collection_space(collection) -> str | None:
-    """Return the collection's HNSW space, or None when ChromaDB would default to l2."""
+    """Return the collection's HNSW space, or None when ChromaDB would default to l2.
+
+    写入索引指纹时不能回写 `hnsw:space`（Chroma 拒绝修改距离函数），因此这里回退到
+    指纹里的 `distance`，避免诊断信息在写入指纹后凭空消失。
+    """
     metadata = getattr(collection, "metadata", None) or {}
-    return metadata.get("hnsw:space")
+    space = metadata.get("hnsw:space") or metadata.get("knowbase_index_distance")
+    return str(space) if space else None
 
 
 # ---------------------------------------------------------------------------
@@ -64,12 +69,14 @@ class VectorStore:
         try:
             import chromadb
 
-            if self.host == "local":
-                from app.config import settings
+            if self.host in {"", "local", "embedded", "persistent"}:
+                # 嵌入模式必须复用 app.core.chroma 的共享客户端：ChromaDB 不允许同一个
+                # 数据目录上存在两个 settings 不同的 PersistentClient，而入库与检索
+                # 会在同一进程里各建一次（本地部署与评测脚本都会踩到）。
+                from app.core.chroma import describe_backend, get_chroma_client
 
-                os.makedirs(settings.CHROMA_DIR, exist_ok=True)
-                self._client = chromadb.PersistentClient(path=settings.CHROMA_DIR)
-                logger.info("ChromaDB 本地持久化模式连接成功")
+                self._client = get_chroma_client()
+                logger.info("ChromaDB 本地持久化模式连接成功：{}", describe_backend())
             else:
                 self._client = chromadb.HttpClient(
                     host=self.host,
