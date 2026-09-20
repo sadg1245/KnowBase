@@ -1,2 +1,11 @@
-{"query": "什么是条件概率", "workspace_id": "REPLACE_WITH_WORKSPACE_ID", "document_ids": [], "expected_chunk_ids": []}
-{"query": "隐函数求导怎么做", "workspace_id": "REPLACE_WITH_WORKSPACE_ID", "document_ids": [], "expected_chunk_ids": []}
+{"query": "什么是条件概率", "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08", "document_ids": [], "expected_chunk_ids": ["af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_1"], "label_phrase": "为在事件 B 已经发生的条件下事件 A 发生的条件概率"}
+{"query": "全概率公式有什么用", "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08", "document_ids": [], "expected_chunk_ids": ["af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_2"], "label_phrase": "按原因分解成若干互斥的情形"}
+{"query": "先验概率和后验概率是什么关系", "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08", "document_ids": [], "expected_chunk_ids": ["af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_4"], "label_phrase": "从先验更新到后验"}
+{"query": "P(A|B) 和 P(B|A) 一样吗", "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08", "document_ids": [], "expected_chunk_ids": ["af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_6"], "label_phrase": "混为一谈是最典型的错误"}
+{"query": "导数是怎么定义的", "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08", "document_ids": [], "expected_chunk_ids": ["4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_1"], "label_phrase": "导数的定义是差商的极限"}
+{"query": "链式法则什么时候用", "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08", "document_ids": [], "expected_chunk_ids": ["4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_2"], "label_phrase": "链式法则用于复合函数的求导"}
+{"query": "隐函数求导怎么做", "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08", "document_ids": [], "expected_chunk_ids": ["4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_3"], "label_phrase": "方程两端同时对 x 求导"}
+{"query": "圆的方程怎么求导", "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08", "document_ids": [], "expected_chunk_ids": ["4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_3"], "label_phrase": "x² + y² = r²"}
+{"query": "矩阵的秩怎么算", "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08", "document_ids": [], "expected_chunk_ids": ["e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_1"], "label_phrase": "等于它的行阶梯形中非零行的个数"}
+{"query": "特征值怎么求", "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08", "document_ids": [], "expected_chunk_ids": ["e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_2"], "label_phrase": "特征方程 det(A - λI) = 0"}
+{"query": "怎么判断向量组线性无关", "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08", "document_ids": [], "expected_chunk_ids": ["e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_3"], "label_phrase": "全为零时"}

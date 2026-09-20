@@ -1756,7 +1756,7 @@ content / source_file / page_num / score / document_id / heading / chunk_id
 | AI 导师、分层回答、画像与长期记忆 | ✅ 已实现 |
 | 复习、练习、错题、报告 | ✅ 已实现 |
 | 飞书机器人、PWA | ✅ 已实现 |
-| RAG 重构（阶段 0–5） | 🟡 阶段 0 完成（真实评测基线未采集）；阶段 1–5 代码已落地；待补：评测基线、§16.3 题目来源升级、切分上限与 embedding 窗口的对齐决策 |
+| RAG 重构（阶段 0–5） | ✅ 阶段 0–5 代码与评测基线均已落地（基线语料为评测笔记本，见 baseline.json 的 limitations） |
 
 ### 13.2 路线图
 
@@ -1764,7 +1764,7 @@ content / source_file / page_num / score / document_id / heading / chunk_id
 阶段 0  基线与安全网            修复 5 项缺陷 + 评测基线 + 阶段事件        ✅ 除真实基线
 阶段 1  统一文档模型与解析层    Document/Block + ParserFactory + 8 类解析器 ✅
 阶段 2  分类、结构、单元与切分  Classifier + Structure + ChunkRouter + Parent-Child ✅
-阶段 3  富化与多向量索引        知识单元落库 + 多向量 + 索引指纹          🟡 不切换 embedding 模型（2026-09-20）；切分上限仍大于模型窗口，已改为显式告警
+阶段 3  富化与多向量索引        知识单元落库 + 多向量 + 索引指纹          ✅ 切分上限对齐模型窗口（480/512）；不切换 embedding 模型（2026-09-20）
 阶段 4  查询理解与重排          Analyze/Rewrite/Filter + Reranker + ContextBuilder ✅
 阶段 5  学习场景与个性化        题目分索引 + 难度适配 + 调试端点            ✅
 ```
@@ -1776,8 +1776,8 @@ content / source_file / page_num / score / document_id / heading / chunk_id
 
 ### 13.3 阶段 0 完成判据
 
-- ✅ `backend/tests/rag_eval/baseline.json` 存在并如实标记 `no_ready_documents`；
-  ⛔ **真实指标与 ≥8 条标注用例仍未采集**，需要可用 embedding/模型与至少一份 ready 文档。
+- ✅ `backend/tests/rag_eval/baseline.json` 记录真实运行结果：11 条标注用例（≥8）、Recall@5 = 1.00、
+  MRR = 0.939；采集脚本 `backend/scripts/collect_rag_baseline.py` 可复跑，provenance 与 limitations 随结果落盘。
 - ✅ 查询侧只有一条 embedding 路径，`_get_embedding_function` 已删除并有测试断言其不存在（`test_embedding_path.py`）。
 - ✅ 新建 Chroma collection 声明 `hnsw:space=cosine`，并提供存量 collection 检测能力（`test_vector_store_space.py`）。
 - ✅ `ALLOWED_EXTENSIONS` 与解析器工厂严格相等（`documents.ALLOWED_EXTENSIONS ← pipeline.supported_file_types() ← ParserFactory.supported_types()`）。
@@ -1797,7 +1797,9 @@ content / source_file / page_num / score / document_id / heading / chunk_id
 | 6 | `core/rag_engine.py` 是早期编排，与主链路并存 | ✅ 已在模块文档字符串标注为兼容层并说明删除条件（生产链路已无引用） |
 | 7 | 入库无阶段耗时观测 | ✅ `document_pipeline_events.duration_ms` |
 | 8 | 无检索调试接口 | ✅ `POST /api/debug/retrieval`（默认关闭） |
-| 9 | 切分上限 1200 token 大于当前 embedding 模型窗口（512 token），尾部不进向量 | ⛔ 已显式告警；是否收紧切分上限待决策（见阶段 1–5 追踪表「决策记录」） |
+| 9 | 切分上限大于 embedding 模型窗口（尾部不进向量） | ✅ 切分上限收到 480 token（目标 400）对齐 512 窗口；估算偏差由 `EmbeddingService` 窗口告警兜底 |
+| 10 | 同一进程内入库与检索各建一次 Chroma 客户端（settings 不同直接报错） | ✅ `VectorStore` 嵌入模式复用 `app/core/chroma.py` 的共享客户端 |
+| 11 | 索引指纹从未写入成功（嵌套 dict 不被 Chroma 接受；带上 `hnsw:space` 又被拒绝） | ✅ 摊平为 `knowbase_index_*` 标量键，距离改由指纹 `distance` 承载 |
 
 ---
 

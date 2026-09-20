@@ -1,5 +1,350 @@
 {
-  "status": "no_ready_documents",
-  "recorded_at": "2026-09-18T20:22:44+08:00",
-  "reason": "当前工作区没有已就绪（status=ready）的文档与对应的 ChromaDB 向量索引，无法运行 label/run 采集真实基线；按计划禁止编造指标。"
+  "status": "recorded",
+  "recorded_at": "2026-09-20T08:32:36.474328+00:00",
+  "provenance": {
+    "corpus": "backend/tests/rag_eval/corpus/*.md（3 份为评测编写的中文笔记）",
+    "cases": "cases.jsonl",
+    "labeling": "每条用例由唯一 answer phrase 定位到实际入库的 child chunk",
+    "pipeline": "真实解析/分类/切分/嵌入/索引；富化关闭、分类只走规则、不调用外部模型",
+    "embedding": {
+      "provider": "local",
+      "model": "BAAI/bge-small-zh-v1.5",
+      "window": 512
+    },
+    "chunking": {
+      "min_tokens": 150,
+      "target_tokens": 400,
+      "max_tokens": 480
+    },
+    "child_chunk_count": 16
+  },
+  "limitations": "语料是为评测专门编写的 3 份中文笔记，检索难度低于真实资料；本轮数字只用于回归对比与机制验证，不代表生产检索质量。",
+  "cases": [
+    {
+      "query": "什么是条件概率",
+      "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08",
+      "expected_chunk_ids": [
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_1"
+      ],
+      "ranked_chunk_ids": [
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_1",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_2",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_4",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_0",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_6",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_1",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_2",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_2",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_3",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_5",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_4",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_3",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_0",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_3",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_1",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_0"
+      ],
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "query": "全概率公式有什么用",
+      "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08",
+      "expected_chunk_ids": [
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_2"
+      ],
+      "ranked_chunk_ids": [
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_2",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_5",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_4",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_0",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_6",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_1",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_2",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_3",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_0",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_3",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_3",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_1",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_0",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_4",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_2",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_1"
+      ],
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "query": "先验概率和后验概率是什么关系",
+      "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08",
+      "expected_chunk_ids": [
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_4"
+      ],
+      "ranked_chunk_ids": [
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_4",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_1",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_2",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_0",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_3",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_6",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_4",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_5",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_2",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_3",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_2",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_0",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_1",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_3",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_0",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_1"
+      ],
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "query": "P(A|B) 和 P(B|A) 一样吗",
+      "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08",
+      "expected_chunk_ids": [
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_6"
+      ],
+      "ranked_chunk_ids": [
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_3",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_1",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_6",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_2",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_4",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_3",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_2",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_4",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_3",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_2",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_5",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_1",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_1",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_0",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_0",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_0"
+      ],
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 0.3333333333333333,
+      "ndcg@10": 0.5
+    },
+    {
+      "query": "导数是怎么定义的",
+      "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08",
+      "expected_chunk_ids": [
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_1"
+      ],
+      "ranked_chunk_ids": [
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_1",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_3",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_2",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_4",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_2",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_4",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_1",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_3",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_6",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_1",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_2",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_0",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_3",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_5",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_0",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_0"
+      ],
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "query": "链式法则什么时候用",
+      "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08",
+      "expected_chunk_ids": [
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_2"
+      ],
+      "ranked_chunk_ids": [
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_2",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_5",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_4",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_3",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_3",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_4",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_2",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_1",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_3",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_0",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_6",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_2",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_0",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_1",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_0",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_1"
+      ],
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "query": "隐函数求导怎么做",
+      "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08",
+      "expected_chunk_ids": [
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_3"
+      ],
+      "ranked_chunk_ids": [
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_3",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_1",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_2",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_4",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_2",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_2",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_3",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_0",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_1",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_0",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_1",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_4",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_6",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_0",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_5",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_3"
+      ],
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "query": "圆的方程怎么求导",
+      "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08",
+      "expected_chunk_ids": [
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_3"
+      ],
+      "ranked_chunk_ids": [
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_3",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_4",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_2",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_2",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_1",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_3",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_1",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_2",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_3",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_4",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_0",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_5",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_0",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_1",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_6",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_0"
+      ],
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "query": "矩阵的秩怎么算",
+      "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08",
+      "expected_chunk_ids": [
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_1"
+      ],
+      "ranked_chunk_ids": [
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_1",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_4",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_2",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_0",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_3",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_2",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_3",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_3",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_2",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_0",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_1",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_0",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_5",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_4",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_6",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_1"
+      ],
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "query": "特征值怎么求",
+      "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08",
+      "expected_chunk_ids": [
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_2"
+      ],
+      "ranked_chunk_ids": [
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_2",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_4",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_0",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_3",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_0",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_0",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_3",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_2",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_3",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_4",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_2",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_1",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_1",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_1",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_6",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_5"
+      ],
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 1.0,
+      "ndcg@10": 1.0
+    },
+    {
+      "query": "怎么判断向量组线性无关",
+      "workspace_id": "50520c90-72e1-4031-897a-8c134eccea08",
+      "expected_chunk_ids": [
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_3"
+      ],
+      "ranked_chunk_ids": [
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_3",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_4",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_2",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_0",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_2",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_3",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_4",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_2",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_1",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_1",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_6",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_3",
+        "e488ff74-e3b2-4ad0-ad17-6d83d4574b45_chunk_1",
+        "4058cf4b-eef8-4bea-b2d4-c2b2ff2d16f4_chunk_0",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_0",
+        "af9ed861-2d2f-4fa5-bc03-9b53133393d4_chunk_5"
+      ],
+      "recall@5": 1.0,
+      "recall@10": 1.0,
+      "mrr": 1.0,
+      "ndcg@10": 1.0
+    }
+  ],
+  "summary": {
+    "case_count": 11,
+    "mrr": 0.9393939393939394,
+    "ndcg@10": 0.9545454545454546,
+    "recall@5": 1.0,
+    "recall@10": 1.0
+  }
 }

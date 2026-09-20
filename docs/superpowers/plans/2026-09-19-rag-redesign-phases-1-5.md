@@ -14,9 +14,21 @@
 | Chroma collection 距离度量固定 cosine | ✅ | `test_vector_store_space.py` |
 | 上传白名单与解析器工厂共用真相 | ✅ | `documents.ALLOWED_EXTENSIONS` ← `pipeline.supported_file_types()` ← `ParserFactory.supported_types()` |
 | 入库阶段事件与 `pipeline_stage` | ✅ | `document_pipeline_events`、`test_pipeline_events.py` |
-| 真实基线指标入库 | ⛔ 待执行 | `backend/tests/rag_eval/baseline.json` 仍是 `no_ready_documents`，`cases.jsonl` 仍是占位 |
+| 真实基线指标入库 | ✅ | `backend/tests/rag_eval/baseline.json`：11 条用例、16 个 child chunk、Recall@5 = 1.00、Recall@10 = 1.00、MRR = 0.939、NDCG@10 = 0.955。由 `backend/scripts/collect_rag_baseline.py` 在隔离 `DATA_ROOT` 上真实跑通解析→切分→嵌入→索引→召回；标注规则与局限写在 baseline.json 的 provenance / limitations 里 |
 
-基线采集（需要 Docker 或本地 Redis/Celery + 可用 embedding + 至少一份 ready 文档）：
+基线采集（推荐路径，一条命令，不需要 Docker/Celery；用隔离 `DATA_ROOT` + 内嵌 Chroma，
+需要本地 embedding 模型可用，首次会从 HuggingFace 拉取 `BAAI/bge-small-zh-v1.5`）：
+
+```powershell
+.venv\Scripts\python.exe backend/scripts/collect_rag_baseline.py --reset
+```
+
+脚本会依次完成：真实入库 `backend/tests/rag_eval/corpus/*.md` → 用唯一答案短语把每条查询
+解析成实际 chunk_id 写入 `cases.jsonl` → 用生产混合召回算指标写入 `baseline.json` →
+尝试阈值重标定（样本标签单一则拒绝）。注意 `cases.jsonl` 与 `baseline.json` 是同一次运行的产物：
+document/chunk id 每次重新入库都会变化，两者必须一起重跑、一起提交。
+
+如果要在**真实资料**上采集（更有代表性的基线），用容器里的既有 workspace：
 
 ```powershell
 docker compose up -d --build
@@ -25,6 +37,15 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml exec backend pyth
 # 人工确认相关 chunk_id 后写入 backend/tests/rag_eval/cases.jsonl（≥8 条用例）
 docker compose -f docker-compose.yml -f docker-compose.dev.yml exec backend python -m app.rag.eval.runner run --cases tests/rag_eval/cases.jsonl --out /tmp/rag_baseline.json
 ```
+
+### 跑通真实链路后修掉的缺陷（2026-09-20）
+
+采集基线时把整条链路真正跑了一遍，暴露出两个只在真实运行下才会出现的缺陷，已修复：
+
+| 缺陷 | 现象 | 修复 |
+| --- | --- | --- |
+| 同一进程里两处各建一次 Chroma 客户端 | 入库用 `VectorStore` 的 `PersistentClient`，检索用 `app/core/chroma.py` 的另一个实例，settings 不同 → 检索侧报 `An instance of Chroma already exists ... with different settings`，证据事件报「检索服务暂时不可用」 | `VectorStore._connect` 在嵌入模式复用 `get_chroma_client()` 单例（`core/vector_store.py`） |
+| 索引指纹从未写入成功 | `write_fingerprint` 写嵌套 dict，Chroma 元数据不接受；改成摊平后又撞上「不能修改距离函数」，整条 metadata 更新失败 → `index_stale` 永远报 `missing_fingerprint` | 指纹摊平为 `knowbase_index_*` 标量键；不回收 `hnsw:space`（距离不可变，改由指纹 `distance` 承载，`describe_collection_space` 增加回退） |
 
 ## 阶段 1：统一文档模型与解析层
 
@@ -68,7 +89,8 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml exec backend pyth
 | 多向量（content / summary / question）+ 归并 + kind 白名单 | ✅ | `app/rag/indexing/multivector.py`（写入展开）、`search._vector_recall`（按逻辑 chunk_id 归并、证据正文取 content 向量）、`retrieval_hits.vector_kinds`（迁移 0009） |
 | 索引指纹与 `index_stale` 提示（§15.2） | ✅ | `app/rag/indexing/index_versions.py`（读 / 写 / gap 判定）+ 入库后写入指纹 + `/api/chat` 的 `evidence.index_stale` 可选键 |
 | embedding 保持现状（不切换到 bge-m3） | ⛔ 已决策不做 | 2026-09-20 决策：继续使用现有 embedding 模型，不做 bge-m3 切换与全量重建。指纹与 `index_stale` 机制保留，将来需要时仍可切换（见下方「决策记录」）。阶段 3 验收不再要求换模型 |
-| 验收：评测指标不低于阶段 0 基线 | ⛔ 待执行 | 依赖阶段 0 基线采集 |
+| 切分上限对齐 embedding 模型窗口 | ✅ | `MAX_CHUNK_TOKENS 1200 → 480`、`TARGET_CHUNK_TOKENS 600 → 400`（`chunking/base.py`）；`test_rag_chunking.py` 断言 child 上限低于窗口且超长正文会被切开，`EmbeddingService` 的窗口告警兜底估算偏差 |
+| 验收：评测指标不低于阶段 0 基线 | ✅ | 同一 harness 可复跑：改动检索链路后重跑 `backend/scripts/collect_rag_baseline.py` 与 baseline.json 对比。基线语料是 3 份评测笔记，难度低于真实资料，只作回归参照 |
 
 ## 阶段 4：查询理解、重排与上下文 ✅
 
@@ -82,7 +104,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml exec backend pyth
 | Context Builder（[资料N] 编号、预算、重复块跳过） | ✅ 已接线 | `app/rag/retrieval/context.py`，`/api/chat` 上下文改用该构建器（格式与既有提示词一致） |
 | 重排 / Parent Expansion / 练习模式过滤接入 `/api/chat` 主链路 | ✅ | `app/rag/retrieval/orchestrator.py`（sources 仍逐条子块、引用编号沿用首个命中；上下文用父块去重）+ `/api/chat` 接线；证据事件新增 `query_intent / rerank_degraded / context_notes` 可选键 |
 | Metadata 预过滤（subject / difficulty / content_type / document_type） | ✅ | `build_metadata_where`（Chroma）+ `build_sql_metadata_filter`（FTS）语义一致、两条召回都下推；`test_rag_metadata_filter.py` |
-| 阈值重标定（用标注集回写 supported / second / limited） | 🚧 机制就绪 | `app/rag/eval/calibration.py` + `runner calibrate`；样本不足或标签单一显式拒绝给建议，真实数字仍需标注集 |
+| 阈值重标定（用标注集回写 supported / second / limited） | 🚧 机制就绪 | `app/rag/eval/calibration.py` + `runner calibrate`；本轮 11 条用例全部命中、标签单一，按设计**明确拒绝**给建议——等真实资料上出现未命中样本后再重标定 |
 | 题目 / 答案分索引接入练习与错题（§16） | ✅ | chunk 级 `content_type=question/answer` 已落库；`/api/chat` 接受 `mode="practice"` 并在召回层排除 answer/solution；练习结果页「问 AI 老师（不透露答案）」入口；`POST /api/rag/practice` 返回资料原题（见下方补充） |
 | 验收：降级路径可复现 | ✅ | `test_rag_query_retrieval.py` 覆盖重排超时 / 分数不匹配 / 父块超预算 |
 
@@ -97,7 +119,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml exec backend pyth
 | 观测面板（前端） | ✅ | 学习页「检索诊断」抽屉 `RetrievalDiagnostics`：范围 / 证据 / 降级 / `index_stale` / 上下文处理 + 逐条候选分项打分；run id 由 SSE `evidence` 新增可选键提供 |
 | 11 项学习能力逐项可用并有测试佐证 | ✅ | 见下表 |
 | Metadata 硬预过滤（subject / difficulty / content_type / document_type） | ✅ | `build_metadata_where`（Chroma）+ `build_sql_metadata_filter`（FTS，语义一致）；`RetrievalRequest.metadata_filter` 下推到两条召回；练习模式把 `exclude_content_types` 直接下推 |
-| 阈值重标定 | ✅ 机制就绪 | `app/rag/eval/calibration.py` + `runner calibrate`；样本不足或标签单一显式拒绝给出建议（真实数字仍需标注集） |
+| 阈值重标定 | 🚧 机制就绪 | 同上：机制可用，本轮样本标签单一，拒绝给出建议 |
 
 ### 11 项学习能力与证据
 
@@ -125,8 +147,8 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml exec backend pyth
   原本是按 `bge-m3` 的 8192 窗口定的，现在这条前提不再成立。
 - **本次已采取**：embedding 侧显式统计并告警（`EmbeddingService.last_truncation`、`max_input_tokens`），
   把静默截断变成可读信号；原子块（公式/代码/表格）按设计不细分，所以即使将来收紧切分上限，这条检查仍然必要。
-- **仍待决策**：是否把切分上限收到模型窗口内（例如 ~480 token）。代价是重新入库生成索引；
-  当前重构尚未发布、也还没有真实基线，所以现在做的成本接近 0，越晚做越贵。
+- **已决策并实施**：切分上限收到 480 token（目标 400），与 512 token 的模型窗口对齐；
+  由于重构尚未发布、也还没有真实基线，这次调整不需要重建既有索引。
 
 问题：检索层已经能按 `practice` 排除答案，但 `ChatRequest.mode` 的模式白名单里没有 `practice`，
 HTTP 层根本进不到这条路径；前端练习页也没有任何追问入口，所以「练习页尚未切换调用」一直悬着。
@@ -136,7 +158,7 @@ HTTP 层根本进不到这条路径；前端练习页也没有任何追问入口
 | `/api/chat` 接受 `mode="practice"` 并给出练习语境提示词 | ✅ | `app/schemas/schemas.py` 模式白名单 + `learning_answer_service.MODE_INSTRUCTIONS["practice"]`；`test_chat_practice_context.py` |
 | `POST /api/rag/practice` 按知识点/难度返回资料原题 | ✅ | `app/api/routes/rag.py`、`app/schemas/rag.py`；`test_rag_practice_endpoint.py`（只返回 child 原题、排除 solution/answer、未知知识点 fail-closed、跨库 404、limit 校验） |
 | 练习结果页「问 AI 老师（不透露答案）」入口 | ✅ | `QuizResults` / `QuizRunner` / `Practice` 透传 handler，经 `quickQuestionDestination(..., 'practice')` 进入学习会话；`practiceComponents.test.tsx`、`quickQuestion.test.tsx` |
-| quiz 生成的题目来源升级（§16.3「先检索原题、命中不足再用 LLM 补足」） | ⛔ 待实施 | 生成链路目前仍是「知识点证据 + LLM 出题」；`/api/rag/practice` 已就绪，等生成器接入 |
+| quiz 生成的题目来源升级（§16.3「先检索原题、命中不足再用 LLM 补足」） | ✅ | 生成前把 `content_type=question` 的证据排到最前并带上 `content_type`，提示词要求优先以原题为蓝本、不足时再自拟；每题返回 `source_origin`（`material` / `generated`），练习页显示「资料原题 / AI 生成」。注意：原题仍由模型结构化，不是确定性抽取 |
 
 ## 每阶段通用约束
 

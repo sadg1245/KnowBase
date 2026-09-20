@@ -483,8 +483,8 @@ class ChunkRouter:
 
 ```text
 min_chunk_tokens    = 150
-target_chunk_tokens = 400 ~ 800（默认 600）
-max_chunk_tokens    = 1200
+target_chunk_tokens = 400（2026-09-20 更新，原 400 ~ 800 / 默认 600）
+max_chunk_tokens    = 480（2026-09-20 更新，原 1200）
 ```
 
 处理顺序不可颠倒（对齐源文档第 18 节「不要反过来先固定长度切」）：
