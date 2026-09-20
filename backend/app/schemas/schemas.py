@@ -78,6 +78,10 @@ class DocumentResponse(BaseModel):
     file_size: int
     chunk_count: int
     status: str
+    parse_degraded: Optional[str] = None
+    parse_quality: dict[str, Any] = Field(default_factory=dict)
+    enrichment_state: Optional[str] = None
+    enrichment_progress: dict[str, Any] = Field(default_factory=dict)
     error_message: Optional[str] = None
     summary: Optional[str] = None
     outline: Optional[str] = None
@@ -163,7 +167,8 @@ class ConversationResponse(BaseModel):
 class ChatRequest(BaseModel):
     question: str = Field(..., min_length=1, description="User question")
     workspace_id: Optional[str] = Field(
-        None, description="Limit search to this workspace"
+        None,
+        description="Preferred workspace for this question; optional when a scope is supplied",
     )
     document_ids: list[str] = Field(
         default_factory=list,
@@ -178,6 +183,17 @@ class ChatRequest(BaseModel):
     )
     mode: str = Field("explain", pattern="^(direct|simple|deep|socratic|feynman|quiz|explain)$")
     strict_sources: bool = True
+    scope_mode: Optional[str] = Field(
+        None,
+        pattern="^(strict|focused|smart|global)$",
+        description="Learning scope mode; omitted keeps the session scope",
+    )
+    scope_config: Optional[dict] = Field(
+        None, description="Learning scope payload: workspace/document/knowledge_point ids"
+    )
+    scope_override: Optional[dict] = Field(
+        None, description="One-off scope override for this request only"
+    )
 
 
 class SourceItem(BaseModel):

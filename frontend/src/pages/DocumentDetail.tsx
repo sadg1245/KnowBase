@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Alert, App, Button, Card, Empty, Form, Input, Modal, Space, Spin, Tag, Typography } from 'antd';
-import { ArrowLeftOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { ArrowLeftOutlined, BulbOutlined, EditOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import {
   CardDraft,
   createSelectionCard,
@@ -186,11 +186,38 @@ const DocumentDetail: React.FC = () => {
         {document.tags.map(tag => <Tag key={tag}>{tag}</Tag>)}
       </Space></div>
       <Space wrap><Button icon={<EditOutlined />} onClick={() => { form.setFieldsValue({ filename: document.filename, tags: document.tags.join(', ') }); setEditOpen(true); }}>编辑</Button>
+        <Button icon={<BulbOutlined />} disabled={document.status !== 'ready'} onClick={() => navigate(`/learn?workspace=${workspaceId}&document_id=${documentId}&mode=simple`)}>用 AI 学习此文档</Button>
         <Button loading={busy} icon={<ReloadOutlined />} onClick={() => void run('parse')}>重新解析</Button>
         <Button loading={busy} type="primary" onClick={() => void run('learn')} disabled={document.status !== 'ready'}>重新生成学习内容</Button></Space>
     </div>
     {document.error_message && <Alert type="error" showIcon message="解析失败" description={document.error_message} />}
-    {document.learning_error_message && <Alert type="error" showIcon message="学习内容生成失败" description={document.learning_error_message} />}
+    {document.learning_error_message && document.learning_status !== 'partial' && <Alert type="error" showIcon message="学习内容生成失败" description={document.learning_error_message} />}
+    {document.learning_status === 'partial' ? <Alert
+      type="warning"
+      showIcon
+      message={`学习内容部分完成（${document.learning_coverage?.chapters_ready ?? 0}/${document.learning_coverage?.chapters_total ?? '?'} 章）`}
+      description={document.learning_error_message || '缺失章节可点击"重新生成学习内容"补齐，已生成的章节不受影响。'}
+    /> : null}
+    {document.parse_degraded ? <Alert
+      type="warning"
+      showIcon
+      message={document.parse_degraded === 'scanned_pdf' ? '该文件是扫描件，暂不参与检索' : '这份资料没有可提取的正文'}
+      description={(document.parse_quality?.notes as string[] | undefined)?.join(' ') || '当前未做 OCR，检索与问答不会引用这份资料。'}
+    /> : null}
+    {document.enrichment_state && document.enrichment_state !== 'skipped' ? <Alert
+      type={document.enrichment_state === 'failed' ? 'warning' : 'info'}
+      showIcon
+      message={{
+        pending: '后台增强中：正在生成摘要与问题向量',
+        partial: '后台增强部分完成，可重试缺失部分',
+        ready: '后台增强完成：摘要与问题向量已加入检索',
+        failed: '后台增强未成功，可点击下方"重新解析"或补跑富化',
+      }[document.enrichment_state] || `后台增强状态：${document.enrichment_state}`}
+      description={document.enrichment_progress?.chunks_total
+        ? `已处理 ${document.enrichment_progress.chunks_ready ?? 0}/${document.enrichment_progress.chunks_total} 个片段`
+          + (document.enrichment_progress.chunks_failed ? `，失败 ${document.enrichment_progress.chunks_failed} 个` : '')
+        : undefined}
+    /> : null}
     {document.summary && <Card className="paper-card"><Title level={3}>文档摘要</Title><Paragraph>{document.summary}</Paragraph></Card>}
 
     <div className="document-detail-grid">

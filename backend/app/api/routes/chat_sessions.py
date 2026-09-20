@@ -7,14 +7,23 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user, get_db
-from app.models.chat import ChatFeedback, ChatSession, LearningNote
+from app.models.chat import ChatFeedback, ChatSession, LearningNote, RetrievalHit, RetrievalRun
 from app.models.conversation import Conversation
 from app.models.learning import Flashcard, QuizQuestion
 from app.models.user import User
-from app.schemas.chat import ChatSessionCreate, ChatSessionUpdate, FeedbackUpdate, MessageNoteCreate, SummaryNoteCreate
+from app.schemas.chat import (
+    ChatSessionCreate,
+    ChatSessionUpdate,
+    FeedbackUpdate,
+    MessageNoteCreate,
+    ScopeUpdate,
+    SummaryNoteCreate,
+)
+from app.schemas.scope import RetrievalScope
 from app.services.conversation_service import ConversationService
 from app.services.activity_service import append_card_created
-from app.services.ownership import owned_chat_session, owned_workspace
+from app.services.ownership import owned_chat_session, owned_workspace, resolve_owned_scope
+from app.services.scope_resolver import scope_from_session
 
 
 router = APIRouter(prefix="/chat", tags=["chat sessions"])
@@ -24,13 +33,42 @@ def _iso(value):
     return value.isoformat() if value else None
 
 
+def _normalized_scope(
+    *,
+    scope_mode: str | None,
+    scope_config: dict | None,
+    workspace_id: str | None,
+    document_ids: list[str] | None,
+) -> RetrievalScope:
+    """把请求里的范围归一化：显式 scope 优先，兼容字段保持迁移前的 strict 语义。"""
+    documents = list(document_ids or [])
+    if scope_mode or scope_config:
+        config = dict(scope_config or {})
+        if workspace_id and not config.get("workspace_ids"):
+            config["workspace_ids"] = [workspace_id]
+        if documents and not config.get("document_ids"):
+            config["document_ids"] = documents
+        return RetrievalScope.from_config(scope_mode, config)
+    if documents:
+        return RetrievalScope(
+            mode="strict",
+            document_ids=documents,
+            workspace_ids=[workspace_id] if workspace_id else [],
+        )
+    if workspace_id:
+        return RetrievalScope(mode="strict", workspace_ids=[workspace_id])
+    return RetrievalScope(mode="smart")
+
+
 def _session(row: ChatSession) -> dict:
+    scope = scope_from_session(row)
     return {
         "id": row.id,
         "user_id": row.user_id,
         "workspace_id": row.workspace_id,
         "title": row.title,
         "document_ids": row.selected_document_ids or [],
+        "scope": scope.model_dump() if scope else None,
         "mode": row.preferred_mode,
         "strict_sources": row.strict_sources,
         "is_favorite": row.is_favorite,
@@ -105,12 +143,20 @@ async def create_session(
 ) -> dict:
     if payload.workspace_id:
         await owned_workspace(db, payload.workspace_id, current_user)
+    scope = _normalized_scope(
+        scope_mode=payload.scope_mode,
+        scope_config=payload.scope_config.model_dump() if payload.scope_config else None,
+        workspace_id=payload.workspace_id,
+        document_ids=payload.document_ids,
+    )
     row = await ConversationService(db, current_user.id).create_session(
         workspace_id=payload.workspace_id,
         document_ids=payload.document_ids,
         mode=payload.mode,
         strict_sources=payload.strict_sources,
         title=payload.title,
+        scope_mode=scope.mode,
+        scope_config=scope.config_payload(),
     )
     return _session(row)
 
@@ -141,6 +187,21 @@ async def update_session(
         changes["preferred_mode"] = changes.pop("mode")
     if changes.get("workspace_id"):
         await owned_workspace(db, changes["workspace_id"], current_user)
+    if "scope_mode" in changes or "scope_config" in changes or "selected_document_ids" in changes:
+        current = await owned_chat_session(db, session_id, current_user)
+        scope = scope_from_session(current) or RetrievalScope(mode="strict")
+        if "scope_mode" in changes:
+            scope.mode = changes.pop("scope_mode")
+        if "scope_config" in changes:
+            scope = RetrievalScope.from_config(
+                scope.mode, dict(changes.pop("scope_config") or {})
+            )
+        if "selected_document_ids" in changes:
+            scope.document_ids = list(changes["selected_document_ids"] or [])
+        if changes.get("workspace_id"):
+            scope.workspace_ids = [changes["workspace_id"]]
+        changes["scope_mode"] = scope.mode
+        changes["scope_config"] = scope.config_payload()
     row = await ConversationService(db, current_user.id).update_session(session_id, **changes)
     if row is None:
         raise HTTPException(404, "Learning session not found")
@@ -156,6 +217,132 @@ async def delete_session(
     if not await ConversationService(db, current_user.id).delete_session(session_id):
         raise HTTPException(404, "Learning session not found")
     return Response(status_code=204)
+
+
+@router.get("/sessions/{session_id}/scope")
+async def get_session_scope(
+    session_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """当前学习范围，以及最近一次范围解析结果（可解释「为什么搜到这里」）。"""
+    row = await owned_chat_session(db, session_id, current_user)
+    scope = scope_from_session(row) or RetrievalScope(mode="strict")
+    latest = (await db.execute(
+        select(RetrievalRun)
+        .where(RetrievalRun.session_id == session_id)
+        .order_by(RetrievalRun.created_at.desc())
+        .limit(1)
+    )).scalar_one_or_none()
+    return {
+        "mode": scope.mode,
+        "scope": scope.model_dump(),
+        "last_resolution": (latest.scope_resolution or None) if latest else None,
+        "last_resolved_at": _iso(latest.created_at) if latest else None,
+    }
+
+
+@router.patch("/sessions/{session_id}/scope")
+async def update_session_scope(
+    session_id: str,
+    payload: ScopeUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """更新学习范围；客户端传入的 id 一律先做所有权收敛。"""
+    await owned_chat_session(db, session_id, current_user)
+    owned = await resolve_owned_scope(
+        db,
+        current_user,
+        workspace_ids=payload.workspace_ids,
+        document_ids=payload.document_ids,
+        knowledge_point_ids=payload.knowledge_point_ids,
+    )
+    scope = RetrievalScope(
+        mode=payload.mode,
+        workspace_ids=owned.workspace_ids,
+        document_ids=owned.document_ids,
+        knowledge_point_ids=owned.knowledge_point_ids,
+        allow_workspace_expansion=payload.allow_workspace_expansion,
+    )
+    changes: dict = {
+        "scope_mode": scope.mode,
+        "scope_config": scope.config_payload(),
+        "selected_document_ids": list(scope.document_ids),
+    }
+    if scope.workspace_ids:
+        changes["workspace_id"] = scope.workspace_ids[0]
+    updated = await ConversationService(db, current_user.id).update_session(
+        session_id, **changes
+    )
+    if updated is None:
+        raise HTTPException(404, "Learning session not found")
+    return {**_session(updated), "dropped_ids": owned.dropped_ids}
+
+
+def _hit(row: RetrievalHit) -> dict:
+    return {
+        "chunk_id": row.chunk_id,
+        "document_id": row.document_id,
+        "source_file": row.source_file,
+        "page_num": row.page_num,
+        "heading": row.heading,
+        "vector_rank": row.vector_rank,
+        "keyword_rank": row.keyword_rank,
+        "vector_score": row.vector_score,
+        "keyword_score": row.keyword_score,
+        "fusion_score": row.fusion_score,
+        "rerank_score": row.rerank_score,
+        "profile_bonus": row.profile_bonus,
+        "final_rank": row.final_rank,
+        "selected_as_evidence": row.selected_as_evidence,
+    }
+
+
+@router.get("/retrieval-runs/{run_id}")
+async def get_retrieval_run(
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """归当前用户所有的检索审计记录（含范围快照与融合明细）。"""
+    statement = (
+        select(RetrievalRun)
+        .join(ChatSession, ChatSession.id == RetrievalRun.session_id)
+        .where(RetrievalRun.id == run_id, ChatSession.user_id == current_user.id)
+    )
+    run = (await db.execute(statement)).scalar_one_or_none()
+    if run is None:
+        raise HTTPException(404, "Retrieval run not found")
+    hits = list((await db.execute(
+        select(RetrievalHit)
+        .where(RetrievalHit.retrieval_run_id == run_id)
+        .order_by(RetrievalHit.final_rank)
+    )).scalars().all())
+    hit_payload = [_hit(row) for row in hits]
+    return {
+        "run_id": run.id,
+        "session_id": run.session_id,
+        "query": run.query,
+        "scope_mode": run.scope_mode,
+        "input_scope": (run.scope_snapshot or {}).get("input_scope"),
+        "scope_snapshot": run.scope_snapshot or {},
+        "resolved_scope": run.scope_resolution or {},
+        "expansion_rounds": run.expansion_rounds,
+        "expanded_scope": run.expanded_scope,
+        "workspace_id": run.workspace_id,
+        "document_ids": run.document_ids or [],
+        "evidence_status": run.evidence_status,
+        "top_score": run.top_score,
+        "vector_succeeded": run.vector_succeeded,
+        "keyword_succeeded": run.keyword_succeeded,
+        "degradation_reason": run.degradation_reason,
+        "config_snapshot": run.config_snapshot or {},
+        "dense_results": [item for item in hit_payload if item["vector_rank"]],
+        "keyword_results": [item for item in hit_payload if item["keyword_rank"]],
+        "reranked_results": hit_payload,
+        "created_at": _iso(run.created_at),
+    }
 
 
 @router.post("/sessions/{session_id}/summary-note", status_code=201)

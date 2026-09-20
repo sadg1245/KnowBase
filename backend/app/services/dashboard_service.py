@@ -17,6 +17,7 @@ from app.models.user import User
 from app.models.workspace import Workspace
 from app.services import goal_service, study_session_service
 from app.services.period_service import period_bounds
+from app.services.profile_overview import LearnerProfileOverviewService
 
 
 def _aware(value: datetime) -> datetime:
@@ -318,6 +319,14 @@ async def build_dashboard(db: AsyncSession, *, now: datetime, user_id: str) -> d
         .limit(5)
     )).all()
     recommendations = await rank_workspaces(db, now=now, user_id=user_id, limit=4)
+    profile_overview = await LearnerProfileOverviewService(db, user_id).build(
+        now=now,
+        mastery_limit=4,
+        weak_limit=3,
+        include_children=False,
+        # 首页的「为什么？」抽屉直接读这份证据，条目上限很小（3 条薄弱点）。
+        include_evidence=True,
+    )
     workspace_count = int(await db.scalar(select(func.count(Workspace.id)).where(
         Workspace.owner_id == user_id, Workspace.archived.is_(False)
     )) or 0)
@@ -338,6 +347,19 @@ async def build_dashboard(db: AsyncSession, *, now: datetime, user_id: str) -> d
             "daily_review_target": preference.daily_review_target,
             "weekly_goal_days": preference.weekly_goal_days,
             "timezone_name": preference.timezone_name,
+            # 首页画像卡片：一级领域 + Top 掌握度 + Top 薄弱点 + 一条洞察（画像设计文档 §7）。
+            "is_empty": profile_overview.is_empty,
+            "empty_hint": profile_overview.empty_hint,
+            "current_focus": (
+                profile_overview.current_focus[0].name if profile_overview.current_focus else None
+            ),
+            "focus_points": [item.model_dump() for item in profile_overview.focus_points],
+            "mastery": [item.model_dump() for item in profile_overview.mastery_overview],
+            "weak_points": [item.model_dump() for item in profile_overview.weak_points],
+            "insight": profile_overview.insight.model_dump(),
+            "recent_learning": [item.model_dump() for item in profile_overview.recent_learning],
+            "observations": profile_overview.observations.model_dump(),
+            "goals": [item.model_dump() for item in profile_overview.goals],
         },
         "stats": {
             "workspace_count": workspace_count, "document_count": document_count,

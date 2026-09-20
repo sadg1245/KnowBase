@@ -67,6 +67,26 @@ class Settings(BaseSettings):
     RAG_SUPPORTED_THRESHOLD: float = 0.58
     RAG_SECOND_THRESHOLD: float = 0.45
     RAG_LIMITED_THRESHOLD: float = 0.42
+    # 切分与语义分块
+    SEMANTIC_SPLIT_THRESHOLD: float = 0.62
+    SEMANTIC_SPLIT_MAX_SENTENCES: int = 400
+    RAG_PARENT_MAX_TOKENS: int = 2000
+    # 富化与索引版本
+    RAG_ENRICH_ENABLED: bool = False
+    RAG_ENRICH_CONCURRENCY: int = 3
+    RAG_ENRICH_BATCH_SIZE: int = 10
+    RAG_ENRICH_MAX_TOKENS: int = 4000
+    RAG_INDEX_VERSION: int = 2
+    RAG_MULTIVECTOR_KINDS: str = "content,summary,question"
+    # 检索调试端点（默认关闭，开启后可用 /api/debug/retrieval 查看逐条打分）
+    RAG_DEBUG_ENDPOINT_ENABLED: bool = False
+
+    # 学习范围（RetrievalScope）配置
+    SCOPE_DEFAULT_MODE: str = "smart"
+    SCOPE_MAX_EXPANSION_ROUNDS: int = 2
+    SCOPE_EXPANSION_LATENCY_BUDGET_MS: int = 3000
+    SCOPE_PER_WORKSPACE_TOP_K: int = 10
+    PROFILE_RANK_BONUS_MAX: float = 0.10
 
     # AI 导师画像与长期记忆
     MEMORY_RECALL_K: int = 8

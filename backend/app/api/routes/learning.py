@@ -25,6 +25,8 @@ from app.models.workspace import Workspace
 from app.services.learning_content import LearningGenerationError, generate_document_learning_content
 from app.services.learner_profile import LearnerProfileService
 from app.services.learning_memory import LearningMemoryService
+from app.services.profile_insight import ProfileInsightError, generate_insight
+from app.services.profile_overview import LearnerProfileOverviewService
 from app.services.review_service import apply_card_review, build_review_summary, schedule_review
 from app.services.weakness_service import weakness_priority_subquery
 from app.services import assessment_service, assessment_workflows
@@ -145,10 +147,59 @@ def _profile_payload(user: User, preference) -> dict:
 
 @router.get("/profile")
 async def get_profile(
+    workspace_id: str | None = None,
+    mastery_limit: int = Query(20, ge=1, le=100),
+    weak_limit: int = Query(10, ge=0, le=50),
+    include_children: bool = True,
+    child_limit: int = Query(25, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> dict:
-    return _profile_payload(current_user, await _preferences(db, current_user))
+    """完整学习画像：确定性事实读时聚合，同时保留学习偏好字段供既有页面读取。"""
+    if workspace_id:
+        owned = await db.scalar(select(Workspace.id).where(
+            Workspace.id == workspace_id, Workspace.owner_id == current_user.id
+        ))
+        if owned is None:
+            raise HTTPException(404, "Knowledge base not found")
+    profile = await LearnerProfileOverviewService(db, current_user.id).build(
+        now=datetime.now(timezone.utc),
+        workspace_id=workspace_id,
+        mastery_limit=mastery_limit,
+        weak_limit=weak_limit,
+        include_children=include_children,
+        child_limit=child_limit,
+    )
+    return profile.model_dump()
+
+
+@router.post("/profile/insight")
+async def create_profile_insight(
+    workspace_id: str | None = None,
+    db: AsyncSession = Depends(get_db),
+    settings: Settings = Depends(get_settings),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """按需生成 AI 学习洞察；失败不影响确定性画像，前端继续展示规则结论。"""
+    if workspace_id:
+        owned = await db.scalar(select(Workspace.id).where(
+            Workspace.id == workspace_id, Workspace.owner_id == current_user.id
+        ))
+        if owned is None:
+            raise HTTPException(404, "Knowledge base not found")
+    try:
+        return await generate_insight(
+            db,
+            settings,
+            now=datetime.now(timezone.utc),
+            user_id=current_user.id,
+            workspace_id=workspace_id,
+        )
+    except ProfileInsightError as exc:
+        detail = str(exc)
+        if "暂无学习记录" in detail:
+            raise HTTPException(409, detail) from exc
+        raise HTTPException(503, detail) from exc
 
 
 @router.put("/profile")

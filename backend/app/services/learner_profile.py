@@ -64,6 +64,35 @@ class LearnerProfileSnapshot:
         return payload
 
 
+@dataclass
+class DifficultyPreference:
+    """画像折算出的难度与内容类型偏好（只读，用于检索期软加权，§20.2/§20.3）。"""
+
+    level: int | None = None
+    min_difficulty: int | None = None
+    max_difficulty: int | None = None
+    preferred_content_types: list[str] = field(default_factory=list)
+    basis: list[str] = field(default_factory=list)
+
+    @property
+    def is_empty(self) -> bool:
+        return self.level is None and not self.preferred_content_types
+
+
+def _level_from_mastery(mastery: float) -> int:
+    """掌握度 0–1 折算到难度 1–5：0.0→1，1.0→5。"""
+    return max(1, min(5, int(round(mastery * 4)) + 1))
+
+
+def content_types_for_level(level: int) -> list[str]:
+    """新手优先定义与直觉，熟练优先推导与综合练习（设计文档 §9.13）。"""
+    if level <= 2:
+        return ["definition", "concept", "intuition", "simple_example"]
+    if level >= 4:
+        return ["derivation", "formula", "advanced_example", "exercise", "solution"]
+    return ["concept", "formula", "example", "code"]
+
+
 def invalidate_profile_cache(user_id: str, workspace_id: str | None = None) -> None:
     """Drop cached snapshots; called by writers that change learning evidence."""
     for key in [
@@ -167,6 +196,47 @@ class LearnerProfileService:
         _prune_cache(now)
         _CACHE[key] = (now, snapshot)
         return snapshot
+
+    async def difficulty_preference(
+        self,
+        *,
+        workspace_id: str | None = None,
+        knowledge_point_ids: list[str] | None = None,
+        owned_workspace_ids: list[str] | None = None,
+    ) -> DifficultyPreference:
+        """按知识点掌握度折算难度区间与内容类型偏好；没有记录时不加任何偏好。"""
+        scope = [workspace_id] if workspace_id else list(owned_workspace_ids or [])
+        query = select(KnowledgePoint.id, KnowledgePoint.mastery, KnowledgePoint.title)
+        if knowledge_point_ids:
+            query = query.where(KnowledgePoint.id.in_(list(knowledge_point_ids)))
+        elif scope:
+            query = query.where(KnowledgePoint.workspace_id.in_(scope))
+        else:
+            return DifficultyPreference(basis=["no_scope"])
+        rows = (await self.db.execute(query)).all()
+        if not rows:
+            return DifficultyPreference(basis=["no_knowledge_point_evidence"])
+        masteries = [float(row[1] or 0.0) for row in rows]
+        average = sum(masteries) / len(masteries)
+        level = _level_from_mastery(average)
+        basis = [
+            f"掌握度均值 {round(average * 100)}% → 难度档 {level}",
+            f"参与折算的知识点 {len(rows)} 个",
+        ]
+        weak_titles = [
+            str(row[2])
+            for row in sorted(rows, key=lambda item: float(item[1] or 0.0))[:2]
+            if row[2]
+        ]
+        if weak_titles:
+            basis.append(f"最薄弱：{'、'.join(weak_titles)}")
+        return DifficultyPreference(
+            level=level,
+            min_difficulty=max(1, level - 1),
+            max_difficulty=min(5, level + 1),
+            preferred_content_types=content_types_for_level(level),
+            basis=basis,
+        )
 
     async def _build_snapshot(
         self, *, workspace_id: str | None, question: str, scope: list[str]

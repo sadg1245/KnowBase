@@ -445,6 +445,14 @@ AI 学习建议只在用户点击生成时调用模型。成功结果按报告�
 - `GET /api/learning/reports/{day|week|month}/evidence`：指标证据。
 - `POST /api/learning/reports/{day|week|month}/suggestion`：显式生成 AI 建议。
 - `GET|PUT|DELETE /api/learning/goals...`：全局与知识库目标管理。
+- `GET /api/learning/profile`：完整学习画像（掌握度、薄弱点及原因、常见错误、目标、最近学习、一条规则洞察）。
+- `POST /api/learning/profile/insight`：按当前画像指标显式生成 AI 洞察，按快照哈希缓存。
+
+学习画像由 `LearnerProfileService` 之外的读时聚合服务 `profile_overview` 计算，不新增画像表：掌握度、趋势、置信度、薄弱原因与常见错误全部来自
+`knowledge_points`、`weak_knowledge_states`、`mistake_records`、`quiz_attempts`、`review_logs`、`learning_goals`、`study_activities` 和 `study_sessions`。
+首页把画像与今日计划、AI 洞察、最近学习放在一起；完整画像页 `/profile` 提供知识树、薄弱知识点依据抽屉（`为什么是 N%？`）、常见错误、最近进步与学习偏好。
+画像只调整讲解方式、练习与复习优先级，不作为资料事实，也不占用 `[资料N]` 编号。没有学习记录时返回空画像并展示“画像正在等待形成”，不会显示一排 0%。
+`GET /api/learning/profile` 同时保留旧的学习偏好字段（每日目标、复习目标、时区、`reminder_time`），设置页与飞书提醒继续可用。
 
 开发验证：
 

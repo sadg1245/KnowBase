@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from app.rag.eval.metrics import evaluate, load_cases
+from app.rag.eval.calibration import cases_from_retrieval, suggest_thresholds
 
 
 async def retrieve_for_case(case: dict) -> list[dict]:
@@ -70,6 +71,47 @@ def _command_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _command_calibrate(args: argparse.Namespace) -> int:
+    """用标注集给出 supported / second / limited 的建议值（样本不足则明确拒绝）。"""
+    cases = load_cases(args.cases)
+    if not cases:
+        print("cases.jsonl 为空：先用 label 子命令标注用例。")
+        return 2
+    samples = cases_from_retrieval(cases, run_sync)
+    suggestion = suggest_thresholds(samples)
+    if suggestion is None:
+        print(
+            "样本不足或标签单一：重标定需要 >= 8 条同时包含正例与负例的用例，"
+            "本轮不做任何阈值建议。"
+        )
+        return 2
+    print(json.dumps({
+        "supported": suggestion.supported,
+        "second": suggestion.second,
+        "limited": suggestion.limited,
+        "precision": suggestion.precision,
+        "recall": suggestion.recall,
+        "f1": suggestion.f1,
+        "cases": suggestion.cases,
+        "reasons": suggestion.reasons,
+    }, ensure_ascii=False, indent=2))
+    if args.out:
+        Path(args.out).write_text(
+            json.dumps({
+                "supported": suggestion.supported,
+                "second": suggestion.second,
+                "limited": suggestion.limited,
+                "precision": suggestion.precision,
+                "recall": suggestion.recall,
+                "f1": suggestion.f1,
+                "cases": suggestion.cases,
+            }, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        print(f"已写入 {args.out}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m app.rag.eval.runner")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -84,6 +126,11 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--cases", required=True)
     run.add_argument("--out")
     run.set_defaults(func=_command_run)
+
+    calibrate = sub.add_parser("calibrate", help="用标注集给出证据阈值建议")
+    calibrate.add_argument("--cases", required=True)
+    calibrate.add_argument("--out")
+    calibrate.set_defaults(func=_command_calibrate)
 
     args = parser.parse_args(argv)
     return args.func(args)

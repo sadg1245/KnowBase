@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, String, Text, Integer, DateTime, ForeignKey, JSON, func
+from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, JSON, String, Text, func
 from sqlalchemy.orm import relationship
 
 from app.models.base import Base
@@ -35,6 +35,13 @@ class Document(Base):
         index=True,
     )  # 状态值：pending / processing / ready / failed
     pipeline_stage = Column(String(20), nullable=True)
+    # 解析质量：扫描件 / 空文档等降级原因必须显式落库，不允许静默通过。
+    parse_degraded = Column(String(30), nullable=True)
+    parse_quality = Column(JSON, nullable=False, default=dict)
+    # 阶段 2：分类结果与依据（reasons + confidence）
+    document_type = Column(String(30), nullable=True, index=True)
+    classification_confidence = Column(Float, nullable=True)
+    classification_meta = Column(JSON, nullable=False, default=dict)
     error_message = Column(Text, nullable=True)
     summary = Column(Text, nullable=True)
     outline = Column(Text, nullable=True)
@@ -48,6 +55,11 @@ class Document(Base):
     learning_order = Column(JSON, nullable=False, default=list)
     review_points = Column(JSON, nullable=False, default=list)
     learning_error_message = Column(Text, nullable=True)
+    # 学习内容生成的覆盖率（按章降级时记录每章状态与产物缓存）
+    learning_coverage = Column(JSON, nullable=False, default=dict)
+    # 阶段 3：富化（summary/question 向量）从入库主链路拆出后的进度
+    enrichment_state = Column(String(20), nullable=True)      # pending / ready / partial / failed
+    enrichment_progress = Column(JSON, nullable=False, default=dict)
     processed_at = Column(DateTime(timezone=True), nullable=True)
     learning_generated_at = Column(DateTime(timezone=True), nullable=True)
     created_at = Column(

@@ -1,6 +1,7 @@
 """第一阶段：Alembic 迁移、旧库引导与数据保留。"""
 
 import asyncio
+import json
 import os
 import sqlite3
 import tempfile
@@ -154,7 +155,7 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
 
         report = await ensure_database_ready("sqlite+aiosqlite:///" + path)
         self.assertEqual(report.action, "legacy")
-        self.assertEqual(report.revision, "0004_rag_pipeline_events")
+        self.assertEqual(report.revision, "0011_learning_coverage")
 
         self.assertEqual(_table_counts(path, tuple(before)), before)
         connection = sqlite3.connect(path)
@@ -222,6 +223,41 @@ class MigrationTests(unittest.IsolatedAsyncioTestCase):
             connection.execute("SELECT COUNT(*) FROM learning_domains").fetchone()[0], 1
         )
         connection.close()
+
+    def _chat_session_scope(self, path: str) -> sqlite3.Row:
+        connection = sqlite3.connect(path)
+        connection.row_factory = sqlite3.Row
+        try:
+            return connection.execute(
+                "SELECT scope_mode, scope_config FROM chat_sessions WHERE id = 'cs-1'"
+            ).fetchone()
+        finally:
+            connection.close()
+
+    async def test_learning_scope_backfill_prefers_documents_when_present(self):
+        path = await self._build_legacy()
+        connection = sqlite3.connect(path)
+        connection.execute(
+            "UPDATE chat_sessions SET selected_document_ids = ? WHERE id = 'cs-1'",
+            ('["doc-1"]',),
+        )
+        connection.commit()
+        connection.close()
+
+        await ensure_database_ready("sqlite+aiosqlite:///" + path)
+
+        session = self._chat_session_scope(path)
+        self.assertEqual(session["scope_mode"], "strict")
+        self.assertEqual(json.loads(session["scope_config"])["document_ids"], ["doc-1"])
+
+    async def test_learning_scope_backfill_falls_back_to_workspace(self):
+        path = await self._build_legacy()
+
+        await ensure_database_ready("sqlite+aiosqlite:///" + path)
+
+        session = self._chat_session_scope(path)
+        self.assertEqual(session["scope_mode"], "strict")
+        self.assertEqual(json.loads(session["scope_config"])["workspace_ids"], ["ws-1"])
 
     async def test_legacy_bootstrap_refuses_a_broken_structure(self):
         path = await self._build_legacy("broken.db", seed=False)

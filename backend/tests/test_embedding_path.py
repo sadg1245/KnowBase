@@ -62,7 +62,7 @@ class QueryEmbeddingPathTests(unittest.IsolatedAsyncioTestCase):
             search_module, "_get_chroma_client", lambda: client
         ):
             rows = await search_module._vector_recall(
-                query="条件概率", workspace_id="ws-1", document_ids=[], top_k=5
+                query="条件概率", workspace_ids=["ws-1"], document_ids=[], top_k=5
             )
 
         self.assertEqual(seen, ["条件概率"])
@@ -70,3 +70,4 @@ class QueryEmbeddingPathTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(rows[0]["chunk_id"], "doc-1_chunk_0")
         self.assertEqual(rows[0]["score"], 0.8)
         self.assertEqual(rows[0]["document_id"], "doc-1")
+        self.assertEqual(rows[0]["workspace_id"], "ws-1")

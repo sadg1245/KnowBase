@@ -63,6 +63,67 @@ class DocxParser(BaseParser):
     # 公共接口
     # --------------------------------------------------------------------- #
 
+    def parse_blocks(self, file_path: str, *, document_id: str, start_order: int = 0):
+        """阶段 1 的 Block 化入口：标题 / 段落 / 列表 / 表格各自成块。
+
+        表格用 python-docx 的单元格直接构造二维数组，避免管道符切分歧义
+        （例如单元格内容本身含 `|`）。`parse()` 保持原样供既有流水线使用。
+        """
+        from app.rag.contracts import Block
+        from docx import Document
+        from docx.table import Table as DocxTable
+        from docx.text.paragraph import Paragraph as DocxParagraph
+
+        if not os.path.isfile(file_path):
+            raise FileNotFoundError(f"DOCX file not found: {file_path}")
+
+        doc = Document(file_path)
+        blocks: list[Block] = []
+        order = start_order
+        heading_stack: list[tuple[int, str]] = []
+
+        def emit(block_type: str, content: str, **extra) -> None:
+            nonlocal order
+            blocks.append(Block(
+                block_id=f"{document_id}:b{order}",
+                type=block_type,  # type: ignore[arg-type]
+                content=content,
+                order=order,
+                section_path=[title for _, title in heading_stack],
+                **extra,
+            ))
+            order += 1
+
+        for element in doc.element.body:
+            if element.tag.endswith("}p"):
+                para = DocxParagraph(element, doc)
+                style_name = para.style.name if para.style else None
+                text = para.text.strip()
+                if not text:
+                    continue
+                level = self._heading_level(style_name)
+                if 1 <= level <= 9:
+                    heading_stack[:] = [entry for entry in heading_stack if entry[0] < level]
+                    heading_stack.append((level, text))
+                    emit("heading", text, heading_level=level)
+                elif (style_name or "").lower().startswith("list"):
+                    emit("list", text)
+                elif (style_name or "").lower() in {"quote", "intense quote"}:
+                    emit("quote", text)
+                else:
+                    emit("paragraph", text)
+            elif element.tag.endswith("}tbl"):
+                table = DocxTable(element, doc)
+                rows = [[cell.text.strip() for cell in row.cells] for row in table.rows]
+                rows = [row for row in rows if any(cell for cell in row)]
+                if rows:
+                    emit(
+                        "table",
+                        "\n".join("| " + " | ".join(row) + " |" for row in rows),
+                        table=rows,
+                    )
+        return blocks
+
     def parse(self, file_path: str) -> list[dict[str, Any]]:
         """解析 .docx 文件并返回基于章节的文档块。
 

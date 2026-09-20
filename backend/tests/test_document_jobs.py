@@ -240,7 +240,7 @@ class LearningGenerationRetryTests(unittest.TestCase):
         )
         attempts = 0
 
-        async def always_timeout(_db, _document_id, _overwrite_tags=False):
+        async def always_timeout(_db, _document_id, _overwrite_tags=False, _force=False):
             nonlocal attempts
             attempts += 1
             raise TimeoutError("temporary outage")

@@ -21,6 +21,7 @@ import type {
   WeakKnowledgeRecalculationScope,
   WeakKnowledgeState,
 } from '../features/practice/types';
+import type { RetrievalScopePayload } from '../pages/learningScope';
 
 export type {
   AssessmentListScope,
@@ -54,6 +55,7 @@ export type {
   WeakKnowledgeRecalculationScope,
   WeakKnowledgeState,
 } from '../features/practice/types';
+export type { RetrievalScopePayload, ScopeChoice } from '../pages/learningScope';
 
 const api = axios.create({
   baseURL: '/api',
@@ -152,10 +154,18 @@ export interface Document {
   file_size: number;
   chunk_count: number;
   status: 'pending' | 'processing' | 'ready' | 'failed';
+  /** 解析降级原因：scanned_pdf / empty_document；非空时这条资料暂时不参与检索。 */
+  parse_degraded?: string | null;
+  parse_quality?: Record<string, any>;
+  /** 后台富化进度：pending / ready / partial / failed / skipped */
+  enrichment_state?: string | null;
+  enrichment_progress?: Record<string, any>;
   error_message?: string | null;
   summary?: string | null;
   outline?: string | null;
-  learning_status: 'not_started' | 'queued' | 'generating' | 'ready' | 'failed';
+  learning_status: 'not_started' | 'queued' | 'generating' | 'ready' | 'partial' | 'failed';
+  /** 学习内容覆盖率：按章降级时记录每章状态与产物缓存 */
+  learning_coverage?: Record<string, any>;
   learning_error_message?: string | null;
   tags: string[];
   chapter_summaries: unknown[];
@@ -224,7 +234,26 @@ export type ChatEvent =
   | { token: string }
   | { replace: string }
   | { session: { id: string; title: string; title_changed?: boolean } }
-  | { evidence: { status: 'supported' | 'limited' | 'insufficient' | 'model_only' | 'error'; vector_succeeded: boolean; keyword_succeeded: boolean; degradation_reason?: string; top_score: number; answer_policy?: string; model_fallback?: boolean; profile_injected?: boolean; memory_hits?: string[]; memory_degraded_reason?: string | null } }
+  | { scope: { mode: 'strict' | 'focused' | 'smart' | 'global'; workspace_ids: string[]; document_ids: string[]; expansion_rounds: number; expanded_scope: boolean; dropped_ids: string[]; resolution_reason: string[]; expansion: Array<{ round: number; workspace_ids: string[]; document_ids: string[]; evidence_status: string }> } }
+  | { evidence: {
+      status: 'supported' | 'limited' | 'insufficient' | 'model_only' | 'error';
+      vector_succeeded: boolean;
+      keyword_succeeded: boolean;
+      degradation_reason?: string;
+      top_score: number;
+      answer_policy?: string;
+      model_fallback?: boolean;
+      profile_injected?: boolean;
+      memory_hits?: string[];
+      memory_degraded_reason?: string | null;
+      /** 阶段 4/5 新增的可选诊断键：不改变既有字段语义 */
+      retrieval_run_id?: string | null;
+      query_intent?: string;
+      rerank_degraded?: string | null;
+      index_stale?: boolean;
+      index_stale_reasons?: string[];
+      context_notes?: string[];
+    } }
   | { sources: BackendSourceItem[] }
   | { suggestions: string[] }
   | { done: true; message_id?: string; session_id?: string; conversation_id?: string; confidence?: number; full_text?: string; generation_status?: 'complete' | 'partial'; answer_layers?: string[] }
@@ -406,13 +435,31 @@ export const streamChat = async (
   mode = 'explain',
   sessionId?: string,
   documentIds: string[] = [],
+  scope?: RetrievalScopePayload,
 ): Promise<void> => {
+  // `strict_sources` is retained only so older backends still accept the payload; the current
+  // server ignores it and always answers source-first with an explicit model fallback.
+  const body: Record<string, unknown> = {
+    question,
+    workspace_id: workspaceId,
+    document_ids: documentIds,
+    mode,
+    strict_sources: false,
+    session_id: sessionId,
+  };
+  if (scope) {
+    body.scope_mode = scope.mode;
+    body.scope_config = {
+      workspace_ids: scope.workspace_ids,
+      document_ids: scope.document_ids,
+      knowledge_point_ids: scope.knowledge_point_ids,
+      allow_workspace_expansion: scope.allow_workspace_expansion,
+    };
+  }
   const response = await fetch('/api/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(authToken() ? { Authorization: `Bearer ${authToken()}` } : {}) },
-    // `strict_sources` is retained only so older backends still accept the payload; the current
-    // server ignores it and always answers source-first with an explicit model fallback.
-    body: JSON.stringify({ question, workspace_id: workspaceId, document_ids: documentIds, mode, strict_sources: false, session_id: sessionId }),
+    body: JSON.stringify(body),
     signal,
   });
   if (!response.ok) {
@@ -445,6 +492,46 @@ export const normalizeChatSources = (sources: BackendSourceItem[]): SourceItem[]
 export type LearningMode = 'direct' | 'simple' | 'deep' | 'socratic' | 'feynman' | 'quiz';
 export type EvidenceStatus = 'supported' | 'limited' | 'insufficient' | 'model_only' | 'error';
 
+export interface RetrievalRunHit {
+  chunk_id: string;
+  document_id?: string | null;
+  source_file: string;
+  page_num?: number | null;
+  heading?: string | null;
+  vector_rank?: number | null;
+  keyword_rank?: number | null;
+  vector_score: number;
+  keyword_score: number;
+  fusion_score: number;
+  rerank_score: number;
+  profile_bonus: number;
+  vector_kinds: string[];
+  final_rank?: number | null;
+  selected_as_evidence?: boolean;
+}
+
+export interface RetrievalRunDetail {
+  run: {
+    id: string;
+    query: string;
+    scope_mode?: string | null;
+    evidence_status: string;
+    top_score: number;
+    vector_succeeded: boolean;
+    keyword_succeeded: boolean;
+    degradation_reason?: string | null;
+    expanded_scope: boolean;
+    expansion_rounds: number;
+    config_snapshot?: Record<string, unknown>;
+    resolved_scope?: Record<string, any>;
+    scope_snapshot?: Record<string, any>;
+  };
+  hits: RetrievalRunHit[];
+}
+
+export const getRetrievalRun = async (runId: string): Promise<RetrievalRunDetail> =>
+  (await api.get(`/chat/retrieval-runs/${runId}`)).data;
+
 export interface ChatMessage {
   id: string;
   session_id: string;
@@ -464,6 +551,7 @@ export interface ChatSession {
   workspace_id?: string | null;
   title: string;
   document_ids: string[];
+  scope?: RetrievalScopePayload | null;
   mode: LearningMode;
   strict_sources: boolean;
   is_favorite: boolean;
@@ -483,13 +571,21 @@ export const createChatSession = async (values: {
   mode?: LearningMode;
   strict_sources?: boolean;
   title?: string;
+  scope_mode?: 'strict' | 'focused' | 'smart' | 'global';
+  scope_config?: Omit<RetrievalScopePayload, 'mode'>;
 }): Promise<ChatSession> => (await api.post('/chat/sessions', values)).data;
 
 export const getChatSession = async (id: string): Promise<ChatSession> =>
   (await api.get(`/chat/sessions/${id}`)).data;
 
-export const updateChatSession = async (id: string, values: Partial<Pick<ChatSession, 'title' | 'workspace_id' | 'document_ids' | 'mode' | 'strict_sources' | 'is_favorite'>>): Promise<ChatSession> =>
+export const updateChatSession = async (id: string, values: Partial<Pick<ChatSession, 'title' | 'workspace_id' | 'document_ids' | 'mode' | 'strict_sources' | 'is_favorite'>> & {
+  scope_mode?: 'strict' | 'focused' | 'smart' | 'global';
+  scope_config?: Omit<RetrievalScopePayload, 'mode'>;
+}): Promise<ChatSession> =>
   (await api.patch(`/chat/sessions/${id}`, values)).data;
+
+export const updateChatSessionScope = async (id: string, scope: RetrievalScopePayload): Promise<ChatSession> =>
+  (await api.patch(`/chat/sessions/${id}/scope`, scope)).data;
 
 export const deleteChatSession = async (id: string): Promise<void> => {
   await api.delete(`/chat/sessions/${id}`);
@@ -606,7 +702,7 @@ export type DashboardActivity = {
 };
 
 export interface LearningDashboard {
-  profile: { display_name: string; daily_goal_minutes: number; daily_review_target: number; weekly_goal_days: number; timezone_name: string };
+  profile: DashboardProfile;
   stats: { workspace_count: number; document_count: number; knowledge_point_count: number; due_cards: number; wrong_questions: number; today_minutes: number; week_minutes: number; streak_days: number };
   today_tasks: DashboardTask[];
   weak_points: KnowledgePoint[];
@@ -654,6 +750,160 @@ export const finishStudySessionKeepalive = async (id: string, sequence: number):
 };
 export interface LearningProfile { id: string; display_name: string; daily_goal_minutes: number; daily_review_target: number; weekly_goal_days: number; timezone_name: string; preferred_mode: string; reminder_time?: string }
 export const getLearningProfile = async (): Promise<LearningProfile> => (await api.get('/learning/profile')).data;
+
+export type MasteryStatus = 'not_mastered' | 'weak' | 'learning' | 'mastered' | 'proficient';
+export type WeaknessBand = 'stable' | 'watch' | 'weak' | 'priority';
+export type ProfileActionType = 'review' | 'practice' | 'explain' | 'reread' | 'example';
+
+export interface ProfileFocusItem {
+  name: string;
+  kind: 'workspace' | 'knowledge_point';
+  workspace_id?: string | null;
+  knowledge_point_id?: string | null;
+  recent_minutes?: number | null;
+  reason?: string | null;
+}
+
+export interface ProfileMasteryItem {
+  name: string;
+  score: number;
+  status: MasteryStatus;
+  status_label: string;
+  workspace_id?: string | null;
+  knowledge_point_id?: string | null;
+  knowledge_point_count: number;
+  trend?: number | null;
+  confidence?: number | null;
+  confidence_note?: string | null;
+  last_evidence_at?: string | null;
+  children: ProfileMasteryItem[];
+}
+
+export interface ProfileWeakAction { type: ProfileActionType; label: string; path?: string | null }
+
+export interface ProfileWeakEvidence {
+  recent_attempts: Array<{ correct?: boolean | null; submitted_at?: string | null; duration_seconds: number }>;
+  attempt_accuracy?: number | null;
+  recent_reviews: Array<{ rating: number; label: string; reviewed_at?: string | null }>;
+  mistake_count: number;
+  repeat_error_count: number;
+  mistake_patterns: Array<{ pattern: string; count: number; last_wrong_at?: string | null }>;
+  last_studied_at?: string | null;
+  stale_days?: number | null;
+  state_note: string;
+  components: Record<string, number>;
+}
+
+export interface ProfileWeakPoint {
+  knowledge_point_id: string;
+  name: string;
+  workspace_id: string;
+  area: string;
+  mastery: number;
+  mastery_status: MasteryStatus;
+  mastery_status_label: string;
+  weakness_score: number;
+  weakness_band: WeaknessBand;
+  weakness_band_label: string;
+  reasons: string[];
+  actions: ProfileWeakAction[];
+  evidence: ProfileWeakEvidence;
+}
+
+export interface ProfileCommonError {
+  area: string;
+  pattern: string;
+  count: number;
+  knowledge_point_id?: string | null;
+  knowledge_point_title?: string | null;
+  last_wrong_at?: string | null;
+}
+
+export interface ProfileGoal {
+  id?: string | null;
+  title: string;
+  scope_type: 'global' | 'workspace';
+  metric: string;
+  target_value: number;
+  actual: number;
+  progress: number;
+  status: string;
+  target_date?: string | null;
+  workspace_id?: string | null;
+  completed: string[];
+  learning: string[];
+  pending: string[];
+}
+
+export interface ProfileRecentLearning {
+  date: string;
+  label: string;
+  minutes: number;
+  activity_count: number;
+  last_studied_at?: string | null;
+  areas: Array<{ name: string; workspace_id?: string | null; minutes: number }>;
+}
+
+export interface ProfileObservations {
+  average_session_minutes?: number | null;
+  preferred_period?: 'morning' | 'afternoon' | 'evening' | null;
+  preferred_period_label?: string | null;
+  deep_mode_ratio?: number | null;
+  notes: string[];
+}
+
+export interface ProfileInsight {
+  text: string;
+  generated_by: 'rules' | 'ai';
+  based_on: string[];
+  evidence: Record<string, any>;
+  model?: string | null;
+  generated_at?: string | null;
+}
+
+export interface LearnerProfileOverview extends LearningProfile {
+  user_id: string;
+  is_empty: boolean;
+  empty_hint?: string | null;
+  knowledge_point_count: number;
+  current_focus: ProfileFocusItem[];
+  focus_points: ProfileFocusItem[];
+  mastery_overview: ProfileMasteryItem[];
+  weak_points: ProfileWeakPoint[];
+  common_errors: ProfileCommonError[];
+  goals: ProfileGoal[];
+  recent_learning: ProfileRecentLearning[];
+  observations: ProfileObservations;
+  insight: ProfileInsight;
+  trend_window_days: number;
+  recent_window_days: number;
+  computed_at: string;
+}
+
+export interface DashboardProfile extends LearningProfile {
+  is_empty: boolean;
+  empty_hint?: string | null;
+  current_focus?: string | null;
+  focus_points: ProfileFocusItem[];
+  mastery: ProfileMasteryItem[];
+  weak_points: ProfileWeakPoint[];
+  insight: ProfileInsight;
+  recent_learning: ProfileRecentLearning[];
+  observations: ProfileObservations;
+  goals: ProfileGoal[];
+}
+
+export const getLearnerProfileOverview = async (
+  params: { workspaceId?: string; includeChildren?: boolean } = {},
+): Promise<LearnerProfileOverview> => (await api.get('/learning/profile', { params: {
+  workspace_id: params.workspaceId,
+  include_children: params.includeChildren,
+} })).data;
+
+export const generateProfileInsight = async (
+  workspaceId?: string,
+): Promise<ProfileInsight & { cached: boolean; snapshot_hash?: string }> =>
+  (await api.post('/learning/profile/insight', null, { params: { workspace_id: workspaceId } })).data;
 
 export type MemoryKind = 'session_summary' | 'mistake_pattern' | 'preference' | 'insight' | 'manual';
 

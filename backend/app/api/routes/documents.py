@@ -280,6 +280,70 @@ async def get_document(
     return await owned_document(db, document_id, current_user)
 
 
+@router.post("/documents/{document_id}/enrich")
+async def enrich_document_chunks(
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    """补跑富化：只处理尚未 `ready` 的 chunk（设计文档 §13.2）。"""
+    from app.rag.chunking.base import Chunk
+    from app.rag.enrichment import MetadataEnricher, build_completion
+
+    document = await owned_document(db, document_id, current_user)
+    rows = list((
+        await db.execute(
+            select(DocumentChunk)
+            .where(
+                DocumentChunk.document_id == document_id,
+                DocumentChunk.enrichment_status != "ready",
+            )
+            .order_by(DocumentChunk.chunk_index.asc())
+        )
+    ).scalars().all())
+    chunks = [
+        Chunk(
+            chunk_id=row.id,
+            document_id=row.document_id,
+            workspace_id=row.workspace_id,
+            content=row.content,
+            chunk_level=row.chunk_level,
+            parent_id=row.parent_id,
+            unit_id=row.unit_id,
+            content_type=row.content_type,
+            metadata={"enrichment_status": row.enrichment_status},
+        )
+        for row in rows
+    ]
+    enrich_enabled = bool(settings.RAG_ENRICH_ENABLED)
+    result = await MetadataEnricher(
+        enabled=enrich_enabled,
+        completion=build_completion(settings) if enrich_enabled else None,
+    ).enrich(chunks)
+    for chunk, row in zip(chunks, rows):
+        meta = chunk.metadata
+        row.content_type = chunk.content_type
+        row.summary = meta.get("summary") or None
+        row.subject = meta.get("subject") or None
+        row.keywords = list(meta.get("keywords") or [])
+        row.knowledge_points = list(meta.get("knowledge_points") or [])
+        row.difficulty = meta.get("difficulty")
+        row.enrichment_status = str(meta.get("enrichment_status") or row.enrichment_status)
+        row.chunk_metadata = {
+            **(row.chunk_metadata or {}),
+            "questions": list(meta.get("questions") or []),
+        }
+    await db.flush()
+    return {
+        "document_id": document_id,
+        "enriched": result.enriched,
+        "failed": result.failed,
+        "skipped": result.skipped,
+        "calls": result.calls,
+    }
+
+
 @router.patch("/documents/{document_id}", response_model=DocumentResponse)
 async def update_document(
     document_id: str,
@@ -404,7 +468,10 @@ async def regenerate_document_learning(
     document.learning_error_message = None
     await db.commit()
     try:
-        enqueue_learning_generation(document.id, overwrite_tags=overwrite_tags)
+        # 用户显式点击"重新生成"时要求整篇重跑；自动触发时默认复用已成功章节
+        enqueue_learning_generation(
+            document.id, overwrite_tags=overwrite_tags, force=True
+        )
     except Exception as exc:
         document.learning_status = "failed"
         document.learning_error_message = f"Learning queue dispatch failed: {exc}"[:1000]

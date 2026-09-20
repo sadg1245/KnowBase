@@ -17,6 +17,7 @@ from app.models.learning import (
     StudySession,
 )
 from app.models.assessment import QuizSet, QuizRun, QuizAttempt, MistakeRecord, WeakKnowledgeState, LearningTask
+from app.models.rag import KnowledgeUnit, StructureNode
 
 __all__ = [
     "Base",
@@ -34,4 +35,5 @@ __all__ = [
     "StudySession", "LearningGoal", "ReportSuggestion",
     "LearningMemory",
     "QuizSet", "QuizRun", "QuizAttempt", "MistakeRecord", "WeakKnowledgeState", "LearningTask",
+    "StructureNode", "KnowledgeUnit",
 ]

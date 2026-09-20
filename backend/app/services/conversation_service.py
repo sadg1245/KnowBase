@@ -14,6 +14,7 @@ from app.services.activity_service import append_activity
 
 
 SESSION_MODES = {"direct", "simple", "deep", "socratic", "feynman", "quiz"}
+SESSION_SCOPE_MODES = {"strict", "focused", "smart", "global"}
 
 
 def build_session_title(question: str) -> str:
@@ -35,12 +36,16 @@ class ConversationService:
         mode: str,
         strict_sources: bool,
         title: str = "新学习会话",
+        scope_mode: str = "strict",
+        scope_config: dict | None = None,
     ) -> ChatSession:
         session = ChatSession(
             user_id=self.user_id,
             workspace_id=workspace_id,
             title=title.strip() or "新学习会话",
             selected_document_ids=list(dict.fromkeys(document_ids)),
+            scope_mode=scope_mode if scope_mode in SESSION_SCOPE_MODES else "strict",
+            scope_config=dict(scope_config or {}),
             preferred_mode=mode if mode in SESSION_MODES else "simple",
             strict_sources=strict_sources,
         )
@@ -78,6 +83,8 @@ class ConversationService:
             "title",
             "workspace_id",
             "selected_document_ids",
+            "scope_mode",
+            "scope_config",
             "preferred_mode",
             "strict_sources",
             "is_favorite",
@@ -90,6 +97,10 @@ class ConversationService:
                 value = str(value).strip() or "新学习会话"
             elif key == "selected_document_ids":
                 value = list(dict.fromkeys(value))
+            elif key == "scope_config":
+                value = dict(value)
+            elif key == "scope_mode" and value not in SESSION_SCOPE_MODES:
+                continue
             elif key == "preferred_mode" and value not in SESSION_MODES:
                 continue
             setattr(session, key, value)

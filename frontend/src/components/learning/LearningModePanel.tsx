@@ -1,5 +1,5 @@
 import React from 'react';
-import { Select, Tag, Typography } from 'antd';
+import { Select, Switch, Tag, Typography } from 'antd';
 import { CheckCircleFilled, ExclamationCircleFilled } from '@ant-design/icons';
 
 import type { Document, LearningMode, Workspace } from '../../services/api';
@@ -7,6 +7,7 @@ import { evidenceStatusLabel } from '../../features/learning/learningConversatio
 import { answerPolicyLabel } from '../../features/learning/answerLayers';
 import { learningModes } from '../../features/learning/types';
 import { documentSelectionOption } from '../../pages/documentScope';
+import { scopeChoices, type ScopeChoice } from '../../pages/learningScope';
 
 
 const { Text } = Typography;
@@ -23,13 +24,36 @@ interface Props {
   onWorkspace: (value?: string) => void;
   onDocuments: (value: string[]) => void;
   onMode: (value: LearningMode) => void;
+  scopeChoice?: ScopeChoice;
+  onScopeChoice?: (value: ScopeChoice) => void;
+  allowWorkspaceExpansion?: boolean;
+  onAllowWorkspaceExpansion?: (value: boolean) => void;
 }
 
 
 export const LearningModePanel: React.FC<Props> = ({
   workspaces, workspaceId, documents, documentIds, documentsLoading, mode,
   evidenceStatus, degradationReason, onWorkspace, onDocuments, onMode,
+  scopeChoice = 'smart', onScopeChoice, allowWorkspaceExpansion = false, onAllowWorkspaceExpansion,
 }) => <aside className="learning-mode-panel" aria-label="学习设置">
+  <section>
+    <Text className="learning-panel-label">学习范围</Text>
+    <Select
+      value={scopeChoice}
+      onChange={(value: ScopeChoice) => onScopeChoice?.(value)}
+      optionFilterProp="label"
+      options={scopeChoices.map((item) => ({
+        label: item.label,
+        value: item.value,
+        title: item.hint,
+      }))}
+    />
+    {scopeChoice === 'documents' ? <label className="learning-scope-toggle">
+      <Switch size="small" checked={allowWorkspaceExpansion} onChange={onAllowWorkspaceExpansion} />
+      <span>资料不足时搜索当前知识库</span>
+    </label> : null}
+    <Text type="secondary">{scopeChoices.find((item) => item.value === scopeChoice)?.hint}</Text>
+  </section>
   <section>
     <Text className="learning-panel-label">资料范围</Text>
     <Select

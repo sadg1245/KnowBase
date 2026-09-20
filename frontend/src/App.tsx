@@ -3,7 +3,7 @@ import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { App as AntApp, ConfigProvider, Drawer, Layout, Menu, Button, Avatar, Typography, Input } from 'antd';
 import {
   BookOutlined, HomeOutlined, MessageOutlined, ReadOutlined, TrophyOutlined,
-  BarChartOutlined, UploadOutlined, SettingOutlined, MenuOutlined, BulbOutlined,
+  BarChartOutlined, UploadOutlined, SettingOutlined, MenuOutlined, BulbOutlined, IdcardOutlined,
 } from '@ant-design/icons';
 import zhCN from 'antd/locale/zh_CN';
 import { Spin } from 'antd';
@@ -27,11 +27,13 @@ const LearningChat = lazy(() => import('./pages/LearningChat'));
 const ReviewCenter = lazy(() => import('./pages/ReviewCenter'));
 const Practice = lazy(() => import('./pages/Practice'));
 const LearningReport = lazy(() => import('./pages/LearningReport'));
+const LearningProfilePage = lazy(() => import('./pages/LearningProfile'));
 const Settings = lazy(() => import('./pages/Settings'));
 
 const { Sider, Content } = Layout;
 const navItems = [
   { key: '/', icon: <HomeOutlined />, label: '今天' },
+  { key: '/profile', icon: <IdcardOutlined />, label: '学习画像' },
   { key: '/knowledge', icon: <BookOutlined />, label: '我的知识库' },
   { key: '/learn', icon: <MessageOutlined />, label: 'AI 学习' },
   { key: '/review', icon: <ReadOutlined />, label: '复习中心' },
@@ -214,6 +216,7 @@ const AppContent: React.FC = () => {
             <Route path="/review" element={<ReviewCenter />} />
             <Route path="/practice" element={<Practice />} />
             <Route path="/report" element={<LearningReport />} />
+            <Route path="/profile" element={<LearningProfilePage />} />
             <Route path="/upload" element={<Upload />} />
             <Route path="/settings" element={<Settings />} />
           </Routes></Suspense>

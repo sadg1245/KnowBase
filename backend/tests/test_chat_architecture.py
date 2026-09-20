@@ -31,9 +31,24 @@ class ChatArchitectureTests(unittest.TestCase):
             "preferred_mode",
             "strict_sources",
             "selected_document_ids",
+            "scope_mode",
+            "scope_config",
             "is_favorite",
             "created_at",
             "updated_at",
+        ):
+            with self.subTest(column=name):
+                self.assertIn(name, columns)
+
+    def test_retrieval_runs_keep_scope_audit_columns(self):
+        columns = Base.metadata.tables["retrieval_runs"].columns
+
+        for name in (
+            "scope_mode",
+            "scope_snapshot",
+            "scope_resolution",
+            "expansion_rounds",
+            "expanded_scope",
         ):
             with self.subTest(column=name):
                 self.assertIn(name, columns)
@@ -67,6 +82,7 @@ class ChatArchitectureTests(unittest.TestCase):
             "vector_score",
             "keyword_score",
             "rerank_score",
+            "profile_bonus",
             "selected_as_evidence",
         ):
             with self.subTest(column=name):

@@ -131,7 +131,7 @@ async def _queue_learning_generation(db_session: Any, document_id: str) -> None:
 
 
 async def _generate_learning_content(
-    db_session: Any, document_id: str, overwrite_tags: bool = False
+    db_session: Any, document_id: str, overwrite_tags: bool = False, force: bool = False
 ) -> dict[str, Any]:
     """Run one durable learning-generation attempt in the worker session."""
     from app.config import settings
@@ -148,10 +148,10 @@ async def _generate_learning_content(
     document.learning_error_message = None
     await db_session.commit()
     await generate_document_learning_content(
-        db_session, document_id, settings, overwrite_tags=overwrite_tags
+        db_session, document_id, settings, overwrite_tags=overwrite_tags, force=force
     )
     await db_session.commit()
-    return {"document_id": document_id, "status": "ready"}
+    return {"document_id": document_id, "status": document.learning_status}
 
 
 async def _mark_learning_failed(db_session: Any, document_id: str, exc: Exception) -> None:
@@ -331,10 +331,32 @@ if celery_app is not None:
         default_retry_delay=30,
         acks_late=True,
     )
+    def enrich_document_task(self, document_id: str) -> dict[str, Any]:
+        """入库完成后的后台富化：补写 summary / question 向量（可重复执行）。"""
+        from app.rag.enrichment.job import enrich_document_by_id
+
+        try:
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(enrich_document_by_id(document_id))
+            finally:
+                loop.close()
+        except Exception as exc:
+            logger.error("[Celery] Document enrichment failed for {}: {}", document_id, exc)
+            return {"document_id": document_id, "state": "failed", "error": str(exc)}
+
+    @celery_app.task(
+        name="collector.generate_learning_content",
+        bind=True,
+        max_retries=3,
+        default_retry_delay=30,
+        acks_late=True,
+    )
     def generate_learning_content_task(
         self,
         document_id: str,
         overwrite_tags: bool = False,
+        force: bool = False,
     ) -> dict[str, Any]:
         """Generate learning material after document parsing has completed."""
         db_session = None
@@ -343,7 +365,7 @@ if celery_app is not None:
             loop = asyncio.new_event_loop()
             try:
                 return loop.run_until_complete(
-                    _generate_learning_content(db_session, document_id, overwrite_tags)
+                    _generate_learning_content(db_session, document_id, overwrite_tags, force)
                 )
             finally:
                 loop.close()
@@ -389,3 +411,4 @@ else:
 
     process_document_task = _UnavailableTask()
     generate_learning_content_task = _UnavailableTask()
+    enrich_document_task = _UnavailableTask()

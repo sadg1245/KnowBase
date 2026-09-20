@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
-import { ChatEvent, LearningMode, streamChat } from '../services/api';
+import { ChatEvent, LearningMode, RetrievalScopePayload, streamChat } from '../services/api';
 
 
 interface SendChatInput {
   question: string;
-  workspaceId: string;
+  workspaceId?: string;
   documentIds: string[];
   mode: LearningMode;
   sessionId?: string;
+  scope?: RetrievalScopePayload;
 }
 
 
@@ -44,6 +45,7 @@ export const useStreamingChat = (onEvent: (event: ChatEvent) => void) => {
         input.mode,
         input.sessionId,
         input.documentIds,
+        input.scope,
       );
     } finally {
       if (requestRef.current === requestId) {

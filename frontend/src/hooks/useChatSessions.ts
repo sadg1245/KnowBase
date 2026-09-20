@@ -7,7 +7,9 @@ import {
   getChatSession,
   getChatSessions,
   LearningMode,
+  RetrievalScopePayload,
   updateChatSession,
+  updateChatSessionScope,
 } from '../services/api';
 
 
@@ -47,6 +49,8 @@ export const useChatSessions = () => {
     document_ids?: string[];
     mode?: LearningMode;
     strict_sources?: boolean;
+    scope_mode?: RetrievalScopePayload['mode'];
+    scope_config?: Omit<RetrievalScopePayload, 'mode'>;
   }) => {
     const created = await createChatSession(values);
     setSessions((current) => [created, ...current]);
@@ -57,6 +61,13 @@ export const useChatSessions = () => {
 
   const patchSession = useCallback(async (id: string, values: Parameters<typeof updateChatSession>[1]) => {
     const updated = await updateChatSession(id, values);
+    setSessions((current) => current.map((item) => item.id === id ? updated : item));
+    setActiveSession((current) => current?.id === id ? { ...current, ...updated } : current);
+    return updated;
+  }, []);
+
+  const patchScope = useCallback(async (id: string, scope: RetrievalScopePayload) => {
+    const updated = await updateChatSessionScope(id, scope);
     setSessions((current) => current.map((item) => item.id === id ? updated : item));
     setActiveSession((current) => current?.id === id ? { ...current, ...updated } : current);
     return updated;
@@ -95,6 +106,7 @@ export const useChatSessions = () => {
     openSession,
     newSession,
     patchSession,
+    patchScope,
     removeSession,
     mergeStreamSession,
   };

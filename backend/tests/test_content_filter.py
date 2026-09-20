@@ -192,7 +192,12 @@ class DocumentPipelineContentBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["chunks_count"], 2)
         self.assertIsNotNone(document.processed_at)
         self.assertEqual(vector_store.texts, ["Python正文", "附录代码"])
-        self.assertEqual([item.content for item in keyword_chunks], ["Python正文", "附录代码"])
+        # 阶段 3：parent 行也落在 document_chunks，只有 child 进入向量与正文断言
+        children = [item for item in keyword_chunks if item.chunk_level == "child"]
+        parents = [item for item in keyword_chunks if item.chunk_level == "parent"]
+        self.assertEqual([item.content for item in children], ["Python正文", "附录代码"])
+        self.assertTrue(parents)
+        self.assertTrue(all(child.parent_id for child in children))
 
     async def test_reindex_clears_stale_vectors_when_document_has_no_body(self):
         vector_store = _MemoryVectorStore()

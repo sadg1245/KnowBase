@@ -35,6 +35,10 @@ class KnowledgePoint(Base):
     # 人工编辑过标签后置为 True，重新生成学习内容时不得无条件覆盖。
     tags_locked = Column(Boolean, nullable=False, default=False)
     is_key = Column(Boolean, nullable=False, default=False)
+    # 阶段 2：指向文档结构层的知识单元，便于「薄弱知识点 → 原文单元」追溯
+    unit_id = Column(
+        String(96), ForeignKey("knowledge_units.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     mastery_status = Column(String(20), nullable=False, default="not_started", index=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now())
     updated_at = Column(DateTime(timezone=True), nullable=False, default=_now, server_default=func.now(), onupdate=_now)

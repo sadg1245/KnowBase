@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,6 +27,96 @@ from app.models.workspace import Workspace
 
 
 not_found = lambda label: HTTPException(404, f"{label} not found")  # noqa: E731
+
+
+@dataclass
+class OwnedScope:
+    """客户端请求的范围经过所有权收敛后的结果。"""
+
+    workspace_ids: list[str] = field(default_factory=list)
+    document_ids: list[str] = field(default_factory=list)
+    document_workspace_ids: dict[str, str] = field(default_factory=dict)
+    knowledge_point_ids: list[str] = field(default_factory=list)
+    knowledge_point_document_ids: dict[str, str | None] = field(default_factory=dict)
+    knowledge_point_workspace_ids: dict[str, str] = field(default_factory=dict)
+    dropped_ids: list[str] = field(default_factory=list)
+
+
+def _dedupe(values) -> list[str]:
+    result: list[str] = []
+    for value in values or []:
+        text = str(value).strip()
+        if text and text not in result:
+            result.append(text)
+    return result
+
+
+async def owned_workspace_ids(db: AsyncSession, user: User) -> list[str]:
+    """当前用户拥有的全部知识库 id（保持创建顺序）。"""
+    rows = (await db.execute(
+        select(Workspace.id).where(Workspace.owner_id == user.id).order_by(Workspace.created_at)
+    )).scalars().all()
+    return list(rows)
+
+
+async def resolve_owned_scope(
+    db: AsyncSession,
+    user: User,
+    *,
+    workspace_ids=(),
+    document_ids=(),
+    knowledge_point_ids=(),
+) -> OwnedScope:
+    """把客户端传入的范围收敛到当前用户拥有的资源。
+
+    无法验证的 id 一律剔除并记入 `dropped_ids`；调用方必须把空结果视为
+    fail-closed（不检索），而不是「不过滤」。
+    """
+    requested_workspaces = _dedupe(workspace_ids)
+    requested_documents = _dedupe(document_ids)
+    requested_points = _dedupe(knowledge_point_ids)
+
+    owned = set(await owned_workspace_ids(db, user))
+    resolved = OwnedScope(
+        workspace_ids=[value for value in requested_workspaces if value in owned],
+    )
+    resolved.dropped_ids.extend(
+        value for value in requested_workspaces if value not in owned
+    )
+
+    if requested_documents:
+        rows = (await db.execute(
+            select(Document.id, Document.workspace_id).where(Document.id.in_(requested_documents))
+        )).all()
+        found = {doc_id: workspace_id for doc_id, workspace_id in rows if workspace_id in owned}
+        resolved.document_ids = [value for value in requested_documents if value in found]
+        resolved.document_workspace_ids = found
+        resolved.dropped_ids.extend(
+            value for value in requested_documents if value not in found
+        )
+
+    if requested_points:
+        rows = (await db.execute(
+            select(KnowledgePoint.id, KnowledgePoint.document_id, KnowledgePoint.workspace_id)
+            .where(KnowledgePoint.id.in_(requested_points))
+        )).all()
+        found = {
+            point_id: (document_id, workspace_id)
+            for point_id, document_id, workspace_id in rows
+            if workspace_id in owned
+        }
+        resolved.knowledge_point_ids = [value for value in requested_points if value in found]
+        resolved.knowledge_point_document_ids = {
+            point_id: found[point_id][0] for point_id in resolved.knowledge_point_ids
+        }
+        resolved.knowledge_point_workspace_ids = {
+            point_id: found[point_id][1] for point_id in resolved.knowledge_point_ids
+        }
+        resolved.dropped_ids.extend(
+            value for value in requested_points if value not in found
+        )
+
+    return resolved
 
 
 def _workspace_ids(user: User):

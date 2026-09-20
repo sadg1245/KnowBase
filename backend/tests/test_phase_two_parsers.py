@@ -256,9 +256,13 @@ class ChunkStructurePersistenceTests(unittest.IsolatedAsyncioTestCase):
                     db,
                 )
 
-                stored = (await db.execute(select(DocumentChunk))).scalar_one()
+                rows = (await db.execute(select(DocumentChunk))).scalars().all()
+                stored = next(row for row in rows if row.chunk_level == "child")
+                parents = [row for row in rows if row.chunk_level == "parent"]
                 self.assertEqual(vector_store.metadatas[0]["section_path"], '["第一章"]')
                 self.assertEqual(stored.section_path, ["第一章"])
+                self.assertEqual(len(parents), 1)
+                self.assertIsNone(parents[0].parent_id)
         finally:
             await engine.dispose()
 

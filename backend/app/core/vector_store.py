@@ -293,6 +293,20 @@ class VectorStore:
             logger.error(f"删除文档失败 [workspace={workspace_id}]: {e}")
             raise
 
+    async def delete_ids(self, workspace_id: str, doc_ids: list[str]) -> None:
+        """按精确 id 删除向量记录（用于重写某个 chunk 的 summary/question 向量）。"""
+        if not doc_ids:
+            return
+        try:
+            collection = self._client.get_collection(name=self._get_collection_name(workspace_id))
+        except Exception:
+            logger.warning("Collection 不存在，跳过按 id 删除 [workspace={}]", workspace_id)
+            return
+        try:
+            collection.delete(ids=list(dict.fromkeys(doc_ids)))
+        except Exception as exc:
+            logger.warning("按 id 删除向量失败 [workspace={}]: {}", workspace_id, exc)
+
     async def delete_collection(self, workspace_id: str):
         """
         删除整个 workspace 的 collection。

@@ -104,7 +104,7 @@ class PipelineEventTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(
             [event.node for event in events],
-            ["parsing", "chunking", "embedding", "indexing"],
+            ["parsing", "structure", "chunking", "embedding", "indexing"],
         )
         self.assertTrue(all(event.status == "succeeded" for event in events))
         self.assertTrue(all(event.finished_at is not None for event in events))
@@ -127,7 +127,9 @@ class PipelineEventTests(unittest.IsolatedAsyncioTestCase):
         events = await self._events(document_id)
         document = await self._document(document_id)
 
-        self.assertEqual([event.node for event in events], ["parsing", "chunking", "embedding"])
+        self.assertEqual(
+            [event.node for event in events], ["parsing", "structure", "chunking", "embedding"]
+        )
         self.assertEqual(events[-1].status, "failed")
         self.assertIn("embedding offline", events[-1].detail)
         self.assertEqual(document.pipeline_stage, "failed")

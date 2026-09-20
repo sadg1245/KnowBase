@@ -136,7 +136,7 @@ class StartupSmokeTests(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         payload = self.result_payload(completed)
 
-        self.assertEqual(payload["revision"], "0004_rag_pipeline_events")
+        self.assertEqual(payload["revision"], "0011_learning_coverage")
         self.assertEqual(len(payload["users"]), 1)
         self.assertEqual(payload["users"][0]["username"], "__pending_setup__")
         self.assertFalse(payload["users"][0]["has_password"])
@@ -153,7 +153,7 @@ class StartupSmokeTests(unittest.TestCase):
         self.assertEqual(second.returncode, 0, second.stderr)
 
         payload = self.result_payload(second)
-        self.assertEqual(payload["revision"], "0004_rag_pipeline_events")
+        self.assertEqual(payload["revision"], "0011_learning_coverage")
         self.assertEqual(len(payload["users"]), 1)
 
     def test_default_secret_is_replaced_by_a_managed_one(self):

@@ -17,27 +17,37 @@ from .parsers.markdown_parser import MarkdownParser
 from .parsers.pdf_parser import PDFParser
 from .parsers.pptx_parser import PptxParser
 from .content_filter import filter_learning_content
+from app.rag.parsers.factory import ParserFactory
+
+
+def _chunk_row(chunk) -> dict[str, Any]:
+    """把切分层的 `Chunk` 转成流水线既有的 chunk dict（content + metadata）。"""
+    from app.config import settings
+
+    return {
+        "content": chunk.content,
+        "metadata": {
+            "chunk_id": chunk.chunk_id,
+            "chunk_level": chunk.chunk_level,
+            "parent_id": chunk.parent_id,
+            "unit_id": chunk.unit_id,
+            "content_type": chunk.content_type,
+            "heading": chunk.heading,
+            "heading_level": chunk.heading_level,
+            "section_path": list(chunk.section_path),
+            "page_num": chunk.page_start,
+            "page_end": chunk.page_end,
+            "document_type": getattr(chunk, "document_type", None),
+            "index_version": settings.RAG_INDEX_VERSION,
+            "enrichment_status": "pending" if settings.RAG_ENRICH_ENABLED else "skipped",
+            **dict(chunk.metadata or {}),
+        },
+    }
 
 # ---------------------------------------------------------------------------
-# 支持的文件扩展名 → 规范名称映射
+# 支持的文件扩展名 → 规范名称映射（唯一来源：解析器注册表）
 # ---------------------------------------------------------------------------
-_FILE_TYPE_MAP: dict[str, str] = {
-    "pdf": "pdf",
-    "docx": "docx",
-    "pptx": "pptx",
-    "md": "md",
-    "markdown": "md",
-    "txt": "txt",
-    "xlsx": "xlsx",
-    "csv": "csv",
-    "html": "html",
-    "htm": "html",
-    "rst": "md",
-    "json": "txt",
-    "xml": "txt",
-    "yaml": "txt",
-    "yml": "txt",
-}
+_FILE_TYPE_MAP: dict[str, str] = ParserFactory.file_type_aliases()
 
 
 def supported_file_types() -> set[str]:
@@ -46,7 +56,7 @@ def supported_file_types() -> set[str]:
     This is the single source of truth for the upload whitelist, so an
     extension can never be accepted for upload and then fail to parse.
     """
-    return set(_FILE_TYPE_MAP)
+    return ParserFactory.supported_types()
 
 
 # =========================================================================
@@ -355,36 +365,18 @@ class DocumentPipeline:
         ValueError
             如果文件类型不受支持。
         """
-        normalized_type = file_type.lower().strip().lstrip(".")
-        canonical = _FILE_TYPE_MAP.get(normalized_type)
+        from app.rag.parsers.factory import ParserFactory
+
+        canonical = ParserFactory.canonical_type(file_type)
         if canonical is None:
             raise ValueError(
                 f"Unsupported file type: '{file_type}'. "
-                f"Supported types: {', '.join(sorted(_FILE_TYPE_MAP.keys()))}"
+                f"Supported types: {', '.join(sorted(ParserFactory.supported_types()))}"
             )
 
-        # 延迟实例化并缓存解析器
+        # 解析器由注册表提供（单一真相），这里只保留实例缓存。
         if canonical not in self._PARSER_CACHE:
-            parser: BaseParser
-            if canonical == "pdf":
-                parser = PDFParser()
-            elif canonical == "docx":
-                parser = DocxParser()
-            elif canonical == "pptx":
-                parser = PptxParser()
-            elif canonical == "md":
-                parser = MarkdownParser()
-            elif canonical == "txt":
-                parser = _TxtParser()
-            elif canonical == "xlsx":
-                parser = _XlsxParser()
-            elif canonical == "csv":
-                parser = _CsvParser()
-            elif canonical == "html":
-                parser = _HtmlParser()
-            else:
-                raise ValueError(f"No parser implemented for type: {canonical}")
-            self._PARSER_CACHE[canonical] = parser
+            self._PARSER_CACHE[canonical] = ParserFactory.get_parser(canonical)
 
         return self._PARSER_CACHE[canonical]
 
@@ -502,6 +494,12 @@ class DocumentPipeline:
             except Exception as exc:
                 logger.warning("Could not resolve original filename for {}: {}", document_id, exc)
 
+            # 解析 / 分类 / 结构阶段的产物，供切分阶段复用
+            blocks: list[Any] = []
+            nodes: list[Any] = []
+            units: list[Any] = []
+            classification = None
+
             # 2. 解析
             async with self._stage(db_session, document_id, "parsing"):
                 await self._update_document_status(
@@ -509,6 +507,26 @@ class DocumentPipeline:
                 )
                 parser = self._get_parser(file_type)
                 raw_chunks = parser.parse(file_path)
+                from app.rag.parsers.adapters import compute_quality
+                from app.rag.parsers.factory import detect_signature
+
+                quality = compute_quality(
+                    raw_chunks, file_type=file_type, signature=detect_signature(file_path)
+                )
+                await self._update_document_status(
+                    db_session,
+                    document_id,
+                    parse_degraded=quality.degraded,
+                    parse_quality=quality.model_dump(),
+                )
+                if quality.degraded:
+                    logger.warning(
+                        "Document {} parsed with degraded quality '{}': {}",
+                        document_id, quality.degraded, "；".join(quality.notes),
+                    )
+                if quality.degraded in {"scanned_pdf", "empty_document"}:
+                    # 扫描件与空文档不进入切分 / 向量化：宁可不检索，也不写入空向量。
+                    raw_chunks = []
                 logger.info(
                     "Parsed {} raw chunks from document {}.", len(raw_chunks), document_id,
                 )
@@ -520,6 +538,44 @@ class DocumentPipeline:
                         "Body boundary filter kept {} of {} parsed chunks for document {}.",
                         len(raw_chunks), parsed_count, document_id,
                     )
+
+                # 分类 / 结构 / 知识单元：必须发生在正文边界过滤之后，
+                # 否则被过滤掉的前言与版权页会重新进入结构与索引。
+                if raw_chunks:
+                    from app.rag.analyzers import build_structure, classify_document, extract_units
+                    from app.rag.analyzers.persistence import persist_document_analysis
+                    from app.rag.parsers.adapters import blocks_from_chunks
+
+                    async with self._stage(db_session, document_id, "structure"):
+                        await self._update_document_status(
+                            db_session, document_id, pipeline_stage="structure",
+                        )
+                        blocks = blocks_from_chunks(raw_chunks, document_id=document_id)
+                        classification = classify_document(
+                            blocks, file_type=file_type, filename=original_filename
+                        )
+                        nodes = build_structure(
+                            blocks,
+                            document_type=classification.document_type,
+                            document_id=document_id,
+                        )
+                        units = extract_units(
+                            blocks, nodes, document_id=document_id, workspace_id=workspace_id
+                        )
+                        await persist_document_analysis(
+                            db_session,
+                            document_id=document_id,
+                            workspace_id=workspace_id,
+                            classification=classification,
+                            nodes=nodes,
+                            units=units,
+                        )
+                        logger.info(
+                            "Document {} classified as '{}' (confidence {:.2f}); "
+                            "{} structure nodes, {} knowledge units.",
+                            document_id, classification.document_type,
+                            classification.confidence, len(nodes), len(units),
+                        )
 
                 if not raw_chunks:
                     await self.vector_store.replace_document(
@@ -555,12 +611,40 @@ class DocumentPipeline:
                 await self._update_document_status(
                     db_session, document_id, pipeline_stage="chunking",
                 )
-                split_chunks: list[dict[str, Any]] = self.text_splitter.split_documents(
-                    raw_chunks,
+                from app.rag.chunking import ChunkRouter, ChunkingContext
+
+                chunks = await ChunkRouter().chunk(
+                    ChunkingContext(
+                        document_id=document_id,
+                        workspace_id=workspace_id,
+                        document_type=(
+                            classification.document_type if classification else "unstructured"
+                        ),
+                        blocks=blocks,
+                        nodes=nodes,
+                        units=units,
+                        filename=original_filename,
+                    ),
+                    # 语义切分复用入库阶段同一个 embedding 服务，不额外加载模型
+                    embed=self.embedding_service.embed_texts,
                 )
+                from app.config import settings as _settings
+
+                # 富化不在入库主链路上执行：这里只索引 content 向量，
+                # summary / question 向量由入库完成后的后台任务增量补齐。
+                split_chunks: list[dict[str, Any]] = [_chunk_row(chunk) for chunk in chunks]
+                indexable = [
+                    row for row in split_chunks
+                    if row["metadata"].get("chunk_level") == "child"
+                ]
                 logger.info(
-                    "Text splitter produced {} chunks from document {}.",
-                    len(split_chunks), document_id,
+                    "Chunk router produced {} chunks ({} indexable children) for document {}.",
+                    len(split_chunks), len(indexable), document_id,
+                )
+                from app.rag.indexing import expand_child_vectors
+
+                vector_ids, vector_texts, vector_metadatas = expand_child_vectors(
+                    indexable, kinds=["content"]
                 )
 
             # 4. 批量嵌入
@@ -568,8 +652,7 @@ class DocumentPipeline:
                 await self._update_document_status(
                     db_session, document_id, pipeline_stage="embedding",
                 )
-                texts = [chunk["content"] for chunk in split_chunks]
-                embeddings = await self.embedding_service.embed_texts(texts)
+                embeddings = await self.embedding_service.embed_texts(vector_texts)
                 logger.info(
                     "Generated {} embeddings for document {}.", len(embeddings), document_id,
                 )
@@ -580,30 +663,44 @@ class DocumentPipeline:
                     db_session, document_id, pipeline_stage="indexing",
                 )
                 metadatas: list[dict[str, Any]] = []
-                for idx, chunk in enumerate(split_chunks):
-                    meta = dict(chunk.get("metadata", {}))
+                for idx, raw_meta in enumerate(vector_metadatas):
+                    meta = dict(raw_meta)
                     meta["source_file"] = original_filename
                     meta["doc_id"] = document_id
                     meta["workspace_id"] = workspace_id
                     meta["chunk_index"] = idx
-                    meta["section_path"] = json.dumps(
-                        meta.get("section_path") or [],
-                        ensure_ascii=False,
-                    )
+                    # 多向量展开时 section_path 已被规范化为 JSON 字符串，避免二次编码
+                    if not isinstance(meta.get("section_path"), str):
+                        meta["section_path"] = json.dumps(
+                            meta.get("section_path") or [],
+                            ensure_ascii=False,
+                        )
                     metadatas.append(meta)
 
-                doc_ids = [f"{document_id}_chunk_{idx}" for idx in range(len(texts))]
+                doc_ids = vector_ids
                 await self.vector_store.replace_document(
                     workspace_id=workspace_id,
                     document_id=document_id,
                     doc_ids=doc_ids,
-                    texts=texts,
+                    texts=vector_texts,
                     embeddings=embeddings,
                     metadatas=metadatas,
                 )
                 logger.info(
                     "Stored {} vectors for document {}.", len(embeddings), document_id,
                 )
+                try:
+                    from app.config import settings as _settings
+                    from app.rag.indexing import current_fingerprint, write_fingerprint
+
+                    collection = self.vector_store.get_or_create_collection(workspace_id)
+                    write_fingerprint(
+                        collection, current_fingerprint(_settings, self.embedding_service)
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Could not write index fingerprint for workspace {}: {}", workspace_id, exc
+                    )
 
                 from app.services.hybrid_retrieval import upsert_document_chunks
                 await upsert_document_chunks(
@@ -616,17 +713,32 @@ class DocumentPipeline:
                 logger.info("Stored {} keyword chunks for document {}.", len(split_chunks), document_id)
 
             # 6. 标记为就绪
+            from app.config import settings as _app_settings
+
+            enrich_enabled = bool(_app_settings.RAG_ENRICH_ENABLED)
             await self._update_document_status(
                 db_session, document_id,
                 status="ready",
                 pipeline_stage="ready",
-                chunk_count=len(split_chunks),
+                chunk_count=len(indexable),
+                enrichment_state="pending" if enrich_enabled else "skipped",
                 error_message=None,
                 processed_at=datetime.now(timezone.utc),
             )
 
+            # 入库先可用：富化作为独立任务在后台补写 summary / question 向量。
+            if enrich_enabled and indexable:
+                try:
+                    from app.services.document_jobs import enqueue_document_enrichment
+
+                    enqueue_document_enrichment(document_id)
+                except Exception as exc:
+                    logger.warning(
+                        "Could not queue background enrichment for {}: {}", document_id, exc
+                    )
+
             summary = {
-                "chunks_count": len(split_chunks),
+                "chunks_count": len(indexable),
                 "embedding_count": len(embeddings),
                 "status": "ready",
             }
