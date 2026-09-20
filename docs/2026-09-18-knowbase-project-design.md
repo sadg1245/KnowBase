@@ -1761,7 +1761,7 @@ content / source_file / page_num / score / document_id / heading / chunk_id
 ### 13.2 路线图
 
 ```text
-阶段 0  基线与安全网            修复 5 项缺陷 + 评测基线 + 阶段事件        ✅ 除真实基线
+阶段 0  基线与安全网            修复 5 项缺陷 + 评测基线 + 阶段事件        ✅
 阶段 1  统一文档模型与解析层    Document/Block + ParserFactory + 8 类解析器 ✅
 阶段 2  分类、结构、单元与切分  Classifier + Structure + ChunkRouter + Parent-Child ✅
 阶段 3  富化与多向量索引        知识单元落库 + 多向量 + 索引指纹          ✅ 切分上限对齐模型窗口（480/512）；不切换 embedding 模型（2026-09-20）
@@ -1783,7 +1783,7 @@ content / source_file / page_num / score / document_id / heading / chunk_id
 - ✅ `ALLOWED_EXTENSIONS` 与解析器工厂严格相等（`documents.ALLOWED_EXTENSIONS ← pipeline.supported_file_types() ← ParserFactory.supported_types()`）。
 - ✅ `_process_document` / `_chunk_text` 已删除，`_extract_text` 保留。
 - ✅ 每次入库写满四个阶段事件并记录 `duration_ms`，`documents.pipeline_stage` 落到 `ready` / `failed`（`test_pipeline_events.py`）。
-- ✅ 全量后端测试通过（518 passed；唯一失败是沙箱内 Docker 配置不可读的环境问题）。
+- ✅ 全量后端测试通过（536 passed；唯一失败是沙箱内 Docker 配置不可读的环境问题）。
 
 ### 13.4 已知技术债清单
 
