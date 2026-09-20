@@ -180,6 +180,8 @@ def _normalise_evidence(evidence: list[Any]) -> list[dict[str, Any]]:
             "page": _evidence_value(item, "page", "page_num"),
             "heading": _evidence_value(item, "heading"),
             "section_path": _evidence_value(item, "section_path", default=[]),
+            # §16.3：标注这条记录是不是资料里的原题，供生成时优先复用、并用于来源标注。
+            "content_type": _evidence_value(item, "content_type"),
             "excerpt": content[:6000],
         })
     return normalised
@@ -204,7 +206,12 @@ _QUESTION_CONTRACT = """Field contract for every item in `questions`:
 - concept_explanation: options = []; answer_payload = the model answer text; grading_rubric =
   {"accuracy": "...", "coverage": "...", "clarity": "..."} with all three non-empty.
 - source_chunk_ids must copy chunk_id values from the source records below (1 to 4 per question).
-- explanation and every rubric entry must be non-empty text."""
+- explanation and every rubric entry must be non-empty text.
+
+Material questions: records whose content_type is "question" are real questions taken from the
+learner's own material. Prefer them as the basis of an item — keep what they test and answer,
+adapt wording only when the field contract requires it — and cite them. Invent new items only
+to fill the slots the material questions cannot cover."""
 
 
 def _generation_prompt(evidence: list[dict[str, Any]], request: QuizSetGenerateRequest, knowledge_points: list[dict[str, Any]]) -> str:

@@ -320,6 +320,18 @@ def _source_label(snapshot: Sequence[dict[str, Any]]) -> str | None:
     return f"{label} · p.{page}" if label and page is not None else label
 
 
+def _source_origin(snapshot: Sequence[dict[str, Any]]) -> str:
+    """§16.3 的题目来源：引用了资料原题（`content_type=question`）记 material，否则记 generated。
+
+    依据是生成时写入 `source_snapshot` 的 `content_type`；历史数据没有这个字段，
+    按 generated 处理，不冒充资料原题。
+    """
+    for source in snapshot or ():
+        if isinstance(source, dict) and str(source.get("content_type") or "") == "question":
+            return "material"
+    return "generated"
+
+
 async def generate_quiz_set(
     db: AsyncSession,
     request: QuizSetGenerateRequest,
@@ -330,6 +342,8 @@ async def generate_quiz_set(
     if request.count < len(set(request.question_types)):
         raise AssessmentValidationError("Question count must cover every distinct requested question type")
     documents, points, evidence = await _generation_scope(db, request)
+    # §16.3：先拿资料里的原题，再让模型补足；原题排在证据列表最前面，模型更容易据此出题。
+    evidence = sorted(evidence, key=lambda chunk: 0 if chunk.content_type == "question" else 1)
     evidence_payload = [{
         "id": chunk.id,
         "document_id": chunk.document_id,
@@ -337,6 +351,7 @@ async def generate_quiz_set(
         "page_num": chunk.page_num,
         "heading": chunk.heading,
         "section_path": list(chunk.section_path or []),
+        "content_type": chunk.content_type,
         "content": chunk.content,
     } for chunk in evidence]
     quiz_set = QuizSet(
@@ -1298,6 +1313,7 @@ def serialize_question(
         "difficulty": question.difficulty_level,
         "position": question.position,
         "source_snapshot": _safe_source_metadata(question.source_snapshot or []),
+        "source_origin": _source_origin(question.source_snapshot or []),
         "strict_sources": question.strict_sources,
         "generation_model": question.generation_model,
     }

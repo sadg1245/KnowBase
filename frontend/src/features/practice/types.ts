@@ -59,6 +59,8 @@ export interface AssessmentQuestion {
   difficulty: AssessmentDifficulty;
   position: number;
   source_snapshot: AssessmentSourceSnapshot[];
+  /** §16.3 来源标注：material = 资料原题，generated = AI 生成。 */
+  source_origin?: 'material' | 'generated';
   strict_sources: boolean;
   generation_model: string | null;
   attempt?: QuizAttempt;

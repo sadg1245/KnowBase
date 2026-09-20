@@ -14,9 +14,13 @@ from app.rag.analyzers.knowledge_extractor import KnowledgeUnitData
 from app.rag.analyzers.structure_analyzer import StructureNodeData
 from app.rag.contracts import Block, Document
 
+# 上限对齐当前 embedding 模型窗口（BAAI/bge-small-zh-v1.5 为 512 token）。
+# 2026-09-20 决策：不切换 embedding 模型，因此切分上限收到 480，留出约 6% 余量，
+# 避免超窗部分被 sentence-transformers 静默截断（残余风险：token 估算器有 ±10% 偏差，
+# 超出部分由 EmbeddingService 的窗口告警兜底）。
 MIN_CHUNK_TOKENS = 150
-TARGET_CHUNK_TOKENS = 600
-MAX_CHUNK_TOKENS = 1200
+TARGET_CHUNK_TOKENS = 400
+MAX_CHUNK_TOKENS = 480
 
 _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _LATIN_WORD_RE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_'\-]*")

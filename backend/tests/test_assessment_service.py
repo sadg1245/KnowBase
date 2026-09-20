@@ -169,6 +169,57 @@ class AssessmentServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([point.id for point in points], [weak_point.id])
         self.assertEqual([chunk.id for chunk in chunks], [self.chunk.id])
 
+    async def test_generation_prefers_material_questions_and_marks_their_origin(self):
+        """§16.3：资料里的原题排在证据最前，引用了原题的题目记 material。"""
+        question_chunk = DocumentChunk(
+            id="chunk-question",
+            workspace_id=self.workspace.id,
+            document_id=self.document.id,
+            source_file=self.document.filename,
+            page_num=3,
+            heading="Foundations",
+            section_path=["Geometry", "Foundations"],
+            chunk_index=1,
+            content="例 1：三角形有几条边？A. 两条 B. 三条",
+            tokenized_content="triangle sides exercise",
+            content_type="question",
+        )
+        self.db.add(question_chunk)
+        await self.db.commit()
+        captured: dict[str, str] = {}
+
+        async def completion(**kwargs):
+            captured["prompt"] = kwargs["messages"][0]["content"]
+            return _response({"questions": [_generated_question(
+                source_chunk_ids=[question_chunk.id],
+            )]})
+
+        quiz_set = await generate_quiz_set(self.db, self.request(), SETTINGS, completion)
+
+        prompt = captured["prompt"]
+        self.assertIn('"content_type": "question"', prompt)
+        self.assertLess(prompt.index(question_chunk.id), prompt.index(self.chunk.id))
+        question = (await self.db.execute(
+            select(QuizQuestion).where(QuizQuestion.quiz_set_id == quiz_set.id)
+        )).scalar_one()
+        self.assertEqual(question.source_snapshot[0]["content_type"], "question")
+        self.assertEqual(serialize_question(question, reveal=True)["source_origin"], "material")
+
+    async def test_questions_without_a_material_source_are_marked_generated(self):
+        async def completion(**_kwargs):
+            return _response({"questions": [_generated_question(source_chunk_ids=[self.chunk.id])]})
+
+        quiz_set = await generate_quiz_set(self.db, self.request(), SETTINGS, completion)
+
+        question = (await self.db.execute(
+            select(QuizQuestion).where(QuizQuestion.quiz_set_id == quiz_set.id)
+        )).scalar_one()
+        self.assertEqual(serialize_question(question, reveal=True)["source_origin"], "generated")
+        self.assertNotIn(
+            "question",
+            [source.get("content_type") for source in question.source_snapshot],
+        )
+
     async def test_submission_recalculates_the_affected_weakness_in_its_write_transaction(self):
         quiz_set, question = await self.make_set()
         run = await create_quiz_run(self.db, quiz_set.id)

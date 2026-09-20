@@ -60,7 +60,12 @@ export const ResultQuestion: React.FC<ResultQuestionProps> = ({
   return <article className={`practice-result-question ${state.className}`}>
     <div className="practice-margin-state" aria-label={state.label}><span />{state.label}</div>
     <div className="practice-result-body">
-      <div className="practice-question-meta">第 {question.position} 题 · {state.label}</div>
+      <div className="practice-question-meta">
+        第 {question.position} 题 · {state.label}
+        {question.source_origin ? <Tag color={question.source_origin === 'material' ? 'cyan' : 'default'}>
+          {question.source_origin === 'material' ? '资料原题' : 'AI 生成'}
+        </Tag> : null}
+      </div>
       <h3>{question.prompt}</h3>
       <dl className="practice-answer-review">
         <div><dt>你的答案</dt><dd>{displayValue(attempt?.user_answer)}</dd></div>

@@ -17,6 +17,10 @@ const QUESTION_TYPE_LABELS: Record<PracticeSessionState['questions'][number]['qu
   concept_explanation: '解释概念题',
 };
 
+export const questionOriginLabel = (origin?: string): string | null => (
+  origin === 'material' ? '资料原题' : origin === 'generated' ? 'AI 生成' : null
+);
+
 export const paperSubmissionWarning = (unansweredIds: string[]): string | null => (
   unansweredIds.length ? `还有 ${unansweredIds.length} 道题未作答，仍要交卷吗？` : null
 );
@@ -161,6 +165,9 @@ export const QuizRunner: React.FC<QuizRunnerProps> = ({
           <span>第 {safeIndex + 1} 题 / 共 {questions.length} 题</span>
           <Tag>{QUESTION_TYPE_LABELS[current.question_type]}</Tag>
           <Tag>{current.difficulty === 'easy' ? '基础' : current.difficulty === 'hard' ? '挑战' : '适中'}</Tag>
+          {questionOriginLabel(current.source_origin) ? <Tag color={current.source_origin === 'material' ? 'cyan' : 'default'}>
+            {questionOriginLabel(current.source_origin)}
+          </Tag> : null}
         </div>
         <h3>{current.prompt}</h3>
         <QuestionInput

@@ -2,7 +2,15 @@
 
 import unittest
 
-from app.rag.chunking.base import Chunk, ChunkingContext, ChunkStrategy, estimate_tokens
+from app.rag.chunking.base import (
+    MAX_CHUNK_TOKENS,
+    MIN_CHUNK_TOKENS,
+    TARGET_CHUNK_TOKENS,
+    Chunk,
+    ChunkingContext,
+    ChunkStrategy,
+    estimate_tokens,
+)
 from app.rag.chunking.router import ChunkRouter
 from app.rag.chunking.semantic import SemanticChunkStrategy, cosine_similarity, split_sentences
 from app.rag.chunking.strategies import (
@@ -192,6 +200,31 @@ class RouterTests(unittest.IsolatedAsyncioTestCase):
 
         empty = await router.chunk(context([block(0, "paragraph", "内容。" * 30)], "exam"))
         self.assertTrue(empty)
+
+    async def test_default_chunks_stay_inside_the_embedding_model_window(self):
+        """2026-09-20 决策：不换 embedding 模型，所以切分上限必须服从模型窗口。"""
+        from app.core.embedding import EmbeddingService
+
+        window = EmbeddingService.MODEL_MAX_TOKENS[EmbeddingService.DEFAULT_MODELS["local"]]
+
+        self.assertGreaterEqual(MIN_CHUNK_TOKENS, 1)
+        self.assertLessEqual(MIN_CHUNK_TOKENS, TARGET_CHUNK_TOKENS)
+        self.assertLessEqual(TARGET_CHUNK_TOKENS, MAX_CHUNK_TOKENS)
+        self.assertLess(MAX_CHUNK_TOKENS, window, "切分上限必须留出余量，否则尾部会被静默截断")
+
+    async def test_oversized_prose_is_split_under_the_default_ceiling(self):
+        router = ChunkRouter()
+        long_text = "条件概率描述的是在已知某个事件发生的前提下另一个事件发生的可能性。" * 60
+
+        chunks = await router.chunk(context([block(0, "paragraph", long_text)], "tutorial"))
+
+        self.assertGreater(len(chunks), 1)
+        children = [chunk for chunk in chunks if chunk.chunk_level == "child"]
+        self.assertGreater(len(children), 1)
+        for chunk in children:
+            self.assertLessEqual(chunk.tokens, MAX_CHUNK_TOKENS)
+        # parent 只落库用于父块扩展，不进向量，因此不受 embedding 窗口约束。
+        self.assertTrue(any(chunk.chunk_level == "parent" for chunk in chunks))
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ import {
 } from '../src/components/practice/QuestionInput';
 import {
   paperSubmissionWarning,
+  questionOriginLabel,
   QuizRunner,
   shouldAutoSubmitPaper,
 } from '../src/components/practice/QuizRunner';
@@ -333,6 +334,26 @@ test('results reveal answer explanation feedback and traceable source links', ()
     assert.match(html, new RegExp(label));
   }
   assert.match(html, /href="\/knowledge\/workspace-1\/documents\/document-1\?chunk=chunk-7&amp;page=3"/);
+});
+
+test('题目来源标注区分资料原题与 AI 生成', () => {
+  assert.equal(questionOriginLabel('material'), '资料原题');
+  assert.equal(questionOriginLabel('generated'), 'AI 生成');
+  assert.equal(questionOriginLabel(undefined), null);
+
+  const base = makeRun();
+  const materialRun = makeRun({
+    status: 'submitted',
+    quiz_set: { ...base.quiz_set, questions: [{ ...question, source_origin: 'material' }] },
+  });
+  const html = renderToStaticMarkup(<QuizResults
+    run={materialRun}
+    onRetry={() => undefined}
+    onRetryGrading={() => undefined}
+  />);
+
+  assert.match(html, /资料原题/);
+  assert.doesNotMatch(html, /AI 生成/);
 });
 
 test('练习结果只在明确提供追问入口时渲染「问 AI 老师」', () => {
