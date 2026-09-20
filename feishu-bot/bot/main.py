@@ -11,6 +11,7 @@ import asyncio
 import json
 import sys
 import threading
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Optional
@@ -22,6 +23,11 @@ from bot.auth import TokenManager
 from bot.commands import CommandRouter
 from bot.config import BotConfig
 from bot.handler import MessageHandler
+from bot.runtime_config import (
+    FeishuCredentials,
+    StatusReporter,
+    resolve_credentials,
+)
 
 # ---------------------------------------------------------------------------
 # 优雅关闭相关的全局变量
@@ -44,7 +50,7 @@ def _setup_logging(level: str) -> None:
     )
 
 
-async def _create_components(config: BotConfig):
+async def _create_components(config: BotConfig, credentials: FeishuCredentials):
     """初始化所有服务组件。"""
     # Redis 客户端
     redis_client = redis.from_url(config.REDIS_URL, decode_responses=True)
@@ -52,10 +58,10 @@ async def _create_components(config: BotConfig):
 
     # Token 管理器
     token_manager = TokenManager(
-        app_id=config.FEISHU_APP_ID,
-        app_secret=config.FEISHU_APP_SECRET,
+        app_id=credentials.app_id,
+        app_secret=credentials.app_secret,
     )
-    logger.info("TokenManager initialized")
+    logger.info(f"TokenManager initialized for {credentials.label}")
 
     # 命令路由器
     command_router = CommandRouter(
@@ -139,6 +145,75 @@ async def _reminder_loop(config, command_router, message_handler):
         await asyncio.sleep(60)
 
 
+def _report_status(loop, reporter: StatusReporter, state: str, **kwargs) -> None:
+    """在后台事件循环上发一条状态（失败不影响机器人）。"""
+    try:
+        asyncio.run_coroutine_threadsafe(reporter.report(state, **kwargs), loop)
+    except Exception as exc:
+        logger.debug(f"状态上报调度失败：{exc}")
+
+
+def _wait_for_credentials(config: BotConfig, loop, reporter: StatusReporter) -> FeishuCredentials:
+    """等到拿到凭证再上线。
+
+    没有配置时停在“待配置”状态并定期重试，而不是像以前那样直接抛异常退出；
+    用户在设置页填好以后，最迟一个刷新周期后机器人自动连上。
+    """
+    guidance_printed = False
+    while True:
+        credentials, reason = asyncio.run_coroutine_threadsafe(
+            resolve_credentials(config), loop
+        ).result()
+        if credentials is not None:
+            logger.info(f"飞书凭证已就绪：{credentials.label}")
+            _report_status(loop, reporter, "connecting", app_id=credentials.app_id)
+            return credentials
+        _report_status(loop, reporter, "pending", detail=reason)
+        if not guidance_printed:
+            logger.warning(
+                "飞书机器人尚未配置（{}）。打开网页「设置 → 飞书机器人」填写 App ID 与 App Secret 即可，"
+                "机器人会自动上线；继续使用 .env 里的 FEISHU_APP_ID / FEISHU_APP_SECRET 也支持。",
+                reason,
+            )
+            guidance_printed = True
+        time.sleep(max(5, int(config.CONFIG_REFRESH_SECONDS)))
+
+
+def _watch_credentials(
+    config: BotConfig,
+    loop,
+    reporter: StatusReporter,
+    active: FeishuCredentials,
+    stop_event: threading.Event,
+) -> None:
+    """连接期间盯住设置页有没有换凭证。
+
+    lark-oapi 的长连接没有受支持的停止/重建入口，硬拆会造成重复收消息，
+    所以这里如实上报「需要重启」，而不是偷偷半重启。
+    """
+    while not stop_event.wait(max(5, int(config.CONFIG_REFRESH_SECONDS))):
+        try:
+            latest, _reason = asyncio.run_coroutine_threadsafe(
+                resolve_credentials(config), loop
+            ).result()
+        except Exception:
+            continue
+        if latest is None or latest == active:
+            continue
+        logger.warning(
+            f"设置页里的飞书凭证已更新（{latest.label}），但当前长连接仍在用旧凭证："
+            "请重启机器人容器（docker compose restart feishu-bot）后生效。"
+        )
+        _report_status(
+            loop,
+            reporter,
+            "restart_required",
+            detail="设置页已更新飞书凭证，重启机器人后生效",
+            app_id=latest.app_id,
+        )
+        return
+
+
 def main() -> None:
     """
     主入口函数。设置 lark-oapi WebSocket 长连接客户端以接收飞书事件。
@@ -150,26 +225,40 @@ def main() -> None:
     _setup_logging(config.LOG_LEVEL)
     logger.info(f"Starting {config.BOT_NAME} Feishu Bot...")
     logger.info(f"Backend URL: {config.BACKEND_URL}")
-    logger.info(f"App ID: {config.FEISHU_APP_ID[:6]}***")
 
     # ------------------------------------------------------------------
-    # 同步创建组件，以便将 handler 传入 lark 事件回调。
-    # 这里使用一个小型 asyncio 事件循环。
+    # 先起后台事件循环（状态上报与取配置都要用它），拿到凭证后再建组件。
     # ------------------------------------------------------------------
     loop = asyncio.new_event_loop()
-
-    redis_client, token_manager, command_router, message_handler = loop.run_until_complete(
-        _create_components(config)
-    )
     loop_thread = threading.Thread(target=loop.run_forever, name="knowbase-async-loop", daemon=True)
     loop_thread.start()
-    reminder_future = asyncio.run_coroutine_threadsafe(
-        _reminder_loop(config, command_router, message_handler), loop
-    )
+    reporter = StatusReporter(config)
+
+    redis_client = token_manager = command_router = message_handler = None
+    reminder_future = None
+    credentials: Optional[FeishuCredentials] = None
+
+    try:
+        credentials = _wait_for_credentials(config, loop, reporter)
+        redis_client, token_manager, command_router, message_handler = (
+            asyncio.run_coroutine_threadsafe(
+                _create_components(config, credentials), loop
+            ).result()
+        )
+        reminder_future = asyncio.run_coroutine_threadsafe(
+            _reminder_loop(config, command_router, message_handler), loop
+        )
+    except KeyboardInterrupt:
+        logger.info("收到退出信号，尚未建立连接。")
+        _report_status(loop, reporter, "pending", detail="机器人已停止")
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=5)
+        return
 
     # ------------------------------------------------------------------
     # 尝试使用 lark-oapi WebSocket 长连接
     # ------------------------------------------------------------------
+    watcher_stop = threading.Event()
     try:
         import lark_oapi as lark
         from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
@@ -217,8 +306,8 @@ def main() -> None:
 
         # 创建 WebSocket 长连接客户端
         ws_client = lark.ws.Client(
-            config.FEISHU_APP_ID,
-            config.FEISHU_APP_SECRET,
+            credentials.app_id,
+            credentials.app_secret,
             event_handler=dispatcher,
             log_level=lark_log_level,
         )
@@ -229,11 +318,22 @@ def main() -> None:
             "Press Ctrl+C to stop."
         )
 
+        # 连接期间盯住设置页有没有换凭证（换了要重启才生效，如实上报）
+        watcher = threading.Thread(
+            target=_watch_credentials,
+            args=(config, loop, reporter, credentials, watcher_stop),
+            name="knowbase-credential-watch",
+            daemon=True,
+        )
+        watcher.start()
+        _report_status(loop, reporter, "connected", app_id=credentials.app_id)
+
         # 启动 WebSocket 客户端（此操作会阻塞）
         ws_client.start()
 
     except ImportError as exc:
         logger.error(f"Failed to import lark-oapi ws module: {exc}")
+        _report_status(loop, reporter, "error", detail="缺少 lark-oapi 长连接模块")
         _print_fallback_instructions()
         reminder_future.cancel()
         asyncio.run_coroutine_threadsafe(
@@ -246,6 +346,7 @@ def main() -> None:
     except AttributeError as exc:
         # lark_oapi.ws 在较旧版本的 SDK 中可能不存在
         logger.error(f"lark-oapi ws module not available: {exc}")
+        _report_status(loop, reporter, "error", detail="当前 lark-oapi 不支持长连接")
         _print_fallback_instructions()
         reminder_future.cancel()
         asyncio.run_coroutine_threadsafe(
@@ -257,6 +358,7 @@ def main() -> None:
 
     except Exception as exc:
         logger.exception(f"Unexpected error starting bot: {exc}")
+        _report_status(loop, reporter, "error", detail=f"{exc.__class__.__name__}: {exc}"[:200])
         reminder_future.cancel()
         asyncio.run_coroutine_threadsafe(
             _shutdown(redis_client, token_manager, command_router, message_handler), loop
@@ -265,6 +367,7 @@ def main() -> None:
         loop_thread.join(timeout=5)
         sys.exit(1)
     finally:
+        watcher_stop.set()
         if loop.is_running():
             reminder_future.cancel()
             try:

@@ -8,9 +8,10 @@ from pydantic_settings import BaseSettings
 class BotConfig(BaseSettings):
     """KnowBase 飞书机器人配置。"""
 
-    # 飞书应用凭证
-    FEISHU_APP_ID: str
-    FEISHU_APP_SECRET: str
+    # 飞书应用凭证：留空不再是错误——机器人会到后端的「设置 → 飞书机器人」取配置，
+    # 拿到之前停在“待配置”状态并定期重试，不退出、不刷栈。
+    FEISHU_APP_ID: str = ""
+    FEISHU_APP_SECRET: str = ""
 
     # 后端 API 地址
     BACKEND_URL: str = "http://localhost:8000"
@@ -26,6 +27,10 @@ class BotConfig(BaseSettings):
     BACKEND_ACCESS_TOKEN: str = ""
     REMINDERS_ENABLED: bool = True
     REMINDER_TIMEZONE: str = "Asia/Shanghai"
+    # 向后端刷新飞书配置的间隔（秒）：设置页改完最多等这么久机器人就会用上
+    CONFIG_REFRESH_SECONDS: int = 60
+    # 向后端上报运行状态的间隔（秒）
+    STATUS_REPORT_SECONDS: int = 30
 
     model_config = {
         "env_file": ".env",
