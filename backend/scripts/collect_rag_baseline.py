@@ -26,8 +26,10 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-BACKEND_ROOT = REPO_ROOT / "backend"
+# 两种布局都要能用：仓库里脚本在 <repo>/backend/scripts，容器里（Dockerfile 以 backend 为上下文）
+# 脚本在 /app/scripts，因此后端根目录取父目录，仓库根目录再按目录名判断。
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = BACKEND_ROOT.parent if BACKEND_ROOT.name == "backend" else BACKEND_ROOT
 CORPUS_DIR = BACKEND_ROOT / "tests" / "rag_eval" / "corpus"
 EVAL_DIR = BACKEND_ROOT / "tests" / "rag_eval"
 
@@ -188,7 +190,7 @@ async def collect_hits(cases: list[dict]) -> dict[str, list[dict]]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="采集真实检索基线")
-    parser.add_argument("--data-root", default="tmp/rag_baseline_home")
+    parser.add_argument("--data-root", default=str(REPO_ROOT / "tmp" / "rag_baseline_home"))
     parser.add_argument("--reset", action="store_true", help="采集前清空隔离数据目录")
     parser.add_argument("--cases-out", default=str(EVAL_DIR / "cases.jsonl"))
     parser.add_argument("--baseline-out", default=str(EVAL_DIR / "baseline.json"))
